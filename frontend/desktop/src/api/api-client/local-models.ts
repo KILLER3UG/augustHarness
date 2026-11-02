@@ -44,3 +44,130 @@ export function addLocalServer(body: {
 }): Promise<AddLocalServerResponse> {
   return api.post<AddLocalServerResponse>('/api/local-models/add', body);
 }
+
+/* ── llama.cpp runtime (download once, serve GGUFs) ─────────────────── */
+
+export interface LlamaRuntimeStatus {
+  installed: string | null;
+  tag: string;
+  install: {
+    running: boolean;
+    variant: string | null;
+    asset: string | null;
+    bytesDone: number;
+    totalBytes: number;
+    error: string | null;
+    done: boolean;
+  };
+  suggestion: {
+    variant: string;
+    auto: boolean;
+    reason: string;
+    gpu: { nvidia: boolean; cudaVersion: string | null; gpuName: string | null };
+  };
+  variants: { name: string; label: string; requires: string; totalBytes: number }[];
+}
+
+export interface LlamaServerRow {
+  id: string;
+  ggufPath: string;
+  name: string;
+  port: number;
+  pid: number;
+  ctxSize: number;
+  providerId: string | null;
+  status: 'starting' | 'ready' | 'failed';
+  detail?: string;
+  startedAt?: string;
+}
+
+export function getLlamaRuntime(): Promise<LlamaRuntimeStatus> {
+  return api.get<LlamaRuntimeStatus>('/api/local-models/runtime');
+}
+
+export function installLlamaRuntime(variant?: string): Promise<{ started: boolean }> {
+  return api.post('/api/local-models/runtime/install', { variant: variant ?? null });
+}
+
+export function listLlamaServers(): Promise<{ servers: LlamaServerRow[] }> {
+  return api.get('/api/local-models/servers');
+}
+
+export function serveGguf(path: string, ctxSize: number): Promise<LlamaServerRow> {
+  return api.post('/api/local-models/gguf/serve', { path, ctxSize });
+}
+
+export function stopLlamaServer(serverId: string): Promise<{ stopped: string }> {
+  return api.post('/api/local-models/servers/stop', { serverId });
+}
+
+/* ── GGUF files on disk ─────────────────────────────────────────────── */
+
+export interface GgufEntry {
+  path: string;
+  name: string;
+  size: number;
+  split: boolean;
+  shards?: number;
+}
+
+export function scanGgufFolder(path: string): Promise<{
+  root: string;
+  models: GgufEntry[];
+  truncated: boolean;
+}> {
+  return api.post('/api/local-models/gguf/scan', { path });
+}
+
+/* ── Hugging Face ───────────────────────────────────────────────────── */
+
+export interface HfModel {
+  repoId: string;
+  downloads: number;
+  likes: number;
+  lastModified: string;
+  pipelineTag: string;
+}
+
+export interface HfFile {
+  filename: string;
+  size: number;
+}
+
+export interface HfDownload {
+  jobId: string;
+  repoId: string;
+  filename: string;
+  destPath: string;
+  size: number;
+  bytesDone: number;
+  status: 'downloading' | 'done' | 'failed' | 'cancelled' | 'interrupted';
+  speedBps: number | null;
+  error: string | null;
+  startedAt: string | null;
+}
+
+export function hfSearch(q: string, limit = 20): Promise<{ query: string; models: HfModel[] }> {
+  return api.get(`/api/hf/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+}
+
+export function hfRepoFiles(repoId: string): Promise<{
+  repoId: string;
+  lastModified: string;
+  downloads: number;
+  files: HfFile[];
+}> {
+  return api.get(`/api/hf/repos/${repoId}`);
+}
+
+export function hfListDownloads(): Promise<{ downloads: HfDownload[] }> {
+  return api.get('/api/hf/downloads');
+}
+
+export function hfStartDownload(repoId: string, filename: string): Promise<HfDownload> {
+  return api.post('/api/hf/downloads', { repoId, filename });
+}
+
+export function hfCancelDownload(jobId: string): Promise<{ cancelled: string; found: boolean }> {
+  return api.post('/api/hf/downloads/cancel', { jobId });
+}
