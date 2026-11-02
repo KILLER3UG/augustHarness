@@ -165,6 +165,23 @@ export function useChatMessageActions({
     [streaming, messages, setMessages, sessionId, truncateBackend],
   );
 
+  /** 👍 / 👎 on an assistant reply. Tapping the verdict already on the row
+   *  clears it — a rating the user cannot take back is a claim they no longer
+   *  stand behind, and the review pass reads these as signal. */
+  const handleRate = useCallback(
+    (index: number, value: 'up' | 'down') => {
+      setMessages((prev) => {
+        const current = prev[index];
+        if (!current || current.role !== 'assistant') return prev;
+        const next = prev.slice();
+        next[index] = { ...current, rating: current.rating === value ? null : value };
+        persistMessages(sessionId, next);
+        return next;
+      });
+    },
+    [setMessages, sessionId],
+  );
+
   const handleRegenerate = useCallback(
     async (index: number) => {
       if (streaming) return;
@@ -249,6 +266,7 @@ export function useChatMessageActions({
     revertingIndex,
     handleRevert,
     handleEdit,
+    handleRate,
     handleRegenerate,
     handleContinue,
     handleClarifyAnswer,

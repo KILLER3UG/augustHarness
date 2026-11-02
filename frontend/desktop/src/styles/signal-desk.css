@@ -53,7 +53,7 @@
   --radius-md: 13px;
   --radius-lg: 18px;
   --radius-xl: 24px;
-  --sidebar-w: 276px;
+  --sidebar-w: 340px;
   --canvas-w: 430px;
   --titlebar-h: 56px;
   --ease: cubic-bezier(.2, .75, .2, 1);
@@ -240,14 +240,14 @@
   .sd-app .nav-more-panel .nav-item:focus svg { color: var(--accent-text); }
   .sd-app .nav-item {
     width: 100%;
-    height: 34px;
+    height: 40px;
     display: flex;
     align-items: center;
-    gap: 9px;
-    padding: 0 9px;
-    border-radius: 8px;
+    gap: 11px;
+    padding: 0 12px;
+    border-radius: 10px;
     color: var(--ink-3);
-    font-size: 0.75rem;
+    font-size: 0.875rem;
     text-align: left;
     transition: background .15s var(--ease), color .15s var(--ease);
     position: relative;
@@ -288,25 +288,25 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 19px 9px 7px;
-    color: var(--ink-4);
-    font-family: var(--mono);
-    font-size: 0.5313rem;
-    letter-spacing: .16em;
-    text-transform: uppercase;
+    padding: 19px 12px 7px;
+    color: var(--ink-3);
+    font-family: var(--sans);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    letter-spacing: 0;
   }
   .sd-app .section-head button { margin-left: auto; color: var(--ink-4); }
   .sd-app .section-head button:hover { color: var(--ink-2); }
   .sd-app .thread {
     width: 100%;
-    min-height: 31px;
+    min-height: 38px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 9px;
-    border-radius: 7px;
+    gap: 10px;
+    padding: 6px 12px;
+    border-radius: 10px;
     color: var(--ink-3);
-    font-size: 0.7188rem;
+    font-size: 0.875rem;
     text-align: left;
     transition: background .15s var(--ease), color .15s var(--ease);
   }
@@ -341,7 +341,7 @@
     padding: 9px 10px 10px;
     background: color-mix(in srgb, var(--panel-2) 35%, transparent);
   }
-  .sd-app .usage-top { display: flex; justify-content: space-between; align-items: center; font-family: var(--mono); font-size: 0.5rem; letter-spacing: .09em; color: var(--ink-3); text-transform: uppercase; }
+  .sd-app .usage-top { display: flex; justify-content: space-between; align-items: center; font-family: var(--sans); font-size: 0.6875rem; letter-spacing: 0; color: var(--ink-3); }
   .sd-app .usage-top strong { color: var(--ink); font-weight: 500; letter-spacing: 0; font-size: 0.5625rem; }
   .sd-app .usage-bar { height: 3px; margin-top: 8px; border-radius: 99px; background: var(--panel-3); overflow: hidden; }
   .sd-app .usage-bar span { display: block; height: 100%; width: 64%; border-radius: inherit; background: linear-gradient(90deg, var(--accent-deep), var(--accent)); }
@@ -461,10 +461,12 @@
   }
   .sd-app .thread-kicker {
     display: flex; align-items: center; gap: 9px;
-    font-family: var(--mono); font-size: 0.5313rem; letter-spacing: .14em; text-transform: uppercase;
+    font-family: var(--sans); font-size: 0.6875rem; letter-spacing: 0;
     color: var(--ink-4);
   }
-  .sd-app .thread-kicker::after { content: ""; height: 1px; flex: 1; background: var(--line); }
+  /* The kicker's trailing hairline was decoration neither reference carries:
+     Claude and Kimi both let the title sit on the page with no rule. */
+  .sd-app .thread-kicker::after { content: none; }
   .sd-app .thread-title-row {
     display: flex; align-items: flex-start; gap: 12px;
     margin-top: 12px;
@@ -484,7 +486,7 @@
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 8px; border-radius: 6px;
     border: 1px solid var(--line);
-    color: var(--ink-3); font-family: var(--mono); font-size: 0.5rem; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-3); font-family: var(--sans); font-size: 0.6875rem; letter-spacing: 0;
     white-space: nowrap;
   }
   .sd-app .thread-badge svg { color: var(--chart-1); }
@@ -827,7 +829,7 @@
   .sd-app .context-meter { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); margin-right: 4px; }
   .sd-app .context-meter span { width: 13px; height: 13px; border-radius: 50%; background: conic-gradient(var(--accent) 0 32%, var(--panel-3) 32% 100%); }
   .sd-app .send-button {
-    width: 31px; height: 31px; border-radius: 8px;
+    width: 31px; height: 31px; border-radius: 999px;
     display: grid; place-items: center;
     background: var(--accent); color: var(--accent-ink);
     transition: transform .14s var(--ease), background .14s var(--ease);
@@ -943,13 +945,13 @@
     flex-direction: column;
   }
   .sd-app .launchpad-inner { width: min(100%, 780px); margin: auto; padding: 38px 0 20px; }
-  .sd-app .launch-eyebrow { display: flex; align-items: center; justify-content: center; gap: 8px; font-family: var(--mono); font-size: 0.5rem; letter-spacing: .16em; color: var(--ink-4); text-transform: uppercase; }
+  .sd-app .launch-eyebrow { display: flex; align-items: center; justify-content: center; gap: 8px; font-family: var(--sans); font-size: 0.6875rem; letter-spacing: 0; color: var(--ink-4); }
   .sd-app .launch-eyebrow .brand-mark { width: 22px; height: 22px; border-radius: 6px; }
   .sd-app .launch-title { margin: 20px 0 0; text-align: center; font-family: var(--display); font-size: clamp(35px, 4.4vw, 56px); font-weight: 500; line-height: 1.02; letter-spacing: -.045em; }
   .sd-app .launch-sub { margin: 11px auto 0; text-align: center; max-width: 430px; color: var(--ink-3); font-size: 0.75rem; line-height: 1.65; }
   .sd-app .recent-strip { margin-top: 26px; }
-  .sd-app .recent-head { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 0.4688rem; letter-spacing: .13em; color: var(--ink-4); text-transform: uppercase; }
-  .sd-app .recent-head::after { content: ""; height: 1px; flex: 1; background: var(--line); }
+  .sd-app .recent-head { display: flex; align-items: center; gap: 8px; font-family: var(--sans); font-size: 0.6875rem; letter-spacing: 0; color: var(--ink-4); }
+  .sd-app .recent-head::after { content: none; }
   .sd-app .recent-row { display: flex; gap: 7px; margin-top: 8px; }
   .sd-app .recent-item { flex: 1; display: flex; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; background: color-mix(in srgb, var(--panel-2) 25%, transparent); text-align: left; font-size: 0.5625rem; color: var(--ink-3); }
   .sd-app .recent-item:hover { background: var(--panel-2); color: var(--ink); }
@@ -964,7 +966,7 @@
     padding: 38px 38px 50px;
   }
   .sd-app .page-inner { width: min(100%, 1120px); margin: 0 auto; }
-  .sd-app .page-eyebrow { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 0.5rem; letter-spacing: .16em; color: var(--ink-4); text-transform: uppercase; }
+  .sd-app .page-eyebrow { display: flex; align-items: center; gap: 8px; font-family: var(--sans); font-size: 0.6875rem; letter-spacing: 0; color: var(--ink-4); }
   .sd-app .page-eyebrow::after { content: ""; height: 1px; width: 54px; background: var(--line); }
   .sd-app .page-head { display: flex; align-items: flex-start; gap: 18px; }
   .sd-app .page-title { margin: 11px 0 0; font-family: var(--display); font-size: clamp(32px, 3.4vw, 46px); font-weight: 500; line-height: 1.04; letter-spacing: -.045em; }
@@ -1101,9 +1103,13 @@
   .sd-app .new-thread:hover { background: color-mix(in srgb, var(--ink) 88%, var(--bg)); transform: none; }
   .sd-app .new-thread .plus-box { background: color-mix(in srgb, var(--bg) 14%, transparent); }
   .sd-app .new-thread kbd { border-color: color-mix(in srgb, var(--bg) 18%, transparent); background: color-mix(in srgb, var(--bg) 10%, transparent); color: color-mix(in srgb, var(--bg) 60%, transparent); }
-  .sd-app .nav-item[data-active="true"] { background: transparent; }
-  .sd-app .nav-item[data-active="true"]::before { width: 1px; background: var(--accent-text); }
-  .sd-app .nav-item[data-active="true"] svg { color: var(--accent-text); }
+  /* Selected row: a flat lighter fill, full row width, no accent bar and no
+     tinted icon. Every capture in both reference sets draws it this way —
+     Claude's `New`, Kimi's selected chat — and the accent bar was the one
+     piece of coloured chrome left in the rail. */
+  .sd-app .nav-item[data-active="true"] { background: var(--panel-2); }
+  .sd-app .nav-item[data-active="true"]::before { content: none; }
+  .sd-app .nav-item[data-active="true"] svg { color: var(--ink-2); }
   .sd-app .new-pill { display: none; }
   .sd-app .nav-count { color: var(--ink-4); }
   .sd-app .thread.active { background: transparent; }
@@ -1248,16 +1254,10 @@
   }
 
 
-  /* In dark mode the app's existing primary is blue, so the one primary
-     action per surface carries it. Light mode keeps the ink button. */
-  .sd-app .new-thread { background: var(--accent); color: var(--accent-ink); }
-  .sd-app .new-thread:hover { background: color-mix(in srgb, var(--accent) 88%, white); }
-  .sd-app .new-thread .plus-box { background: color-mix(in srgb, var(--accent-ink) 12%, transparent); }
-  .sd-app .new-thread kbd { border-color: color-mix(in srgb, var(--accent-ink) 18%, transparent); background: color-mix(in srgb, var(--accent-ink) 10%, transparent); color: color-mix(in srgb, var(--accent-ink) 60%, transparent); }
-  .sd-app .send-button { background: var(--accent); color: var(--accent-ink); }
-  .sd-app .send-button:hover { background: color-mix(in srgb, var(--accent) 88%, white); }
-  .sd-app .solid-button, .sd-app .page-actions .solid-button, .sd-app .canvas-foot .solid-button { background: var(--accent); color: var(--accent-ink); }
-  .sd-app .solid-button:hover, .sd-app .page-actions .solid-button:hover, .sd-app .canvas-foot .solid-button:hover { background: color-mix(in srgb, var(--accent) 88%, white); }
+  /* The primary actions stay monochrome: the reference set has no coloured
+     chrome, and the "Minimal variant" pass above already sets these to ink.
+     A later block used to force them back to `--accent` in both themes,
+     contradicting its own comment about light mode. */
 
 
   /* Prototype affordances: the account menu and the New chart flow. */
@@ -2156,8 +2156,10 @@
   font-family: var(--mono);
   font-size: 0.5rem;
 }
-.sd-app .send-button.stop { background: var(--ember); color: #fff; }
-.sd-app .send-button.stop:hover { background: color-mix(in srgb, var(--ember) 86%, white); }
+/* The reference draws the generating control as a light circle with a dark
+   rounded square inside it, not a red button. */
+.sd-app .send-button.stop { background: var(--ink); color: var(--bg); }
+.sd-app .send-button.stop:hover { background: color-mix(in srgb, var(--ink) 88%, var(--bg)); }
 .sd-app .august-composer .tool-button { width: 28px; justify-content: center; padding: 0; }
 
 /* ── Transcript glue ────────────────────────────────────────────────────
@@ -2208,10 +2210,10 @@
    against a shrink-to-fit parent, so `hello` measured 48px wide and broke
    mid-word ("hel lo") while long messages topped out at 64% instead of 80%. */
 .sd-app .user-bubble {
-  padding: 9px 13px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
+  padding: 12px 16px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--panel-2);
   color: var(--ink-2);
   font-size: var(--font-chat);
   line-height: 1.6;

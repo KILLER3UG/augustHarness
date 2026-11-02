@@ -450,7 +450,6 @@ function SessionRowInner({
       document.body,
     );
 
-  const stamp = timeAgo(session.updatedAt || session.startedAt || '');
   const rowClass = cn('thread group', active && 'active');
 
   return (
@@ -505,7 +504,6 @@ function SessionRowInner({
             {needsHandoff}
           </span>
         ) : null}
-        <span className="thread-time">{stamp}</span>
       </Button>
 
       <Button variant="bare"

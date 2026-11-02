@@ -45,6 +45,7 @@ function MessageBubbleInner({
   models,
   onReanswerWithModel,
   onCompare,
+  onRate,
   onDismissError,
 }: {
   message: ChatMessage;
@@ -77,6 +78,8 @@ function MessageBubbleInner({
   onReanswerWithModel?: (model: ModelItem) => void;
   /** "Compare" — re-run this prompt on 2–3 models side by side. */
   onCompare?: () => void;
+  /** 👍 / 👎 for this reply, index already bound by the pane. */
+  onRate?: (value: 'up' | 'down') => void;
   /** Dismiss the provider-error bubble on this message (removes the block). */
   onDismissError?: () => void;
   /** Sub-agent prompt disclosures keyed by the parent toolUse id. Only
@@ -416,6 +419,7 @@ function MessageBubbleInner({
           }
           reanswerOpen={reanswerOpen}
           onCompare={onCompare}
+          onRate={onRate}
         />
       )}
       {/* REMOVED: the standalone age stamp that rendered below the actions row on

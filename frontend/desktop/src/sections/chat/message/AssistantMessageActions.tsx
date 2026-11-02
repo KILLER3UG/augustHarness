@@ -1,5 +1,6 @@
-import { Check, Copy, RefreshCw, Play, Pause, GitBranch, ArrowLeftRight, GitCompare } from 'lucide-react';
+import { Check, Copy, RefreshCw, Play, Pause, GitBranch, ArrowLeftRight, GitCompare, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { MessageTimestamp } from '@/components/chat/MessageTimestamp';
 
 /** Speak / copy / re-answer / regenerate / fork controls under an assistant message. */
@@ -16,6 +17,9 @@ export function AssistantMessageActions({
   onReanswer,
   reanswerOpen,
   onCompare,
+  rating,
+  onRate,
+  modelLabel,
   timestamp,
 }: {
   showActions: boolean;
@@ -33,6 +37,16 @@ export function AssistantMessageActions({
   reanswerOpen?: boolean;
   /** "Compare" — re-run the prompt on 2–3 models side by side (Arena lanes). */
   onCompare?: () => void;
+  /** The stored verdict on this reply, or null/undefined for "not rated". */
+  rating?: 'up' | 'down' | null;
+  /** Record (or clear, when it repeats) the verdict for this reply. The pair
+   *  is rendered only when a caller supplies this, so an unrated row never
+   *  advertises a door that goes nowhere. */
+  onRate?: (value: 'up' | 'down') => void;
+  /** The model that produced THIS turn. It used to sit in a head row above the
+   *  answer; the composer footer only ever names the model selected NOW, so a
+   *  scrolled-back turn has to carry its own. */
+  modelLabel?: string | null;
   /** Age stamp, rendered as the last item on this row. The reference's only
    *  time marker is the muted `5 minutes ago` after the buttons. */
   timestamp?: string | null;
@@ -126,10 +140,50 @@ export function AssistantMessageActions({
           <GitBranch className="size-3" />
         </button>
       )}
+      {/* The verdict pair. `aria-pressed` carries the state rather than a
+          colour, so the settled choice reads in the accessibility tree and in
+          the dim-until-hover row alike; pressing the same thumb again clears it. */}
+      {onRate && (
+        <>
+          <Button
+            variant="bare"
+            type="button"
+            onClick={() => onRate('up')}
+            disabled={streaming}
+            aria-pressed={rating === 'up'}
+            className={cn(
+              "p-1.5 rounded-md hover:bg-accent/50 transition-colors disabled:opacity-50",
+              rating === 'up' ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+            title={rating === 'up' ? "Good answer — tap to clear" : "Good answer"}
+            aria-label={rating === 'up' ? "Clear good-answer rating" : "Mark as good answer"}
+          >
+            <ThumbsUp className="size-3" />
+          </Button>
+          <Button
+            variant="bare"
+            type="button"
+            onClick={() => onRate('down')}
+            disabled={streaming}
+            aria-pressed={rating === 'down'}
+            className={cn(
+              "p-1.5 rounded-md hover:bg-accent/50 transition-colors disabled:opacity-50",
+              rating === 'down' ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+            )}
+            title={rating === 'down' ? "Bad answer — tap to clear" : "Bad answer"}
+            aria-label={rating === 'down' ? "Clear bad-answer rating" : "Mark as bad answer"}
+          >
+            <ThumbsDown className="size-3" />
+          </Button>
+        </>
+      )}
       {/* The age stamp, as the LAST item on the same row — matching the
           reference, where the only time marker on a message is the muted
           `5 minutes ago` that follows the action buttons. It used to render as
           a sibling row 26px below them. */}
+      {modelLabel ? (
+        <span className="ml-1 pl-1 text-2xs text-muted-foreground/55">{modelLabel}</span>
+      ) : null}
       {timestamp ? (
         <span className="ml-1 pl-1">
           <MessageTimestamp timestamp={timestamp} />

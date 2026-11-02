@@ -14,7 +14,6 @@ import {
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@/api/client';
-import { folderNameFromPath } from '@/api/folder';
 import { toast } from 'sonner';
 import { UploadCloud } from 'lucide-react';
 import { ConfirmDialog } from '@/components/overlays/ConfirmDialog';
@@ -120,7 +119,6 @@ import {
   formatContextWindow,
   estimateContextWindow,
 } from './model-display';
-import { chipModelLabel } from './composer/ModelEffortMenu';
 import {
   loadMessagesForSession as loadMessagesForSessionBase,
   loadComposerDraft,
@@ -729,6 +727,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
     revertingIndex,
     handleRevert,
     handleEdit,
+    handleRate,
     handleRegenerate,
     handleContinue,
     handleClarifyAnswer,
@@ -1439,7 +1438,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
   );
 
   const approvalBanner = (
-    <div className="mx-auto w-full max-w-3xl px-4">
+    <div className="mx-auto w-full max-w-4xl px-4">
       <ApprovalBanner
         sessionId={workbenchSessionId}
         onContinued={(sinceSeq) => {
@@ -1450,38 +1449,13 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
   );
 
 
-  const workspaceName = activeSession?.workspacePath
-    ? folderNameFromPath(activeSession.workspacePath)
-    : null;
-  const threadIntro = activeSession ? (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-6 pt-10" data-testid="thread-intro">
-      <div className="flex items-center gap-3 font-mono text-[0.58rem] uppercase tracking-[0.16em] text-muted-foreground/40">
-        <span>Thread{workspaceName ? ` · ${workspaceName}` : ''}</span>
-        <span className="h-px flex-1 bg-border/50" />
-      </div>
-      <div className="mt-3 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="font-editorial text-[clamp(1.8rem,2.6vw,2.5rem)] font-medium leading-[1.06] tracking-[-0.04em] text-foreground">
-            {activeSession.title || 'New chat'}
-          </h1>
-          <p className="mt-2 text-[0.8125rem] leading-relaxed text-muted-foreground/60">
-            {messages.length} {messages.length === 1 ? 'message' : 'messages'} ·{' '}
-            {workspaceName || 'No workspace'}
-          </p>
-        </div>
-        <span className="mt-1 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/50 px-2.5 py-1 font-mono text-[0.6rem] tracking-[0.02em] text-muted-foreground/55">
-          <span className="size-1.5 rounded-full bg-primary" />
-          {/* The same label the composer chip prints ("KiloCode · Beam (Free)").
-              `selectedModel.name` is a raw alias on installs whose model rows
-              carry no label, which the intro then shouted as
-              "REFLECTION/BEAM-FREE" — an identifier where a name belongs. */}
-          {chipModelLabel(selectedModel ?? null)}
-        </span>
-      </div>
-    </div>
-  ) : null;
+  // Neither reference puts a thread title, an eyebrow rule, a message count or
+  // a model badge inside the transcript: the title already lives in the top bar
+  // and the model in the composer footer, so the column starts at the first
+  // message. The per-turn model stays recoverable from the turn's own record.
+  const threadIntro = null;
   const composerSlot = (
-    <div className="august-composer-slot mx-auto w-full max-w-3xl px-4">{composer}</div>
+    <div className="august-composer-slot mx-auto w-full max-w-4xl px-4">{composer}</div>
   );
 
   /** Plan > approval > composer — only one occupies the input slot. */
@@ -1616,7 +1590,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
           <AnimatePresence initial={false}>
             {messages.length === 0 && historyStatus === 'loading' ? (
               <div
-                className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-[var(--shell-inset-x)] py-10"
+                className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-[var(--shell-inset-x)] py-10"
                 role="status"
                 aria-label="Loading conversation"
               >
@@ -1674,6 +1648,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
                 onRevert={handleRevert}
                 onEdit={handleEdit}
                 onRegenerate={handleRegenerate}
+                onRate={handleRate}
                 onContinue={() => { void handleContinue(); }}
                 onEditPrompt={handleEditPromptFrom}
                 editPromptSignal={editPromptSignal}

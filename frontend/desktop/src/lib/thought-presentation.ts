@@ -6,8 +6,8 @@
  *   • ThinkingDisclosure   — plain variant, used inside subagent panels
  *
  * Both use the same clamp window and the same collapsed-title rule
- * (Hermes/DeepSeek parity: a settled thought reads as "Thought for a
- * while" + activity rollup; a running one carries the elapsed clock).
+ * (a settled thought reads as "Thinking complete" + duration + activity
+ * rollup; a running one carries the elapsed clock).
  * The chrome differs by context and is deliberately not merged — the
  * streaming auto-open/collapse behavior of the subagent variant is load
  * bearing there and unrelated to the rail's pack-level collapse
@@ -24,7 +24,7 @@ export const THOUGHT_CLAMP_CHARS = 480;
 
 /** Distilled summary lines a settled thought shows before expansion. The
  *  reference thinking card carries a SHORT summary — a couple of "what the
- *  model is doing" sentences under its "Thought for Xs" title — never the
+ *  model is doing" sentences under its settled title — never the
  *  raw chain of thought. */
 export const THOUGHT_SUMMARY_LINES = 12;
 
@@ -46,8 +46,9 @@ export function formatThoughtDuration(ms: number): string {
  * The collapsed title for a thought row.
  * - running: no suffix beyond the elapsed clock (the caller passes the
  *   live elapsed ms; omit it for the bare title)
- * - settled: "Thought for a while", or the measured duration when the
- *   caller has one.
+ * - settled: "Thinking complete", with the measured duration kept after it
+ *   when the caller has one. Kimi's wording for the settled state, Claude's
+ *   title-plus-duration header.
  */
 export function thoughtCollapsedTitle(opts: {
   generating?: boolean;
@@ -56,13 +57,13 @@ export function thoughtCollapsedTitle(opts: {
   omitDurationLabel?: boolean;
 }): string {
   const { generating, elapsedMs, durationMs, omitDurationLabel } = opts;
-  if (omitDurationLabel) return 'Thought for a while';
+  if (omitDurationLabel) return 'Thinking complete';
   if (generating) {
     return elapsedMs && elapsedMs >= 1000
-      ? `Thought for ${formatThoughtDuration(elapsedMs)}`
+      ? `Thinking · ${formatThoughtDuration(elapsedMs)}`
       : 'Thinking';
   }
   return durationMs && durationMs >= 1000
-    ? `Thought for ${formatThoughtDuration(durationMs)}`
-    : 'Thought for a while';
+    ? `Thinking complete · ${formatThoughtDuration(durationMs)}`
+    : 'Thinking complete';
 }

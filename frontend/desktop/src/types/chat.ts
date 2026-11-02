@@ -311,6 +311,11 @@ export interface ChatMessage {
    *  That is the honest behaviour for now — a chip restored from storage
    *  would be asserting something the server never stored. */
   provenance?: WorkbenchTurnProvenance;
+  /** The user's verdict on this reply. It rides the message's structured
+   *  payload (`rating` is a key in the backend's STRUCTURED_FIELDS) rather
+   *  than a column: the save path deletes and re-inserts the whole transcript
+   *  on every debounced save, so a column would not survive it. */
+  rating?: 'up' | 'down' | null;
   /** Transient "retrying after rate limit" notice while the backend backs
    *  off (from `retrying` SSE events). Cleared when the turn finalizes. */
   retryNotice?: string;

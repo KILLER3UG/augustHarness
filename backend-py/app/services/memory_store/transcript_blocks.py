@@ -81,6 +81,13 @@ STRUCTURED_FIELDS: tuple[str, ...] = (
     # three skills looks identical to one that injected none. The lists are
     # omitted entirely when empty, so this costs nothing on the common turn.
     'provenance',
+    # The human verdict on a reply ('up' / 'down'). It rides blocks_json on
+    # purpose: the save path deletes and re-inserts the whole transcript on
+    # every debounced save (memory_store/sessions.py) and carries only
+    # clientMessageId and blocksJson across, so a `rating` COLUMN would be
+    # wiped by the next save. Inside the structured payload it survives the
+    # same rewrite every other UI-shaped field does.
+    'rating',
 )
 
 # snake_case spellings the workbench transcript actually uses, mapped onto the

@@ -88,7 +88,7 @@ export function VirtualizedMessageList({
     return (
       <>
         {header ? <div ref={headerRef}>{header}</div> : null}
-        <div ref={listRef} className="august-message-list mx-auto w-full max-w-3xl px-4 py-8 space-y-5 relative">
+        <div ref={listRef} className="august-message-list mx-auto w-full max-w-4xl px-6 py-8 space-y-9 relative">
           {messages.map((m, i) => (
             <div key={m.id}>{renderMessage(m, i)}</div>
           ))}
@@ -101,7 +101,7 @@ export function VirtualizedMessageList({
   return (
     <>
     {header ? <div ref={headerRef}>{header}</div> : null}
-    <div ref={listRef} className="august-message-list mx-auto w-full max-w-3xl px-4 py-8 relative" style={{ height: `${virt.getTotalSize() + 80}px` }}>
+    <div ref={listRef} className="august-message-list mx-auto w-full max-w-4xl px-6 py-8 relative" style={{ height: `${virt.getTotalSize() + 80}px` }}>
       {virt.getVirtualItems().map((row) => {
         const m = messages[row.index];
         return (

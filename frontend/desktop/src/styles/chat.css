@@ -843,8 +843,7 @@ details[open] > summary .disclosure-chevron {
 .bubble-footer-text {
   font-size: 0.6875rem;
   line-height: 1.2;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0;
   font-weight: 500;
 }
 
@@ -859,8 +858,7 @@ details[open] > summary .disclosure-chevron {
 .tool-row-meta {
   font-size: 0.6875rem;
   line-height: 1.4;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0;
   font-weight: 500;
 }
 
@@ -874,6 +872,9 @@ details[open] > summary .disclosure-chevron {
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .activity-summary[data-expanded="true"] {
+  /* The ONE container is `.activity-card-box` inside the body — it already
+     carries the hairline edge, the fill and the row dividers. Giving the
+     wrapper an edge too stacked a second box around it. */
   background: transparent;
   border-color: transparent;
   box-shadow: none;
@@ -883,9 +884,9 @@ details[open] > summary .disclosure-chevron {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 28px;
+  min-height: 36px;
   padding: 4px 4px;
-  font-size: 0.8125rem;
+  font-size: 0.9375rem;
   color: var(--dt-muted-foreground);
   cursor: pointer;
   user-select: none;
@@ -1204,17 +1205,33 @@ details[open] > summary .disclosure-chevron {
 .process-tool-label--live {
   color: color-mix(in srgb, var(--dt-foreground) 78%, transparent);
 }
+/* `.process-step` is a flex row, so its single child sized to its content
+   (155px in a 696px step) and the row's hover/click target stopped short of
+   the container edge. Let the child claim the line; the toggle's own
+   `width: 100%` then resolves against the full step. */
+.activity-card-box .process-step > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .activity-card-box .process-tool-toggle {
-  padding: 10px 14px;
-  min-height: 34px;
+  /* Full width: the reference draws each step as a row that spans the whole
+     container, so the hairline dividers and the hover target reach the edge.
+     Left at its default the button shrank to its label (~155px in a 698px
+     card), which made every divider read as a short stub. */
+  width: 100%;
+  justify-content: flex-start;
+  padding: 12px 18px;
+  min-height: 44px;
   border-radius: 0;
 }
 .activity-card-box .process-tool-toggle--command {
-  padding: 10px 14px;
+  padding: 12px 18px;
 }
 .activity-card-box .edit-rail-trigger {
-  padding: 10px 14px;
-  min-height: 34px;
+  width: 100%;
+  justify-content: flex-start;
+  padding: 12px 18px;
+  min-height: 44px;
 }
 .process-tool-chevron {
   width: 12px;

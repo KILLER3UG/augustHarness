@@ -40,6 +40,7 @@ export function ChatThreadMessagePane({
   onRevert,
   onEdit,
   onRegenerate,
+  onRate,
   onContinue,
   onEditPrompt,
   editPromptSignal,
@@ -78,6 +79,11 @@ export function ChatThreadMessagePane({
   onRevert: (index: number) => void;
   onEdit: (index: number, text: string) => void;
   onRegenerate: (index: number) => void | Promise<void>;
+  /** 👍 / 👎 on the reply at this index — the pane binds the index, the row
+   *  supplies the verdict. Optional: the design-preview route renders this
+   *  pane over a fixture thread with no store to write to, and a row there
+   *  must not offer a verdict that goes nowhere. */
+  onRate?: (index: number, value: 'up' | 'down') => void;
   /** Turn-end "Continue" — resume the stopped turn, keeping partial work. */
   onContinue: () => void | Promise<void>;
   /** Turn-end "Edit prompt" — open the originating user row's editor.
@@ -285,6 +291,7 @@ export function ChatThreadMessagePane({
                   onRegenerate={() => {
                     void onRegenerate(realIndex);
                   }}
+                  onRate={onRate ? (value) => onRate(realIndex, value) : undefined}
                   onContinue={() => {
                     void onContinue();
                   }}

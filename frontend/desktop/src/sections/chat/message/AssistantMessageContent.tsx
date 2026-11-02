@@ -20,7 +20,6 @@ import { Button } from '@/components/ui/button';
 import { AssistantMessageActions } from './AssistantMessageActions';
 import { TurnEndActionRow } from './TurnEndActionRow';
 import { turnEndActions, turnEndPhrase, turnEndRemedy } from '@/lib/turn-end';
-import { MessageTimestamp } from '@/components/chat/MessageTimestamp';
 
 type DisplayBlock = MessageBlock;
 
@@ -49,6 +48,7 @@ export function AssistantMessageContent({
   onReanswer,
   reanswerOpen,
   onCompare,
+  onRate,
   onDismissError,
   onContinue,
   onEditPrompt,
@@ -88,6 +88,8 @@ export function AssistantMessageContent({
   reanswerOpen?: boolean;
   /** "Compare" — re-run this prompt on 2–3 models side by side. */
   onCompare?: () => void;
+  /** 👍 / 👎 for this reply; the pair renders only when this is supplied. */
+  onRate?: (value: 'up' | 'down') => void;
   /** Dismiss the provider-error bubble (removes the error block). */
   onDismissError?: () => void;
   /** Turn-end "Continue" — resume a stopped turn from where it broke. */
@@ -100,14 +102,11 @@ export function AssistantMessageContent({
   return (
     <>
       <div className="flex min-w-0 flex-col w-full gap-2">
-        {/* The mockup's assistant head: who answered, on what, and when. The
-            app carried this only in the composer footer, so a scrolled-back
-            turn could not say which model produced it. */}
-        <div className="assistant-head">
-          <span className="agent-name">August</span>
-          {modelLabel ? <span className="agent-model">{modelLabel}</span> : null}
-          <MessageTimestamp timestamp={message.timestamp} className="assistant-time" />
-        </div>
+        {/* No head row: with the name gone it was a lone pill and a lone
+            timestamp floating 60px above the answer, which read as a broken
+            layout rather than a quiet one. The model and the age now travel
+            with the action row at the bottom of the turn, where the reference
+            puts its only per-message metadata. */}
         {message.queued && !streaming ? (
           // Backend accepted the message into the queue — a structural
           // notice, not model prose (the QueuePills row above the composer
@@ -353,6 +352,9 @@ export function AssistantMessageContent({
         onReanswer={onReanswer}
         reanswerOpen={reanswerOpen}
         onCompare={onCompare}
+        onRate={onRate}
+        rating={message.rating}
+        modelLabel={modelLabel}
         timestamp={!streaming ? message.timestamp : null}
       />
     </>
