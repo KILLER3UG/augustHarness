@@ -10,6 +10,7 @@ export * from './api-client/preview';
 export * from './api-client/terminal';
 export * from './api-client/models';
 export * from './api-client/local-models';
+export * from './api-client/comfyui';
 export * from './api-client/live';
 export * from './api-client/manage';
 export * from './api-client/audit';

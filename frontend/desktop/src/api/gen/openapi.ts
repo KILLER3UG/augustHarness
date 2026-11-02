@@ -1701,6 +1701,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/comfyui/checkpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Checkpoints */
+        get: operations["checkpoints_api_comfyui_checkpoints_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/comfyui/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Config */
+        get: operations["get_config_api_comfyui_config_get"];
+        /** Put Config */
+        put: operations["put_config_api_comfyui_config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/comfyui/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate
+         * @description Manual generation for the panel; the chat tool calls the service
+         *     directly through the same code path.
+         */
+        post: operations["generate_api_comfyui_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/comfyui/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health
+         * @description Connection test for the panel's Test button.
+         */
+        get: operations["health_api_comfyui_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/activeProvider": {
         parameters: {
             query?: never;
@@ -8487,6 +8563,53 @@ export interface components {
              */
             strategy: string;
         };
+        /** ComfyConfigPatch */
+        ComfyConfigPatch: {
+            /** Baseurl */
+            baseUrl?: string | null;
+            /** Defaultcheckpoint */
+            defaultCheckpoint?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Workflowjson */
+            workflowJson?: string | null;
+        };
+        /** ComfyGenerateBody */
+        ComfyGenerateBody: {
+            /**
+             * Cfg
+             * @default 7
+             */
+            cfg: number;
+            /** Checkpoint */
+            checkpoint?: string | null;
+            /**
+             * Height
+             * @default 1024
+             */
+            height: number;
+            /**
+             * Negativeprompt
+             * @default
+             */
+            negativePrompt: string;
+            /** Path */
+            path?: string | null;
+            /** Prompt */
+            prompt: string;
+            /** Seed */
+            seed?: number | null;
+            /**
+             * Steps
+             * @default 25
+             */
+            steps: number;
+            /**
+             * Width
+             * @default 1024
+             */
+            width: number;
+        };
         /**
          * CommandBody
          * @description One-shot command body.
@@ -12926,6 +13049,132 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    checkpoints_api_comfyui_checkpoints_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_config_api_comfyui_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    put_config_api_comfyui_config_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComfyConfigPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_api_comfyui_generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ComfyGenerateBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    health_api_comfyui_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

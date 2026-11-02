@@ -38,6 +38,7 @@ import {
   GitBranch,
   Globe,
   HardDrive,
+  Image,
   Kanban,
   Lightbulb,
   LineChart,
@@ -247,6 +248,22 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     ],
     keywords: ['local models', 'local server', 'ollama', 'lm studio', 'llama.cpp', 'gguf', 'hugging face'],
     legacyAliases: ['local-models'],
+  },
+  {
+    id: 'comfyui',
+    label: 'ComfyUI',
+    description: 'Image generation through your own ComfyUI — connection, checkpoints, custom workflows, and the generate_image tool.',
+    icon: Image,
+    category: 'capabilities',
+    tier: 'hidden',
+    settingHints: [
+      'ComfyUI URL',
+      'Image generation',
+      'Custom workflow',
+      'Checkpoint',
+    ],
+    keywords: ['comfyui', 'image generation', 'txt2img', 'stable diffusion', 'sdxl'],
+    legacyAliases: ['comfy-ui'],
   },
   {
     id: 'browser-use',
@@ -889,6 +906,7 @@ const RAIL_PARENT: Readonly<Record<string, string>> = {
   'backend-monitor': 'observability',
   'health-simulator': 'system-health',
   'model-local': 'model-providers',
+  comfyui: 'model-providers',
 };
 
 

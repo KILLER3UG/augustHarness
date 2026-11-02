@@ -339,6 +339,10 @@ const ModelLocalWrapper = lazySection(
   () => import('@/sections/workspace/models/LocalModelsTab'),
   'LocalModelsTab',
 );
+const ComfyUIWrapper = lazySection(
+  () => import('./ComfyUISection'),
+  'ComfyUISection',
+);
 const ModelCatalogWrapper = lazySection(
   () => import('@/sections/workspace/models/AllModelsTab'),
   'AllModelsTab',
@@ -392,6 +396,7 @@ export const SECTION_COMPONENTS: Record<string, React.ComponentType<SectionProps
   'conversation-inspector': InspectorWrapper,
   'model-providers': ModelProvidersWrapper,
   'model-local': ModelLocalWrapper,
+  comfyui: ComfyUIWrapper,
   'model-catalog': ModelCatalogWrapper,
   'model-aliases': ModelAliasesWrapper,
   'model-fallback': ModelFallbackWrapper,
