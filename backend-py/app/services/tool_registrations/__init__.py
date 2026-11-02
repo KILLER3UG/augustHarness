@@ -22,6 +22,7 @@ def register_all() -> None:
         file_tools,
         goal_tools,
         harness_tools,
+        image_tools,
         media_tools,
         module_tools,
         office_tools,
@@ -47,6 +48,9 @@ def register_all() -> None:
     # Media analysis — the sanctioned reader for images/video/audio/docs
     # (read_file's media guard redirects here).
     media_tools.register()
+    # ComfyUI image generation — registers generate_image only when a
+    # ComfyUI connection is enabled (see image_tools module docstring).
+    image_tools.register()
     # module_context: bounded per-file/directory reading package, so the model
     # can pick a file to read without paying for its body in context.
     module_tools.register()

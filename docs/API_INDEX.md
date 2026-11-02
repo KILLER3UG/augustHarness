@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-440 routes across 366 paths,
+445 routes across 370 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -501,7 +501,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (48)
+## Other (53)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -515,6 +515,11 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/aug/init` | Analyze the workspace and generate (or refine) an AUG.md draft. |
 | `GET` | `/api/code-review/rubric` | The severity rubric + conventions directive (transparency). |
 | `POST` | `/api/code-review/run` | Run one advisory review pass over the changeset diff. |
+| `GET` | `/api/comfyui/checkpoints` | Checkpoints |
+| `GET` | `/api/comfyui/config` | Get Config |
+| `PUT` | `/api/comfyui/config` | Put Config |
+| `POST` | `/api/comfyui/generate` | Manual generation for the panel; the chat tool calls the service directly through the same code path. |
+| `GET` | `/api/comfyui/health` | Connection test for the panel's Test button. |
 | `GET` | `/api/conversations` | Return conversations grouped by clientType (Node contract). |
 | `GET` | `/api/detail/{request_id}` | Return detailed info for a specific request, or 404. |
 | `GET` | `/api/details` | Return request detail entries as a bare array (Node contract). |
@@ -559,4 +564,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (440 operations).
+Generated from `docs/api/openapi.json` (445 operations).

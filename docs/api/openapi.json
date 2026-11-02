@@ -891,6 +891,127 @@
         "title": "CheckoutBody",
         "type": "object"
       },
+      "ComfyConfigPatch": {
+        "properties": {
+          "baseUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseurl"
+          },
+          "defaultCheckpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Defaultcheckpoint"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "workflowJson": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflowjson"
+          }
+        },
+        "title": "ComfyConfigPatch",
+        "type": "object"
+      },
+      "ComfyGenerateBody": {
+        "properties": {
+          "cfg": {
+            "default": 7.0,
+            "title": "Cfg",
+            "type": "number"
+          },
+          "checkpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint"
+          },
+          "height": {
+            "default": 1024,
+            "title": "Height",
+            "type": "integer"
+          },
+          "negativePrompt": {
+            "default": "",
+            "title": "Negativeprompt",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "steps": {
+            "default": 25,
+            "title": "Steps",
+            "type": "integer"
+          },
+          "width": {
+            "default": 1024,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "ComfyGenerateBody",
+        "type": "object"
+      },
       "CommandBody": {
         "description": "One-shot command body.",
         "properties": {
@@ -7871,6 +7992,126 @@
           }
         },
         "summary": "Run Review"
+      }
+    },
+    "/api/comfyui/checkpoints": {
+      "get": {
+        "operationId": "checkpoints_api_comfyui_checkpoints_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Checkpoints"
+      }
+    },
+    "/api/comfyui/config": {
+      "get": {
+        "operationId": "get_config_api_comfyui_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Config"
+      },
+      "put": {
+        "operationId": "put_config_api_comfyui_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComfyConfigPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Config"
+      }
+    },
+    "/api/comfyui/generate": {
+      "post": {
+        "description": "Manual generation for the panel; the chat tool calls the service\ndirectly through the same code path.",
+        "operationId": "generate_api_comfyui_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComfyGenerateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate"
+      }
+    },
+    "/api/comfyui/health": {
+      "get": {
+        "description": "Connection test for the panel's Test button.",
+        "operationId": "health_api_comfyui_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
       }
     },
     "/api/config/activeProvider": {
