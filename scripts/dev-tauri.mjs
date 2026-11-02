@@ -101,7 +101,39 @@ function waitForPort(port, timeoutMs = 30_000) {
     });
 }
 
+/** True when something already accepts connections on the port. */
+async function isPortOpen(port) {
+    const probe = (host) => new Promise((done) => {
+        const socket = net.createConnection({ port, host });
+        let settled = false;
+        const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            done(ok);
+        };
+        socket.setTimeout(300, () => finish(false));
+        socket.on('connect', () => finish(true));
+        socket.on('error', () => finish(false));
+    });
+    return (await probe('127.0.0.1')) || (await probe('::1'));
+}
+
 // ── 1. Start Vite dev server ──────────────────────────────────────────────
+// `dev:desktop` starts Vite and the shell, and NOTHING else — unlike `npm run
+// dev` (scripts/dev-app.mjs), which does spawn the backend. The Tauri shell is
+// the one that launches backend-py, so it must be able to resolve the payload
+// itself. Probing 5173 before spawning also catches the case where a Vite from
+// another session already owns the port: waitForPort below proves the port
+// answers, not that this script is the one answering it, and the shell would
+// then silently load someone else's dev server.
+if (await isPortOpen(VITE_PORT)) {
+    console.warn(
+        `[dev] :${VITE_PORT} is already serving — this run's Vite will land on ` +
+        `another port, but tauri loads the devUrl in tauri.conf.json (:${VITE_PORT}). ` +
+        `Close the other dev server first or the shell will load it instead.`,
+    );
+}
 
 console.log('[dev] starting Vite dev server…');
 
@@ -159,7 +191,7 @@ tauriChild.on('exit', (code, signal) => {
     if (!exiting) shutdown(code ?? 1);
 });
 
-console.log('[dev] backend:  http://127.0.0.1:8085');
+console.log('[dev] backend:  http://127.0.0.1:8085 — spawned by the shell, not by this script');
 console.log(`[dev] frontend: http://localhost:${VITE_PORT}`);
 console.log('[dev] tauri:    native shell (loading from Vite)');
 console.log('[dev] press Ctrl+C to stop all');

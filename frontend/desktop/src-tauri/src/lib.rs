@@ -15,12 +15,57 @@
 mod backend;
 mod tray;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
+
+/// Set by `confirm_quit` when the webview answered a `quit-requested` event.
+/// The window-close path clears it and then watches for an answer; if the
+/// webview never replies — because it is stuck behind the backend bootstrap
+/// gate, whose full-screen overlay covers the confirm modal — the shell quits
+/// on its own instead of leaving an uncloseable window and an orphaned backend
+/// holding :8085.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// Set by the webview when it has actually SHOWN the quit confirm modal. The
+/// close watchdog force-quits only when this never arrives — i.e. the UI is
+/// stuck behind the bootstrap gate and cannot answer. Without it, a Cancelled
+/// quit would be force-quit two seconds later, because the modal closing is
+/// indistinguishable from the modal never appearing.
+static QUIT_MODAL_ACKED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn quit_modal_acked() {
+    QUIT_MODAL_ACKED.store(true, Ordering::SeqCst);
+}
+
+/// Ask the webview to confirm a quit, and force the exit if it cannot answer.
+///
+/// Both window-close and tray Quit route through the confirm modal, which lives
+/// in the webview. When the backend bootstrap gate covers the screen that modal
+/// can never appear, and a `prevent_close()` with no fallback leaves an
+/// uncloseable app — whose orphaned backend then holds :8085 and makes the next
+/// launch fail the same way. The modal acknowledges the moment it shows, so a
+/// quit the user actually cancelled is never overridden; only a silent webview
+/// is. The forced exit runs the normal path, whose `RunEvent::Exit` handler
+/// reaps the backend child tree.
+pub(crate) fn request_quit_with_watchdog(app: &AppHandle) {
+    QUIT_CONFIRMED.store(false, Ordering::SeqCst);
+    QUIT_MODAL_ACKED.store(false, Ordering::SeqCst);
+    let _ = app.emit("quit-requested", ());
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        if !QUIT_CONFIRMED.load(Ordering::SeqCst) && !QUIT_MODAL_ACKED.load(Ordering::SeqCst) {
+            handle.exit(0);
+        }
+    });
+}
 
 /// Confirmed quit from the webview modal (tray Quit → quit-requested → UI).
 /// Stops the local backend first so the next launch starts a fresh process.
 #[tauri::command]
 fn confirm_quit(app: AppHandle) {
+    QUIT_CONFIRMED.store(true, Ordering::SeqCst);
     backend::stopBackendOnQuit(&app);
     app.exit(0);
 }
@@ -117,7 +162,7 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.show();
                 let _ = window.set_focus();
-                let _ = window.app_handle().emit("quit-requested", ());
+                request_quit_with_watchdog(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -142,6 +187,7 @@ pub fn run() {
             backend::local_api_token,
             backend::set_lan_access,
             confirm_quit,
+            quit_modal_acked,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

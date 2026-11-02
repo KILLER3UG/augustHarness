@@ -26,6 +26,10 @@ export function QuitConfirmModal() {
     let unlisten: (() => void) | undefined;
     void listen('quit-requested', () => {
       setOpen(true);
+      // Acknowledge that the modal is actually on screen. The shell's close
+      // watchdog force-quits only when this never arrives — the case where the
+      // backend bootstrap gate covers the webview and no answer is possible.
+      void invoke('quit_modal_acked').catch(() => {});
     }).then((fn) => {
       unlisten = fn;
     });

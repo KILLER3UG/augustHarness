@@ -3,7 +3,7 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager,
+    AppHandle, Manager,
 };
 
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
@@ -29,12 +29,15 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             }
             "quit" => {
                 // Show the window so the webview confirm modal is visible,
-                // then ask the UI to confirm before exiting.
+                // then ask the UI to confirm before exiting. Routed through the
+                // same watchdog as window-close: if the bootstrap gate is
+                // covering the webview the modal can never appear, and a bare
+                // emit would leave the tray Quit doing nothing at all.
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.set_focus();
                 }
-                let _ = app.emit("quit-requested", ());
+                crate::request_quit_with_watchdog(app);
             }
             _ => {}
         })

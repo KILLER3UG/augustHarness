@@ -218,6 +218,28 @@ fn resolveResource(app: &AppHandle, rel: &str) -> Option<PathBuf> {
             return Some(bare);
         }
     }
+    // Dev builds never run the bundler, so `resource_dir()` is
+    // `src-tauri/target/debug` and the staged payload under `src-tauri/resources`
+    // is unreachable by every candidate above. The manifest dir is a compile-time
+    // absolute path to `src-tauri/`. Try the WORKING TREE first
+    // (`../../backend-py/…`) and only then the staged copy: `resources/` is
+    // refreshed by prepare-desktop-backend.mjs at build time, so in dev it can be
+    // weeks behind the source the UI is being tested against — and a shell that
+    // quietly spawns that stale copy reports success while running old code.
+    // Without this block the shell falls through to the Node sidecar and reports
+    // `[backend] could not resolve backend/index.js`, naming the last thing it
+    // tried rather than the thing it was looking for.
+    if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
+        let root = std::path::Path::new(manifest);
+        for base in &[root.join("../../.."), root.to_path_buf()] {
+            for c in &candidates {
+                let p = base.join(c);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
     None
 }
 
