@@ -721,7 +721,11 @@ async def handleMessages(
         return ({'error': f'No client for provider: {as_str(provider.get("name"), "")}'}, None)
     apiKey = client.resolveApiKey()
     if not apiKey:
-        return ({'error': 'API key not configured for provider'}, None)
+        from app.providers.api_format import is_loopback_base_url
+
+        if not is_loopback_base_url(client.resolveBaseUrl()):
+            return ({'error': 'API key not configured for provider'}, None)
+        apiKey = ''
     headers = client.buildAuthHeaders(apiKey)
     from app.providers.api_format import provider_endpoint_url
 

@@ -458,7 +458,11 @@ async def handleChatCompletions(
         return await _handleOpenaiBodyToAnthropicUpstream(client, model, raw_body)
     apiKey = client.resolveApiKey()
     if not apiKey:
-        return ({'error': 'API key not configured for provider'}, None)
+        from app.providers.api_format import is_loopback_base_url
+
+        if not is_loopback_base_url(client.resolveBaseUrl()):
+            return ({'error': 'API key not configured for provider'}, None)
+        apiKey = ''
     headers = client.buildAuthHeaders(apiKey)
     baseUrl = client.resolveBaseUrl()
     upstreamUrl = toOpenaiCompatibleTargetUrl(baseUrl)
@@ -1064,7 +1068,11 @@ async def _handleOpenaiBodyToAnthropicUpstream(
         )
     apiKey = client.resolveApiKey()
     if not apiKey:
-        return ({'error': 'API key not configured for provider'}, None)
+        from app.providers.api_format import is_loopback_base_url
+
+        if not is_loopback_base_url(client.resolveBaseUrl()):
+            return ({'error': 'API key not configured for provider'}, None)
+        apiKey = ''
     body = _openaiToAnthropicBody(raw_body)
     if as_bool(raw_body.get('stream'), False):
         return (_streamAnthropicAsOpenai(client, model, body, apiKey), write_openai_sse_headers())

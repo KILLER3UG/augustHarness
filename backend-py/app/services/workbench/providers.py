@@ -583,7 +583,13 @@ async def call_anthropic_workbench(
         return {'error': f'No client for {provider.get("name")}'}
     apiKey = client.resolveApiKey()
     if not apiKey:
-        return {'error': 'API key not configured'}
+        # A keyless loopback host (Ollama, LM Studio, a served GGUF) needs no
+        # credential — the same rule that admits it everywhere else.
+        from app.providers.api_format import is_loopback_base_url
+
+        if not is_loopback_base_url(client.resolveBaseUrl()):
+            return {'error': 'API key not configured'}
+        apiKey = ''
     from app.adapters.anthropic import translateMessagesToAnthropic
     from app.services.workbench.message_pairing import repair_tool_pairing
 
@@ -795,7 +801,13 @@ async def call_openai_workbench(
         return {'error': f'No client for {provider.get("name")}'}
     apiKey = client.resolveApiKey()
     if not apiKey:
-        return {'error': 'API key not configured'}
+        # A keyless loopback host (Ollama, LM Studio, a served GGUF) needs no
+        # credential — the same rule that admits it everywhere else.
+        from app.providers.api_format import is_loopback_base_url
+
+        if not is_loopback_base_url(client.resolveBaseUrl()):
+            return {'error': 'API key not configured'}
+        apiKey = ''
     from app.adapters.anthropic import translateMessages
     from app.services.workbench.message_pairing import repair_tool_pairing
 
@@ -1166,7 +1178,13 @@ async def call_responses_workbench(
         return {'error': f'No client for {provider.get("name")}'}
     apiKey = client.resolveApiKey()
     if not apiKey:
-        return {'error': 'API key not configured'}
+        # A keyless loopback host (Ollama, LM Studio, a served GGUF) needs no
+        # credential — the same rule that admits it everywhere else.
+        from app.providers.api_format import is_loopback_base_url
+
+        if not is_loopback_base_url(client.resolveBaseUrl()):
+            return {'error': 'API key not configured'}
+        apiKey = ''
 
     # Normalize the internal history to OpenAI chat shape first (the
     # translator consumes role/content/tool_calls — translateMessages handles
