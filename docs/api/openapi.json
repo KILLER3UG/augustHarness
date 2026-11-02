@@ -278,6 +278,30 @@
         "title": "AddBody",
         "type": "object"
       },
+      "AddLocalServer": {
+        "description": "One detected server, offered back for the add.",
+        "properties": {
+          "apiFormat": {
+            "default": "openaiChat",
+            "title": "Apiformat",
+            "type": "string"
+          },
+          "baseUrl": {
+            "title": "Baseurl",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "baseUrl"
+        ],
+        "title": "AddLocalServer",
+        "type": "object"
+      },
       "AgentCreate": {
         "properties": {
           "cloneFrom": {
@@ -2795,6 +2819,21 @@
           }
         },
         "title": "SaveRoutineBody",
+        "type": "object"
+      },
+      "ScanBody": {
+        "description": "Optional extra ports to probe (the well-known list is always probed).",
+        "properties": {
+          "ports": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ports",
+            "type": "array"
+          }
+        },
+        "title": "ScanBody",
         "type": "object"
       },
       "SecurityBody": {
@@ -7743,7 +7782,7 @@
     },
     "/api/config/activeProvider": {
       "get": {
-        "description": "Get active provider and list all available providers.\n\nOnly returns providers that have API keys configured —\neither built-in providers with keys in config.json/env vars,\nor custom providers from providers.json.",
+        "description": "Get active provider and list all available providers.\n\nReturns providers that are usable — API keys configured (built-in\nproviders with keys in config.json/env vars, or custom providers from\nproviders.json) and keyless custom providers whose base URL is loopback\n(Ollama, LM Studio — a local host needs no credential).",
         "operationId": "activeProvider_api_config_activeProvider_get",
         "responses": {
           "200": {
@@ -11213,6 +11252,87 @@
           }
         },
         "summary": "Liveturn"
+      }
+    },
+    "/api/local-models/add": {
+      "post": {
+        "description": "Create a provider for a detected local server and fetch its models.\n\nReuses the ordinary provider-create route (id minting, base-URL\nnormalization, store write, realtime invalidations) so a local server is\nstored exactly like any provider the user typed in by hand.",
+        "operationId": "add_api_local_models_add_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddLocalServer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add"
+      }
+    },
+    "/api/local-models/scan": {
+      "post": {
+        "description": "Probe loopback ports for local model servers; read-only.",
+        "operationId": "scan_api_local_models_scan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ScanBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan"
       }
     },
     "/api/logs/recent": {

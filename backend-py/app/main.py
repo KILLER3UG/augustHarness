@@ -543,6 +543,7 @@ from app.routers import harness_proposals as harnessProposalsRoutes  # noqa: E40
 from app.routers import hooks as hooksRoutes  # noqa: E402
 from app.routers import kanban as kanbanRoutes  # noqa: E402
 from app.routers import live as liveRoutes  # noqa: E402
+from app.routers import local_models as localModelsRoutes  # noqa: E402
 from app.routers import manage as manageRoutes  # noqa: E402
 from app.routers import mcp as mcpRoutes  # noqa: E402
 from app.routers import models as modelsRoutes  # noqa: E402
@@ -574,6 +575,7 @@ app.include_router(skillPacksRoutes.router)
 app.include_router(skillsRoutes.router)
 app.include_router(curatorRoutes.router)
 app.include_router(providersRoutes.router)
+app.include_router(localModelsRoutes.router)
 app.include_router(privacyRoutes.router)
 app.include_router(modelsRoutes.router)
 app.include_router(proxyRoutes.router)
