@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-445 routes across 370 paths,
+448 routes across 373 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -24,7 +24,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/v1/models` | Delegate model listing to the model-service-backed OpenAI route. |
 | `POST` | `/v1/responses` | OpenAI Responses API proxy. |
 
-## Workbench chat (68)
+## Workbench chat (70)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -35,6 +35,8 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `PUT` | `/api/workbench/approval-policy` | Validate + persist the T5 approval policy. Body: the policy dict. |
 | `GET` | `/api/workbench/artifact/html` | Live HTML/SVG artifact document — the interactive half of the drawer. |
 | `POST` | `/api/workbench/attachments` | Persist a composer attachment (typically a pasted image) into the session workspace so the agent can actually… |
+| `POST` | `/api/workbench/attachments/binary` | The no-limit attachment door: the file arrives as the request BODY (raw bytes, octet-stream) and is streamed … |
+| `POST` | `/api/workbench/attachments/from-path` | Copy an already-on-disk file into the attachments folder — the drag-drop door with no size limit and no clien… |
 | `POST` | `/api/workbench/btw` | BTW side-channel: always the same model as chat for this session. |
 | `GET` | `/api/workbench/capabilities` | List all tools grouped by source. |
 | `POST` | `/api/workbench/chat` | Start a chat generation. |
@@ -501,7 +503,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (53)
+## Other (54)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -537,7 +539,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/hf/downloads` | Hf Start Download |
 | `POST` | `/api/hf/downloads/cancel` | Hf Cancel Download |
 | `GET` | `/api/hf/repos/{repoId}` | Hf Repo |
-| `GET` | `/api/hf/search` | Hf Search |
+| `GET` | `/api/hf/search` | Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows to what August can serve. |
 | `GET` | `/api/hooks` | Registry stats for every hook plus the user/workspace hook specs. |
 | `POST` | `/api/hooks/reload` | Force an immediate mtime re-check of every hook config. |
 | `POST` | `/api/hooks/revoke-workspace` | Withdraw that approval, and unregister the handlers it armed. |
@@ -556,6 +558,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/realtime/stream` | Server-Sent Events stream of UI realtime events. |
 | `GET` | `/api/requests` | Return tracked API requests in the Node.js contract shape. |
 | `GET` | `/api/requests/{request_id}` | Return detailed info for a specific request. |
+| `POST` | `/api/simulide/parse` | body: JSON |
 | `GET` | `/api/stats` | Return aggregate usage statistics in the Node.js StatsResponse shape. |
 | `POST` | `/api/system/restart` | Signal a soft restart intent — process managers (or the desktop shell) act on it. |
 | `GET` | `/api/whats-new` | Return commits + releases from the last ``hours`` (default 48). |
@@ -564,4 +567,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (445 operations).
+Generated from `docs/api/openapi.json` (448 operations).

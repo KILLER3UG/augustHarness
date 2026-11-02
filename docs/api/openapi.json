@@ -3138,6 +3138,30 @@
         "title": "SettingsUpdateBody",
         "type": "object"
       },
+      "SimulideParseBody": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sessionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessionid"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "SimulideParseBody",
+        "type": "object"
+      },
       "SkillCreate": {
         "properties": {
           "body": {
@@ -11182,6 +11206,7 @@
     },
     "/api/hf/search": {
       "get": {
+        "description": "Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows\nto what August can serve.",
         "operationId": "hf_search_api_hf_search_get",
         "parameters": [
           {
@@ -11202,6 +11227,16 @@
               "default": 20,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Filter",
+              "type": "string"
             }
           }
         ],
@@ -15355,6 +15390,42 @@
         "summary": "Enrichmessage"
       }
     },
+    "/api/simulide/parse": {
+      "post": {
+        "operationId": "parse_api_simulide_parse_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulideParseBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Parse"
+      }
+    },
     "/api/skills": {
       "get": {
         "description": "Search and list available skills.\n\nWith a ``workspace`` the project root's skills join the list (merged\ncatalogue, shadowing applied) and rows carry ``scope``/``overrides``.",
@@ -18698,7 +18769,7 @@
     },
     "/api/workbench/attachments": {
       "post": {
-        "description": "Persist a composer attachment (typically a pasted image) into the\nsession workspace so the agent can actually open it.\n\nImages attached in the chat lived as data URLs that never left the\nclient — analyze_media/read_file had no path to read, so the agent was\nblind to them. This decodes the base64 payload, writes it under\n``<workspace>/.aug/attachments/<sessionId>/``, and returns the path the\nfrontend names in the prompt text. Size cap mirrors the /files/read\nbase64 envelope (25 MB).\n\nThe FIRST message of a new chat has no backend Workbench session yet\n(the client only has its UI ``session_*`` id), so the client also sends\nthe workspace path it already knows — same trust level as the git\nrouter's explicit ``repoPath``.",
+        "description": "Persist a composer attachment (typically a pasted image) into the\nsession workspace so the agent can actually open it.\n\nImages attached in the chat lived as data URLs that never left the\nclient — analyze_media/read_file had no path to read, so the agent was\nblind to them. This decodes the base64 payload, writes it under\n``<workspace>/.aug/attachments/<sessionId>/``, and returns the path the\nfrontend names in the prompt text. There is NO size cap: attachments are\nuser state, and the honest limit is the user's disk. Large files should\nuse the raw-byte door (``POST /attachments/binary``) so neither the\nclient nor the backend ever holds the whole payload as base64.\n\nThe FIRST message of a new chat has no backend Workbench session yet\n(the client only has its UI ``session_*`` id), so the client also sends\nthe workspace path it already knows — same trust level as the git\nrouter's explicit ``repoPath``.",
         "operationId": "uploadAttachment_api_workbench_attachments_post",
         "requestBody": {
           "content": {
@@ -18733,6 +18804,104 @@
           }
         },
         "summary": "Uploadattachment"
+      }
+    },
+    "/api/workbench/attachments/binary": {
+      "post": {
+        "description": "The no-limit attachment door: the file arrives as the request BODY\n(raw bytes, octet-stream) and is streamed to disk chunk by chunk.\n\nThe base64 JSON route above holds the whole file in memory three times\n(string, decoded bytes, written bytes) — fine for pasted screenshots,\nhostile for a multi-GB model or video. This endpoint never materializes\nthe payload: chunks go straight to the target, so the honest size limit\nis the disk. Same directory contract, same basename sanitization, same\nresponse shape.",
+        "operationId": "uploadAttachmentBinary_api_workbench_attachments_binary_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sessionId",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Sessionid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Workspace",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Uploadattachmentbinary"
+      }
+    },
+    "/api/workbench/attachments/from-path": {
+      "post": {
+        "description": "Copy an already-on-disk file into the attachments folder — the drag-drop\ndoor with no size limit and no client memory: the OS streams the copy.\n\nThe source path is what the desktop shell's own drag-drop already reads\nfreely (``read_file_base64`` has no sandbox); this route keeps the\nhardline guard (protected credential stores stay refused) and resolves\nwith NO workspace so files dragged from anywhere (Downloads, a sibling\nproject) attach — the user dropped them into the chat on purpose.",
+        "operationId": "attachFromPath_api_workbench_attachments_from_path_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attachfrompath"
       }
     },
     "/api/workbench/btw": {
@@ -19251,7 +19420,7 @@
     },
     "/api/workbench/files/read": {
       "get": {
-        "description": "Read a file as base64 for the right-drawer viewer.\n\nDev / backend-only runs have no Tauri FS API, so the frontend falls back\nto this route (payload mirrors the ``read_file_base64`` invoke). Access\ngating is shared with /files/raw via ``_resolve_shared_read_file``; the\nbase64 envelope caps at 25 MB (≈33 MB on the wire).",
+        "description": "Read a file as base64 for the right-drawer viewer.\n\nDev / backend-only runs have no Tauri FS API, so the frontend falls back\nto this route (payload mirrors the ``read_file_base64`` invoke). Access\ngating is shared with /files/raw via ``_resolve_shared_read_file``; the\nbase64 envelope caps at 256 MB — a VIEWER constraint (the bytes become a\nstring in the webview), not an upload limit: attachments themselves are\nuncapped.",
         "operationId": "readFile_api_workbench_files_read_get",
         "parameters": [
           {

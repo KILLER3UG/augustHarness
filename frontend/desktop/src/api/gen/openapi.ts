@@ -3414,7 +3414,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Hf Search */
+        /**
+         * Hf Search
+         * @description Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows
+         *     to what August can serve.
+         */
         get: operations["hf_search_api_hf_search_get"];
         put?: never;
         post?: never;
@@ -5467,6 +5471,23 @@ export interface paths {
         patch: operations["enrichMessage_api_sessions__sessionId__messages_enrichment_patch"];
         trace?: never;
     };
+    "/api/simulide/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Parse */
+        post: operations["parse_api_simulide_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/skills": {
         parameters: {
             query?: never;
@@ -6822,8 +6843,10 @@ export interface paths {
          *     client — analyze_media/read_file had no path to read, so the agent was
          *     blind to them. This decodes the base64 payload, writes it under
          *     ``<workspace>/.aug/attachments/<sessionId>/``, and returns the path the
-         *     frontend names in the prompt text. Size cap mirrors the /files/read
-         *     base64 envelope (25 MB).
+         *     frontend names in the prompt text. There is NO size cap: attachments are
+         *     user state, and the honest limit is the user's disk. Large files should
+         *     use the raw-byte door (``POST /attachments/binary``) so neither the
+         *     client nor the backend ever holds the whole payload as base64.
          *
          *     The FIRST message of a new chat has no backend Workbench session yet
          *     (the client only has its UI ``session_*`` id), so the client also sends
@@ -6831,6 +6854,61 @@ export interface paths {
          *     router's explicit ``repoPath``.
          */
         post: operations["uploadAttachment_api_workbench_attachments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workbench/attachments/binary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Uploadattachmentbinary
+         * @description The no-limit attachment door: the file arrives as the request BODY
+         *     (raw bytes, octet-stream) and is streamed to disk chunk by chunk.
+         *
+         *     The base64 JSON route above holds the whole file in memory three times
+         *     (string, decoded bytes, written bytes) — fine for pasted screenshots,
+         *     hostile for a multi-GB model or video. This endpoint never materializes
+         *     the payload: chunks go straight to the target, so the honest size limit
+         *     is the disk. Same directory contract, same basename sanitization, same
+         *     response shape.
+         */
+        post: operations["uploadAttachmentBinary_api_workbench_attachments_binary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workbench/attachments/from-path": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attachfrompath
+         * @description Copy an already-on-disk file into the attachments folder — the drag-drop
+         *     door with no size limit and no client memory: the OS streams the copy.
+         *
+         *     The source path is what the desktop shell's own drag-drop already reads
+         *     freely (``read_file_base64`` has no sandbox); this route keeps the
+         *     hardline guard (protected credential stores stay refused) and resolves
+         *     with NO workspace so files dragged from anywhere (Downloads, a sibling
+         *     project) attach — the user dropped them into the chat on purpose.
+         */
+        post: operations["attachFromPath_api_workbench_attachments_from_path_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7192,7 +7270,9 @@ export interface paths {
          *     Dev / backend-only runs have no Tauri FS API, so the frontend falls back
          *     to this route (payload mirrors the ``read_file_base64`` invoke). Access
          *     gating is shared with /files/raw via ``_resolve_shared_read_file``; the
-         *     base64 envelope caps at 25 MB (≈33 MB on the wire).
+         *     base64 envelope caps at 256 MB — a VIEWER constraint (the bytes become a
+         *     string in the webview), not an upload limit: attachments themselves are
+         *     uncapped.
          */
         get: operations["readFile_api_workbench_files_read_get"];
         put?: never;
@@ -9759,6 +9839,13 @@ export interface components {
             keyPath: string;
             /** Value */
             value?: unknown;
+        };
+        /** SimulideParseBody */
+        SimulideParseBody: {
+            /** Path */
+            path: string;
+            /** Sessionid */
+            sessionId?: string | null;
         };
         /** SkillCreate */
         SkillCreate: {
@@ -15691,6 +15778,7 @@ export interface operations {
             query?: {
                 q?: string;
                 limit?: number;
+                filter?: string;
             };
             header?: never;
             path?: never;
@@ -19094,6 +19182,39 @@ export interface operations {
             };
         };
     };
+    parse_api_simulide_parse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulideParseBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listSkills_api_skills_get: {
         parameters: {
             query?: {
@@ -21450,6 +21571,74 @@ export interface operations {
         };
     };
     uploadAttachment_api_workbench_attachments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    uploadAttachmentBinary_api_workbench_attachments_binary_post: {
+        parameters: {
+            query?: {
+                sessionId?: string;
+                name?: string;
+                workspace?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attachFromPath_api_workbench_attachments_from_path_post: {
         parameters: {
             query?: never;
             header?: never;
