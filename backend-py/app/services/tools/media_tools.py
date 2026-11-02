@@ -20,6 +20,7 @@ import logging
 from pathlib import Path
 
 from app.services.sandbox.paths import bind_path
+from app.services.tools import simulide
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +327,16 @@ async def analyze_media(
         )
         return result
 
+    if ext in simulide.SIMULIDE_EXTS:
+
+        parsed = simulide.parse_circuit(str(bound))
+        result['kind'] = 'simulide-circuit'
+        result['componentCount'] = len(parsed['components'])
+        result['wireCount'] = len(parsed['wires'])
+        result['description'] = simulide.describe_circuit(parsed)
+        return result
+
     raise ValueError(
         f'Unsupported media type "{ext}". analyze_media covers images, '
-        'video, audio, PDFs and office documents.'
+        'video, audio, PDFs, office documents and SimulIDE circuits.'
     )

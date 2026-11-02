@@ -35,6 +35,10 @@ export interface RightDrawerState {
   diff?: GitDiffResult;
   selectedDiffPath?: string;
   file?: FileAttachment;
+  /** A SimulIDE circuit file (.sim/.sim1/.sim2) the Circuit pane should
+   *  render instead of the session's SPICE netlists. Set by the shared
+   *  file-open door; cleared when the pane closes or the user backs out. */
+  simulidePath?: string;
   /** The reference's panel carries a muted line of prose under the content:
    *  the producing tool's own words about the artifact it made. It travels
    *  with the FILE (not with the section), so it is the file view that
@@ -160,6 +164,7 @@ export function openRightDrawer(section?: Exclude<RightDrawerSectionId, 'file'>,
     activeSection: target,
     sections: nextSections,
     file: undefined,
+    simulidePath: undefined,
     artifactCaption: undefined,
   });
 }
@@ -174,6 +179,7 @@ export function closeRightDrawer() {
     sections: [],
     activeSection: undefined,
     file: undefined,
+    simulidePath: undefined,
     artifactCaption: undefined,
     chooserActive: false,
     bottomTerminal: false,
@@ -193,6 +199,27 @@ export function openRightDrawerFile(file: FileAttachment) {
     artifactCaption: undefined,
     chooserActive: false,
   });
+}
+
+/** Open a SimulIDE circuit (.sim/.sim1/.sim2) straight into the Circuit
+ *  pane's viewer — the schematic drawing, not a text dump of the XML. */
+export function openRightDrawerCircuitSim(path: string) {
+  useRightDrawerStore.setState({
+    ...useRightDrawerStore.getState(),
+    open: true,
+    sections: ['circuit'],
+    activeSection: 'circuit',
+    simulidePath: path,
+    file: undefined,
+    artifactCaption: undefined,
+    chooserActive: false,
+  });
+}
+
+/** Leave the SimulIDE viewer and return the Circuit pane to its session
+ *  netlists (the pane's own back control uses this). */
+export function clearRightDrawerCircuitSim() {
+  useRightDrawerStore.setState({ simulidePath: undefined });
 }
 
 /**

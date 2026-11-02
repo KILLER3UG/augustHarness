@@ -12,6 +12,7 @@ import { FileIcon } from '@/components/ui/FileIcon';
 import type { SchematicGraph } from '@/api/circuit';
 import {
   openRightDrawerFile,
+  useRightDrawerStore,
 } from '@/components/shell/RightDrawerState';
 import { ChatAttachmentService } from '@/sections/chat/services/ChatAttachmentService';
 import { revealInFolder } from '@/lib/tauri-shell';
@@ -26,6 +27,7 @@ import { useSessionStream } from '@/sections/chat/hooks/useSessionStream';
 import { CircuitInstruments } from '@/components/shell/CircuitInstruments';
 import { CircuitWaveformViewer } from '@/components/shell/CircuitWaveformViewer';
 import { CircuitSchematicEditor } from '@/components/shell/CircuitSchematicEditor';
+import { SimulideViewer } from '@/components/shell/SimulideViewer';
 
 // three.js is ~570 KB minified and this drawer is not open by default. A static
 // import put it in the initial chat chunk for a panel most sessions never use.
@@ -47,6 +49,7 @@ function describeArtifact(art: CircuitArtifact): string {
 }
 
 export function RightDrawerCircuitSection({ sessionId }: { sessionId: string | null }) {
+  const simulidePath = useRightDrawerStore((s) => s.simulidePath);
   const stream = useSessionStream(sessionId);
   const streamMessages = stream?.messages;
   const messages = useMemo(() => streamMessages ?? [], [streamMessages]);
@@ -104,7 +107,9 @@ export function RightDrawerCircuitSection({ sessionId }: { sessionId: string | n
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="circuit-panel">
       <div className="min-h-0 flex-1 overflow-y-auto p-2 chat-scroll">
-        {netlists.length > 0 ? (
+        {simulidePath ? (
+          <SimulideViewer path={simulidePath} sessionId={sessionId} />
+        ) : netlists.length > 0 ? (
           <>
             {netlists.length > 1 ? (
               <select

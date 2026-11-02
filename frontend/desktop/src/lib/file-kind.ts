@@ -7,7 +7,7 @@
  * viewer with reveal-in-folder fallback).
  */
 
-import { openRightDrawerFile } from '@/components/shell/RightDrawerState';
+import { openRightDrawerCircuitSim, openRightDrawerFile } from '@/components/shell/RightDrawerState';
 import { ChatAttachmentService } from '@/sections/chat/services/ChatAttachmentService';
 import { revealInFolder } from '@/lib/tauri-shell';
 import { toast } from 'sonner';
@@ -26,6 +26,8 @@ export interface FileKindInfo {
 
 const IMAGE_EXTS = new Set(['PNG', 'JPG', 'JPEG', 'SVG', 'WEBP', 'GIF', 'BMP', 'ICO']);
 const VIDEO_EXTS = new Set(['MP4', 'MOV', 'WEBM', 'AVI', 'MKV']);
+/** SimulIDE schematics — XML circuits with their layout saved in the file. */
+const CIRCUIT_SIM_EXTS = new Set(['SIM', 'SIM1', 'SIM2']);
 /** Document kinds keep the down-arrow glyph convention (document/download). */
 const DOCUMENT_EXTS = new Set([
   'MD', 'TXT', 'RTF', 'DOC', 'DOCX', 'ODT', 'XLS', 'XLSX', 'CSV', 'TSV', 'PPT', 'PPTX',
@@ -46,6 +48,9 @@ export function classifyFileKind(path: string): FileKindInfo {
 
   if (ext === 'PDF') {
     return { kind: 'pdf', label: 'Document · PDF', badgeText: 'PDF', badgeTone: 'pdf' };
+  }
+  if (CIRCUIT_SIM_EXTS.has(ext)) {
+    return { kind: 'code', label: `Circuit · ${ext}`, badgeText: 'SIM', badgeTone: 'code' };
   }
   if (IMAGE_EXTS.has(ext)) {
     return { kind: 'image', label: `Image · ${ext}`, badgeText: 'IMG', badgeTone: 'image' };
@@ -82,6 +87,12 @@ export function classifyFileKind(path: string): FileKindInfo {
  */
 export async function openFileInDrawer(path: string, sessionId?: string): Promise<void> {
   try {
+    // SimulIDE schematics open in the Circuit pane's viewer — a text dump of
+    // the XML is not what "open the circuit" means.
+    if (CIRCUIT_SIM_EXTS.has(extOf(path))) {
+      openRightDrawerCircuitSim(path);
+      return;
+    }
     let attachment = await ChatAttachmentService.fromPath(path);
     if (!attachment) {
       attachment = await ChatAttachmentService.fromBackendPath(path, sessionId);
