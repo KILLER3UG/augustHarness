@@ -519,6 +519,20 @@ User-added providers, edited from **Settings → Model settings** or
 | `quotaEndpoint` | Optional, opt-in. A provider quota endpoint August may call. Absent ⇒ August never calls one (see below) |
 | `quotaAuth` | Optional auth for `quotaEndpoint` |
 
+**Local model servers (keyless).** A provider whose `baseUrl` points at
+loopback (`127.0.0.1`, `::1`, `localhost`) needs no API key: Ollama, LM
+Studio, a llama.cpp server, or a served GGUF all answer without credentials.
+Every availability gate (`provider_credentials.resolve`, the activeProvider
+endpoint, workbench model resolution, model discovery) admits a keyless
+entry when the base URL host is loopback — the mirror of the pricing rule
+that a local model costs 0.0. A remote host is never admitted keyless,
+whatever it is named. **Settings → Local Models** scans the well-known
+loopback ports (Ollama 11434, LM Studio 1234, llama.cpp 8080, Jan 1337,
+GPT4All 4891, ComfyUI 8188) and adds what it finds through the ordinary
+provider-create path; identification is by response shape, never by port.
+Model discovery on a keyless provider simply omits the `Authorization`
+header.
+
 **Provider-native quota (truthful numbers only).** August never guesses a
 provider's quota. A row in **Settings → Quotas** is `source: 'native'` only
 when the provider itself stated a limit, and it comes from exactly two places:

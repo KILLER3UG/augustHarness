@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-427 routes across 354 paths,
+429 routes across 356 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -501,7 +501,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (35)
+## Other (37)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -533,6 +533,8 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/hooks/revoke-workspace` | Withdraw that approval, and unregister the handlers it armed. |
 | `POST` | `/api/hooks/trust-workspace` | Approve running this session's workspace `.aug/hooks.json`. |
 | `GET` | `/api/host-agent/health` | Return host agent availability and health status. |
+| `POST` | `/api/local-models/add` | Create a provider for a detected local server and fetch its models. |
+| `POST` | `/api/local-models/scan` | Probe loopback ports for local model servers; read-only. |
 | `GET` | `/api/overview` | Dashboard overview cards (requests / activity / errors / cost). |
 | `GET` | `/api/realtime/recent` | Recent realtime events (debug / reconnect catch-up). |
 | `GET` | `/api/realtime/stream` | Server-Sent Events stream of UI realtime events. |
@@ -546,4 +548,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (427 operations).
+Generated from `docs/api/openapi.json` (429 operations).

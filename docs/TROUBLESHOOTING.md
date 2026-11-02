@@ -73,9 +73,28 @@ and cognitive snapshots.
 
 ### "No providers available" / empty model dropdown
 
-A provider only appears as usable if it has an API key configured (config entry,
-`providers.json` entry, or env). Add a key in `data/config.json` or `.env`, or
-complete **Settings → Model settings**.
+A provider appears as usable if it has an API key configured (config entry,
+`providers.json` entry, or env) **or** its base URL points at loopback —
+Ollama, LM Studio, and llama.cpp need no key. Add a key in `data/config.json`
+or `.env`, complete **Settings → Model settings**, or scan
+**Settings → Local Models**.
+
+### Local server (Ollama / LM Studio) added but no models appear
+
+The scan found the server but its model list came back empty. For Ollama a
+model must be pulled (`ollama pull <model>`); for LM Studio a model must be
+loaded and **the local server enabled** (Developer tab → Start Server). Press
+Scan again after either; the refresh on the provider row re-fetches too. If
+the server is on a non-standard port, add that port to the scan request —
+identification is by response shape, so any OpenAI-compatible port works.
+
+### Local server model errors with 404 on chat
+
+The provider's base URL must match what the server serves: Ollama wants
+`http://127.0.0.1:11434/v1`, LM Studio `http://127.0.0.1:1234/v1` (include
+`/v1` in the base — August appends only the format leaf and never invents
+`/v1`). The scan stores the right one; a hand-typed entry is the usual
+culprit.
 
 ### "API key not configured for &lt;provider&gt;"
 

@@ -56,6 +56,21 @@ read. `getProvidersAsModels()` and `_provider_to_dict` rebuild model entries
 field by field, so a new per-model field must be named in BOTH or it is
 silently dropped on read (write-only).
 
+## Local providers
+
+A provider whose `baseUrl` host is loopback (`127.0.0.1`, `::1`,
+`localhost`) is usable **without an API key** — Ollama, LM Studio,
+llama.cpp, a served GGUF. The one rule (`api_format.is_loopback_base_url`)
+answers for every gate that used to demand a key: `provider_credentials.
+resolve`, `resolver.list_available`, the activeProvider endpoint, workbench
+model-hint resolution, and model discovery (which now just omits the
+`Authorization` header instead of skipping the fetch). This is the
+credential-side mirror of the pricing rule above: a local host needs no key
+the way a local model needs no price. **Settings → Local Models** scans the
+well-known loopback ports and adds what it finds through the ordinary
+provider-create path — no separate local-provider code path exists in the
+store.
+
 ## Routing evidence
 
 Routing evidence (`routing_evidence`) is written by the Arena/Debate verdict
