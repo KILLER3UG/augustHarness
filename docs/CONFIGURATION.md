@@ -533,6 +533,57 @@ provider-create path; identification is by response shape, never by port.
 Model discovery on a keyless provider simply omits the `Authorization`
 header.
 
+## Local runtime: GGUFs, llama.cpp, Hugging Face
+
+**Settings → Local Models** also runs GGUF models by themselves.
+
+- **The runtime.** August ships no inference engine; it downloads llama.cpp
+  once into `{dataDir}/runtimes/llama.cpp/<variant>/` — user state outside
+  the installer payload, kept on update, never staged into an install.
+  Assets come from ONE pinned release (`llama_runtime_manifest.py`), each
+  verified against the SHA256 published with it before anything extracts.
+  Variant selection reads `nvidia-smi`: a driver reporting CUDA ≥ 13 takes
+  the `cuda-13.4` build, ≥ 12.4 takes `cuda-12.4`, anything else (AMD,
+  Intel, no GPU) takes Vulkan; CPU is a manual choice. The UI shows what
+  was detected, why, and lets the user override — a CUDA install is
+  ~590–670 MB because the cudart DLL bundle ships with it; Vulkan is ~37 MB.
+- **Serving.** Serving a GGUF spawns `llama-server --host 127.0.0.1
+  --port <free> --ctx-size <choice>` and registers a provider
+  (`GGUF · <name>`, baseUrl `http://127.0.0.1:<port>/v1`, `openaiChat`)
+  through the ordinary create path. Its models are stamped
+  `priceInPerM/priceOutPerM: 0.0` — 0.0 is a price — and the served
+  context window. Servers are killed on app shutdown and orphan-swept at
+  boot (a crashed predecessor must not hold GGUF file locks). Stopping a
+  server leaves the provider entry; availability machinery shows it
+  unreachable.
+- **GGUF files on disk.** The folder picker hands the path to
+  `POST /api/local-models/gguf/scan`; the walk is bounded (depth 4, hidden
+  dirs skipped, 2000-file cap) and llama.cpp split files collapse to their
+  first shard.
+- **Hugging Face.** Search and repo-file listing proxy the public Hub API
+  (no auth; gated repos say so). Downloads are resumable (HTTP Range),
+  written to `{dataDir}/models/hf/<org>__<repo>/` **preserving the quant
+  subfolders** (flattening would collide across quants), gated on a free-disk
+  check (size + 1 GB), and reported by polling `GET /api/hf/downloads` with
+  `emit_invalidate('hf-downloads')` pushes — no new SSE frames.
+
+## ComfyUI (image generation)
+
+Connection lives under `auxiliary.comfyui` in `data/config.json`:
+`enabled`, `baseUrl` (default `http://127.0.0.1:8188`), `workflowJson`
+(optional), `defaultCheckpoint`. While `enabled`, the `generate_image`
+tool is registered in the tool registry (one registration reaches both the
+Anthropic and OpenAI tool surfaces); while disabled it is unregistered —
+an advertised-but-always-refusing tool would be a lie, and the registry's
+generation bump drops cached tool definitions on every toggle. Generation
+posts an API-format workflow to ComfyUI `POST /prompt`, polls
+`/history/{id}`, fetches bytes from `/view`, and writes the PNG into the
+workspace through `sandbox.paths.bind_path` (the artifact-tools door), so
+the chat renders it like any produced file. A pasted custom workflow (the
+"Save (API format)" JSON) replaces the built-in txt2img graph; the
+`%PROMPT% %NEGATIVE% %CHECKPOINT% %WIDTH% %HEIGHT% %STEPS% %CFG% %SEED%`
+markers are substituted wherever they appear.
+
 **Provider-native quota (truthful numbers only).** August never guesses a
 provider's quota. A row in **Settings → Quotas** is `source: 'native'` only
 when the provider itself stated a limit, and it comes from exactly two places:

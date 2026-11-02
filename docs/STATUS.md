@@ -1,12 +1,43 @@
 # Status — the current round
 
-Last updated: 2026-11-02 · App version: **0.20.0**
+Last updated: 2026-11-03 · App version: **0.20.0**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the app edits its own source, and is renamed
+## This round — local models, GGUFs, Hugging Face, ComfyUI
+
+- **Local servers are detected and one click from usable.** A keyless
+  provider whose base URL is loopback now resolves everywhere a key was
+  required (six gates were fixed: credentials resolve, list_available,
+  activeProvider, workbench model hints, provider details, and model
+  discovery). **Settings → Local Models** scans loopback (Ollama, LM Studio,
+  llama.cpp, Jan, GPT4All, ComfyUI — by response shape, not port) and adds
+  servers through the ordinary provider-create path.
+- **GGUFs run inside August.** An on-demand llama.cpp runtime downloads into
+  `{dataDir}/runtimes` (never the installer payload), every asset verified
+  against its pinned SHA256, with CUDA 12.4 / CUDA 13.4 / Vulkan / CPU
+  variants picked from `nvidia-smi` and a manual override. Serving a GGUF
+  spawns `llama-server`, registers a 0.0-priced provider, and its models
+  appear in the composer; servers are killed on shutdown and orphan-swept at
+  boot.
+- **Models come from Hugging Face.** GGUF search, per-quant file lists with
+  exact sizes, resumable downloads into `{dataDir}/models/hf` preserving
+  quant subfolders, free-disk gating, and serve-on-finish — progress polled,
+  no new SSE frames.
+- **ComfyUI is the image engine.** Connection + checkpoints + custom
+  API-format workflows in **Settings → ComfyUI**; the `generate_image` tool
+  is registered only while the connection is enabled (honest surfaces) and
+  writes into the workspace through the artifact-tools door.
+- Not yet verified by a human: the whole feature is gate-green and
+  service-tested (fake servers, real HF reads, workflow substitution,
+  registration toggling), but the desktop-app pass — a real LM Studio scan,
+  a real runtime install on CUDA 12 and 13 drivers, a served GGUF chat, and
+  a real ComfyUI generation — is the listed human step in the feature plan.
+- Previous round below; the self-edit loop and the rename shipped there.
+
+## The round before — the app edits its own source, and is renamed
 
 - **The self-edit loop ships.** The model edits August's source only inside a
   user-local clone (`{appData}/clone`), and with self-edit on that clone *is*
@@ -51,7 +82,7 @@ waiting on the owner, and how to resume.
   locking does not stop `git push <explicit-url>`, so the push guarantee is a
   pattern guard plus a lock, not either alone.
 
-## Previous round — the harness stops asking
+## The round before that — the harness stops asking
 
 - **Learned skills apply on their own.** `skillAutonomy` ships on for
   `skill_create`/`skill_patch`, the burn-in rail no longer deadlocks a fresh

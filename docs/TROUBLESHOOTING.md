@@ -96,6 +96,41 @@ The provider's base URL must match what the server serves: Ollama wants
 `/v1`). The scan stores the right one; a hand-typed entry is the usual
 culprit.
 
+### Runtime install fails with a SHA256 mismatch
+
+The downloaded llama.cpp asset did not match the digest pinned in
+`backend-py/app/services/llama_runtime_manifest.py` — a truncated download
+or a mirror in between. Retry; if it persists, the pin was probably updated
+for a new llama.cpp release and the running backend still carries the old
+file (restart), or the asset itself changed (compare the manifest constants
+against the release page and update the pin deliberately).
+
+### Serving a GGUF says the runtime is not installed
+
+Install it first in **Settings → Local Models → Local runtime**. A served
+model needs the runtime downloaded once for your GPU; the install is a few
+hundred MB for CUDA variants and ~37 MB for Vulkan.
+
+### llama-server exited while loading the model
+
+Usually memory: the context size multiplies model VRAM. Pick a smaller
+context (the Context dropdown), a smaller quant, or the Vulkan/CPU variant.
+The server row in **Local Models** carries the exit status.
+
+### A Hugging Face download says "gated"
+
+The repository requires signing in on huggingface.co; August talks to the
+public API without credentials and will not fetch gated weights. Pick an
+ungated mirror.
+
+### `generate_image` does not appear in chat
+
+The tool is advertised only while **Settings → ComfyUI → Enable** is on —
+that is deliberate, not a bug. With it on, the connection test must also
+pass (ComfyUI running). If it is on and the tool is still missing, restart
+the session: the tool-set cache drops on the registry bump, but a session
+mid-turn keeps the set it started with.
+
 ### "API key not configured for &lt;provider&gt;"
 
 The workbench checks credentials before calling the model. Resolution order is
