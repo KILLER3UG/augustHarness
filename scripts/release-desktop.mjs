@@ -639,8 +639,16 @@ async function publishRelease(assets) {
     if (releaseExists) {
         run('gh', ['release', 'upload', tag, '--clobber', '--repo', repository, ...assets], { shell: false });
     } else {
-        const title = `August ${version}`;
-        const notes = `August desktop release ${version}`;
+        // The title and body used to hardcode "August", which drifted the moment
+        // the product shipped under a different name: the page read
+        // "August 0.19.0" over AugustHarness_0.19.0_x64-setup.exe. Take the name
+        // from tauri.conf.json — the same file that decides the artifact names and
+        // the updater endpoint — so a release can never disagree with its own
+        // assets again.
+        const conf = JSON.parse(await readFile(tauriConfPath, 'utf8'));
+        const productName = typeof conf.productName === 'string' ? conf.productName : 'August';
+        const title = `${productName} ${version}`;
+        const notes = `${productName} desktop release ${version}`;
         run('gh', [
             'release',
             'create',
