@@ -21,7 +21,9 @@ import * as XLSX from 'xlsx-js-style';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // ── Limits ──────────────────────────────────────────────────────────────────
-const TEXT_MAX_CHARS = 100_000;   // 100 KB of extracted text
+// Uploads themselves are UNCAPPED (the attachment door sends original file
+// bytes and the backend streams them to disk). The bounds below shape only
+// the EXTRACTED-text representations and the viewer previews, not uploads.
 const IMAGE_MAX_SIZE = 10 * 1024 * 1024; // 10 MB for images
 const INLINE_FILE_MAX_SIZE = 8 * 1024 * 1024; // Keep generic inline previews bounded.
 
@@ -132,9 +134,14 @@ function readFileAsArrayBuffer(file: File, onProgress?: FileReadProgress): Promi
   });
 }
 
-function truncate(text: string, maxChars: number): { content: string; truncated: boolean } {
-  if (text.length <= maxChars) return { content: text, truncated: false };
-  return { content: text.slice(0, maxChars) + '\n\n[... truncated — file exceeds 100 KB text limit]', truncated: true };
+/** Extraction bound for the SECONDARY text representations (pdf/docx/xlsx)
+ *  that serve as prompt fallbacks — never an upload limit; uploads carry the
+ *  original bytes uncapped. */
+const EXTRACT_MAX_CHARS = 400_000;
+
+function truncate(text: string): { content: string; truncated: boolean } {
+  if (text.length <= EXTRACT_MAX_CHARS) return { content: text, truncated: false };
+  return { content: text.slice(0, EXTRACT_MAX_CHARS) + '\n\n[... truncated — extracted-text preview bound]', truncated: true };
 }
 
 // ── PDF extraction ──────────────────────────────────────────────────────────
@@ -197,7 +204,7 @@ async function extractPdfText(
 
   const fullText = textParts.join('\n\n');
   onProgress?.(100);
-  const truncated = truncate(fullText, TEXT_MAX_CHARS);
+  const truncated = truncate(fullText);
   return { ...truncated, thumbnailUrl };
 }
 
@@ -210,7 +217,7 @@ async function extractDocxText(
   onProgress?.(85);
   const result = await mammoth.extractRawText({ arrayBuffer });
   onProgress?.(100);
-  return truncate(result.value, TEXT_MAX_CHARS);
+  return truncate(result.value);
 }
 
 // ── XLSX extraction ─────────────────────────────────────────────────────────
@@ -230,7 +237,7 @@ async function extractSpreadsheetText(
   }
 
   onProgress?.(100);
-  return truncate(parts.join('\n\n'), TEXT_MAX_CHARS);
+  return truncate(parts.join('\n\n'));
 }
 
 // ── Main API ────────────────────────────────────────────────────────────────
@@ -326,9 +333,10 @@ export async function readFileContent(
   // ── Plain text / code ───────────────────────────────────────────────
   if (TEXT_EXTENSIONS.has(ext) || mimeType.startsWith('text/')) {
     try {
-      const raw = await readFileAsText(file, onProgress);
-      const { content, truncated } = truncate(raw, TEXT_MAX_CHARS);
-      return { type: 'text', content, mimeType, truncated };
+      // Full text, no truncation: this content is the file itself. Uploads
+      // send the original bytes regardless (ChatAttachmentService).
+      const content = await readFileAsText(file, onProgress);
+      return { type: 'text', content, mimeType };
     } catch (err) {
       console.warn('[file-reader] Text extraction failed:', err);
       return { type: 'unsupported', mimeType };
@@ -342,8 +350,8 @@ export async function readFileContent(
       // Check if it looks like text (no null bytes in the first 512 bytes)
       const sample = raw.slice(0, 512);
       if (!sample.includes('\0')) {
-        const { content, truncated } = truncate(raw, TEXT_MAX_CHARS);
-        return { type: 'text', content, mimeType, truncated };
+        const content = await readFileAsText(file, onProgress);
+        return { type: 'text', content, mimeType };
       }
     } catch { /* silent */ }
   }

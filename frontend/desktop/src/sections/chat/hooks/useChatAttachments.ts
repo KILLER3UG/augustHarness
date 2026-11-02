@@ -60,6 +60,8 @@ export function useChatAttachments() {
       await Promise.all(
         pendingList.map(async ({ file, pending }) => {
           const id = pending.id!;
+          // Keep the original handle for the uncapped binary upload door.
+          ChatAttachmentService.setOriginalFile(id, file);
           const done = await ChatAttachmentService.readInto(file, pending, (progress) => {
             patchAttachment(id, { progress, status: 'reading' });
           });

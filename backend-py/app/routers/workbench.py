@@ -754,11 +754,13 @@ async def readFile(path: str = '', sessionId: str = ''):
     Dev / backend-only runs have no Tauri FS API, so the frontend falls back
     to this route (payload mirrors the ``read_file_base64`` invoke). Access
     gating is shared with /files/raw via ``_resolve_shared_read_file``; the
-    base64 envelope caps at 25 MB (≈33 MB on the wire).
+    base64 envelope caps at 256 MB — a VIEWER constraint (the bytes become a
+    string in the webview), not an upload limit: attachments themselves are
+    uncapped.
     """
     import base64
 
-    resolved, mime = await _resolve_shared_read_file(path, sessionId, max_bytes=25 * 1024 * 1024)
+    resolved, mime = await _resolve_shared_read_file(path, sessionId, max_bytes=_MAX_PREVIEW_BYTES)
     data = base64.b64encode(resolved.read_bytes()).decode('ascii')
     return {
         'ok': True,
@@ -769,7 +771,10 @@ async def readFile(path: str = '', sessionId: str = ''):
     }
 
 
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+# The drawer preview's base64 envelope — deliberately bounded (the bytes
+# become a JS string in the webview), and separate from the UNCAPPED
+# attachment upload path.
+_MAX_PREVIEW_BYTES = 256 * 1024 * 1024
 
 
 @router.post('/attachments')
@@ -781,8 +786,10 @@ async def uploadAttachment(body: dict):
     client — analyze_media/read_file had no path to read, so the agent was
     blind to them. This decodes the base64 payload, writes it under
     ``<workspace>/.aug/attachments/<sessionId>/``, and returns the path the
-    frontend names in the prompt text. Size cap mirrors the /files/read
-    base64 envelope (25 MB).
+    frontend names in the prompt text. There is NO size cap: attachments are
+    user state, and the honest limit is the user's disk. Large files should
+    use the raw-byte door (``POST /attachments/binary``) so neither the
+    client nor the backend ever holds the whole payload as base64.
 
     The FIRST message of a new chat has no backend Workbench session yet
     (the client only has its UI ``session_*`` id), so the client also sends
@@ -811,41 +818,133 @@ async def uploadAttachment(body: dict):
         raw = base64.b64decode(dataUrl.partition(';base64,')[2])
     except Exception:
         raise HTTPException(status_code=400, detail='invalid base64 payload')
-    if len(raw) > _MAX_ATTACHMENT_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f'attachment exceeds the {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB cap',
-        )
-    # Basename only — the client-supplied name must not escape the
-    # attachments dir (`..`, absolute paths, separators).
-    safeName = Path(name).name
-    if not safeName or safeName in ('.', '..'):
-        safeName = 'image.png'
-    safeSession = Path(sessionId).name or 'session'
-    targetDir = Path(workspace) / '.aug' / 'attachments' / safeSession
+    target = _attachment_target(workspace, sessionId, name)
     try:
-        targetDir.mkdir(parents=True, exist_ok=True)
-        target = targetDir / safeName
-        # Don't clobber a previous upload with the same name.
-        if target.exists():
-            for i in range(1, 1000):
-                candidate = targetDir / f'{target.stem}-{i}{target.suffix}'
-                if not candidate.exists():
-                    target = candidate
-                    break
         target.write_bytes(raw)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f'failed to store attachment: {exc}')
     return {
         'ok': True,
         'path': str(target),
-        'relativePath': f'.aug/attachments/{safeSession}/{target.name}',
+        'relativePath': f'.aug/attachments/{target.parent.name}/{target.name}',
         'bytes': len(raw),
     }
 
 
+@router.post('/attachments/binary')
+async def uploadAttachmentBinary(request: Request, sessionId: str = '', name: str = '', workspace: str = ''):
+    """The no-limit attachment door: the file arrives as the request BODY
+    (raw bytes, octet-stream) and is streamed to disk chunk by chunk.
+
+    The base64 JSON route above holds the whole file in memory three times
+    (string, decoded bytes, written bytes) — fine for pasted screenshots,
+    hostile for a multi-GB model or video. This endpoint never materializes
+    the payload: chunks go straight to the target, so the honest size limit
+    is the disk. Same directory contract, same basename sanitization, same
+    response shape.
+    """
+    if not sessionId.strip():
+        raise HTTPException(status_code=400, detail='sessionId required')
+    ws = workspace.strip()
+    if not ws:
+        session = wb.getWorkbenchSession(sessionId.strip())
+        ws = as_str(getattr(session, 'workspacePath', '') or '') if session else ''
+    if not ws or not Path(ws).is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail='no workspace for this chat — attachments need a folder-backed session',
+        )
+    target = _attachment_target(ws, sessionId, name or 'attachment.bin')
+    total = 0
+    try:
+        with target.open('wb') as fh:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                fh.write(chunk)
+                total += len(chunk)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f'failed to store attachment: {exc}')
+    return {
+        'ok': True,
+        'path': str(target),
+        'relativePath': f'.aug/attachments/{target.parent.name}/{target.name}',
+        'bytes': total,
+    }
+
+
+@router.post('/attachments/from-path')
+async def attachFromPath(body: dict):
+    """Copy an already-on-disk file into the attachments folder — the drag-drop
+    door with no size limit and no client memory: the OS streams the copy.
+
+    The source path is what the desktop shell's own drag-drop already reads
+    freely (``read_file_base64`` has no sandbox); this route keeps the
+    hardline guard (protected credential stores stay refused) and resolves
+    with NO workspace so files dragged from anywhere (Downloads, a sibling
+    project) attach — the user dropped them into the chat on purpose.
+    """
+    import shutil
+
+    from app.services.sandbox.paths import bind_path
+
+    sessionId = as_str(body.get('sessionId'), '').strip()
+    sourcePath = as_str(body.get('sourcePath'), '').strip()
+    workspace = as_str(body.get('workspace'), '').strip()
+    if not sessionId or not sourcePath:
+        raise HTTPException(status_code=400, detail='sessionId and sourcePath required')
+    if not workspace:
+        session = wb.getWorkbenchSession(sessionId)
+        workspace = as_str(getattr(session, 'workspacePath', '') or '') if session else ''
+    if not workspace or not Path(workspace).is_dir():
+        raise HTTPException(
+            status_code=409,
+            detail='no workspace for this chat — attachments need a folder-backed session',
+        )
+
+    resolved, err = bind_path(sourcePath, None, for_write=False)
+    if err or resolved is None:
+        raise HTTPException(status_code=400, detail=err or f'Invalid path: {sourcePath}')
+    if not resolved.is_file():
+        raise HTTPException(status_code=400, detail=f'Not a file: {resolved}')
+
+    target = _attachment_target(workspace, sessionId, resolved.name)
+    try:
+        shutil.copyfile(str(resolved), str(target))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f'failed to copy attachment: {exc}')
+    return {
+        'ok': True,
+        'path': str(target),
+        'relativePath': f'.aug/attachments/{target.parent.name}/{target.name}',
+        'bytes': target.stat().st_size,
+    }
+
+
+def _attachment_target(workspace: str, sessionId: str, name: str) -> Path:
+    """The sanitized, collision-avoided destination for one attachment.
+
+    Basename only — the client-supplied name must not escape the
+    attachments dir (``..``, absolute paths, separators).
+    """
+    safeName = Path(name).name
+    if not safeName or safeName in ('.', '..'):
+        safeName = 'attachment.bin'
+    safeSession = Path(sessionId).name or 'session'
+    targetDir = Path(workspace) / '.aug' / 'attachments' / safeSession
+    targetDir.mkdir(parents=True, exist_ok=True)
+    target = targetDir / safeName
+    # Don't clobber a previous upload with the same name.
+    if target.exists():
+        for i in range(1, 1000):
+            candidate = targetDir / f'{target.stem}-{i}{target.suffix}'
+            if not candidate.exists():
+                return candidate
+    return target
+
+
 async def _resolve_shared_read_file(
-    path: str, sessionId: str, max_bytes: int = 50 * 1024 * 1024
+    path: str, sessionId: str, max_bytes: int = _MAX_PREVIEW_BYTES
 ) -> tuple[Path, str]:
     """Shared /files/read + /files/raw access gate.
 

@@ -63,6 +63,16 @@ export const LONG_PASTE_CHAR_THRESHOLD = 2000;
 export const LONG_PASTE_LINE_THRESHOLD = 40;
 
 export class ChatAttachmentService {
+  /** Original File handles for the uncapped binary upload door, keyed by the
+   *  attachment id (ids survive the patch re-objects; File references are
+   *  cheap). Deleted after a successful upload. */
+  private static readonly originalFiles = new Map<string, File>();
+
+  /** Register the original File behind an attachment (picker/paste/path). */
+  static setOriginalFile(id: string, file: File): void {
+    this.originalFiles.set(id, file);
+  }
+
   /** Highlight language for fenced blocks in the user prompt. */
   static codeLangFor(filename: string): string {
     const ext = filename.split('.').pop()?.toLowerCase() ?? '';
@@ -268,11 +278,17 @@ export class ChatAttachmentService {
   /**
    * Upload ready attachments into the session workspace so the agent can
    * actually open them — before this the bytes never left the client and
-   * analyze_media could only say "File not found". Images upload their data
-   * URL bytes; text files upload their extracted content. Mutates each
-   * uploaded attachment with `savedPath`. On failure the prompt keeps the
-   * placeholder — the caller surfaces one toast so the user isn't left
-   * thinking the model can see the file.
+   * analyze_media could only say "File not found".
+   *
+   * Uploads are UNCAPPED and carry the ORIGINAL file bytes: the binary door
+   * (`POST /attachments/binary`) takes the File as the request body, the
+   * from-path door (`POST /attachments/from-path`) asks the backend to copy
+   * a file that is already on disk (drag-drop — zero client memory), and
+   * the legacy base64 route survives only for synthesized content (long
+   * pastes). The old behavior — text files uploading their first 100 KB of
+   * extracted content — is gone: an uploaded attachment is the whole file.
+   * Mutates each uploaded attachment with `savedPath`; on failure the prompt
+   * keeps the placeholder and the caller surfaces one toast.
    */
   static async uploadImages(
     workbenchSessionId: string,
@@ -284,30 +300,43 @@ export class ChatAttachmentService {
       (a) =>
         a.status === 'ready' &&
         !a.savedPath &&
-        ((a.type === 'image' && a.dataUrl) || (a.type === 'text' && a.content)),
+        (this.originalFiles.has(a.id ?? '') || a.path || (a.type === 'image' && a.dataUrl) || (a.type === 'text' && a.content)),
     );
     if (pending.length === 0) return;
     let failed = 0;
     await Promise.all(
       pending.map(async (a) => {
         try {
-          // Image bytes ride the data URL; text files send their extracted
-          // content as a data URL so the backend stores real file bytes.
-          const payload =
-            a.type === 'image'
-              ? a.dataUrl
-              : `data:text/plain;base64,${btoa(unescape(encodeURIComponent(a.content ?? '')))}`;
-          const res = await api.post<{ ok?: boolean; path?: string }>(
-            '/api/workbench/attachments',
-            {
-              sessionId: workbenchSessionId,
-              name: a.name,
-              dataUrl: payload,
-              ...(workspacePath ? { workspace: workspacePath } : {}),
-            },
-          );
-          if (res?.ok && res.path) a.savedPath = res.path;
-          else failed += 1;
+          let savedPath: string | undefined;
+          if (a.path) {
+            // Drag-dropped file: already on disk — the backend copies it, the
+            // webview never touches the bytes.
+            savedPath = await this.uploadFromPath(workbenchSessionId, a.path, workspacePath);
+          } else if (this.originalFiles.has(a.id ?? '')) {
+            savedPath = await this.uploadBinary(workbenchSessionId, this.originalFiles.get(a.id ?? '')!, workspacePath);
+          } else {
+            // Synthesized content (long pastes): legacy base64 route.
+            const payload =
+              a.type === 'image'
+                ? a.dataUrl
+                : `data:text/plain;base64,${btoa(unescape(encodeURIComponent(a.content ?? '')))}`;
+            const res = await api.post<{ ok?: boolean; path?: string }>(
+              '/api/workbench/attachments',
+              {
+                sessionId: workbenchSessionId,
+                name: a.name,
+                dataUrl: payload,
+                ...(workspacePath ? { workspace: workspacePath } : {}),
+              },
+            );
+            if (res?.ok && res.path) savedPath = res.path;
+          }
+          if (savedPath) {
+            a.savedPath = savedPath;
+            if (a.id) this.originalFiles.delete(a.id);
+          } else {
+            failed += 1;
+          }
         } catch {
           failed += 1;
         }
@@ -318,6 +347,42 @@ export class ChatAttachmentService {
         `Could not store ${failed} attachment${failed === 1 ? '' : 's'} — the model may not be able to open ${failed === 1 ? 'it' : 'them'}`,
       );
     }
+  }
+
+  /** The uncapped upload door: the File IS the request body, no base64
+   *  inflation, nothing held in a JS string. */
+  private static async uploadBinary(
+    sessionId: string,
+    file: File,
+    workspacePath?: string,
+  ): Promise<string | undefined> {
+    const params = new URLSearchParams({ sessionId, name: file.name });
+    if (workspacePath) params.set('workspace', workspacePath);
+    const data = await api.postRaw<{ ok?: boolean; path?: string }>(
+      `/api/workbench/attachments/binary?${params.toString()}`,
+      file,
+      { headers: { 'Content-Type': 'application/octet-stream' } },
+    );
+    return data?.ok ? data.path : undefined;
+  }
+
+  /** Ask the backend to copy an already-on-disk file into the attachments
+   *  folder — the one path where huge drag-dropped files never touch the
+   *  webview at all. */
+  private static async uploadFromPath(
+    sessionId: string,
+    sourcePath: string,
+    workspacePath?: string,
+  ): Promise<string | undefined> {
+    const res = await api.post<{ ok?: boolean; path?: string }>(
+      '/api/workbench/attachments/from-path',
+      {
+        sessionId,
+        sourcePath,
+        ...(workspacePath ? { workspace: workspacePath } : {}),
+      },
+    );
+    return res?.ok && res.path ? res.path : undefined;
   }
 
   /** Serialize attachments into markdown sections for the model prompt. */
