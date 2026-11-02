@@ -136,8 +136,10 @@ async def detect_gpu() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — a broken driver install is "no NVIDIA"
         return {'nvidia': False, 'cudaVersion': None, 'gpuName': None}
 
-    # Plain `nvidia-smi` header for the CUDA level: "| NVIDIA-SMI ... CUDA
-    # Version: 12.9 |". Query flags do not print it.
+    # Plain `nvidia-smi` header for the CUDA level. Two banner generations:
+    # "| NVIDIA-SMI ... CUDA Version: 12.9 |" (classic) and
+    # "NVIDIA-SMI 616.64  KMD Version: ... CUDA UMD Version: 13.4" (616+).
+    # Query flags do not print it.
     cuda_version = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -151,7 +153,9 @@ async def detect_gpu() -> dict[str, Any]:
         except asyncio.TimeoutError:
             proc.kill()
             out = b''
-        match = re.search(r'CUDA Version:\s*(\d+\.\d+)', out.decode('utf-8', 'replace'))
+        match = re.search(
+            r'CUDA(?: UMD)? Version:\s*(\d+\.\d+)', out.decode('utf-8', 'replace')
+        )
         if match:
             cuda_version = match.group(1)
     except Exception:  # noqa: BLE001
@@ -411,6 +415,15 @@ async def start_gguf_server(
         ):
             return existing  # already served
 
+    # A re-serve of the SAME gguf lands on a NEW port, so the previous
+    # serve's provider entry (old baseUrl) would linger as an unreachable
+    # duplicate — retire it when the new provider registers.
+    prior_provider_ids = [
+        str(r.get('providerId'))
+        for r in rows
+        if str(r.get('ggufPath', '')).lower() == str(path).lower() and r.get('providerId')
+    ]
+
     port = _free_port()
     flags = getattr(asyncio.subprocess, 'CREATE_NO_WINDOW', 0) if hasattr(asyncio.subprocess, 'CREATE_NO_WINDOW') else 0
     proc = await asyncio.create_subprocess_exec(
@@ -419,6 +432,10 @@ async def start_gguf_server(
         '--port', str(port),
         '--ctx-size', str(max(1024, int(ctx_size))),
         '--model', str(path),
+        # llama-server uses the --model PATH as the model id unless an alias
+        # is given — a composer entry that reads "C:\Users\…\model.gguf" is
+        # not a name anyone picked.
+        '--alias', path.stem,
         '--jinja',
         cwd=str(exe.parent),
         stdout=asyncio.subprocess.DEVNULL,
@@ -441,7 +458,7 @@ async def start_gguf_server(
     rows.append(row)
     _save_servers(rows)
 
-    asyncio.create_task(_await_server_ready(row, proc))
+    asyncio.create_task(_await_server_ready(row, proc, prior_provider_ids))
 
     from app.services.realtime_bus import emit_invalidate
 
@@ -453,7 +470,11 @@ class HTTPishError(RuntimeError):
     """A user-facing failure (becomes a 400 in the router)."""
 
 
-async def _await_server_ready(row: dict[str, Any], proc: asyncio.subprocess.Process) -> None:
+async def _await_server_ready(
+    row: dict[str, Any],
+    proc: asyncio.subprocess.Process,
+    prior_provider_ids: list[str] | None = None,
+) -> None:
     """Poll /health until the model is loaded, then register + price."""
     url = f'http://127.0.0.1:{row["port"]}/health'
     deadline = asyncio.get_running_loop().time() + _SERVER_START_TIMEOUT_S
@@ -485,7 +506,33 @@ async def _await_server_ready(row: dict[str, Any], proc: asyncio.subprocess.Proc
     provider_id = await _ensure_provider(row)
     row['providerId'] = provider_id
     _persist_row(row)
+    _retire_prior_providers(provider_id, prior_provider_ids or [], str(row.get('name', '')))
     logger.info('GGUF server ready on port %s for %s (provider %s)', row['port'], row['name'], provider_id)
+
+
+def _retire_prior_providers(current_id: str | None, prior_ids: list[str], gguf_name: str) -> None:
+    """Disable provider entries left by earlier serves of the same GGUF — a
+    re-serve lands on a new port, and an old baseUrl is unreachable forever.
+    Matched by id (rows that kept theirs) and by the stable provider name
+    (rows removed by a stop, where the name survives across serves)."""
+    from app.json_narrowing import as_list
+    from app.services import config_service, model_service
+    from app.services.realtime_bus import emit_invalidate
+
+    store = config_service.getProvidersStore()
+    changed = False
+    for entry in as_list(store.get('providers'), []):
+        if not isinstance(entry, dict):
+            continue
+        pid = str(entry.get('id', ''))
+        same_name = str(entry.get('name', '')) == f'{_SERVER_NAME_PREFIX}{gguf_name}'
+        if (pid in prior_ids or same_name) and pid != current_id and entry.get('enabled', True):
+            entry['enabled'] = False
+            changed = True
+    if changed:
+        config_service.saveProvidersStore(store)
+        model_service.invalidate_cache()
+        emit_invalidate('aggregated-models', 'ws-providers', 'provider-availability', 'providers')
 
 
 def _persist_row(row: dict[str, Any]) -> None:
