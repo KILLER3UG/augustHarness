@@ -542,9 +542,13 @@ function DownloadRow({ job }: { job: HfDownload }) {
               <span className="text-2xs text-success-fg flex items-center gap-1">
                 <Check className="size-3" /> {formatBytes(job.size)}
               </span>
-              <Button size="sm" variant="outline" onClick={() => void serve()}>
-                <Play className="size-3" /> Serve
-              </Button>
+              {job.filename.toLowerCase().endsWith('.gguf') ? (
+                <Button size="sm" variant="outline" onClick={() => void serve()}>
+                  <Play className="size-3" /> Serve
+                </Button>
+              ) : (
+                <span className="text-2xs text-muted-foreground">downloaded</span>
+              )}
             </>
           ) : job.status === 'downloading' ? (
             <>
@@ -571,6 +575,7 @@ function DownloadRow({ job }: { job: HfDownload }) {
 function HuggingFaceCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
   const qc = useQueryClient();
   const [term, setTerm] = useState('');
+  const [hfFilter, setHfFilter] = useState(''); // '' = ALL models on the Hub
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState<HfModel[] | null>(null);
   const [openRepo, setOpenRepo] = useState<string | null>(null);
@@ -590,9 +595,9 @@ function HuggingFaceCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
     if (!term.trim()) return;
     setSearching(true);
     try {
-      const res = await hfSearch(term.trim());
+      const res = await hfSearch(term.trim(), 20, hfFilter);
       setResults(res.models);
-      if (res.models.length === 0) toast.info('No GGUF repositories matched');
+      if (res.models.length === 0) toast.info('Nothing matched on the Hub');
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Search failed');
     } finally {
@@ -635,9 +640,18 @@ function HuggingFaceCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
   return (
     <Card
       title="From Hugging Face"
-      subtitle="Search GGUF repositories, pick a quantization, and download with resume. Finished files are servable and live under your data folder (kept on update)."
+      subtitle="Browse every model on the Hub, download any file with resume, and serve GGUFs with one click. Files live under your data folder (kept on update)."
     >
       <div className="flex gap-2">
+        <select
+          value={hfFilter}
+          onChange={(e) => setHfFilter(e.target.value)}
+          className="h-8 rounded-md border border-border/60 bg-card/60 px-2 text-2xs"
+          aria-label="Model filter"
+        >
+          <option value="">All models</option>
+          <option value="gguf">GGUF only</option>
+        </select>
         <input
           value={term}
           onChange={(e) => setTerm(e.target.value)}
@@ -677,7 +691,8 @@ function HuggingFaceCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
                   <span className="block text-xs font-medium truncate">{m.repoId}</span>
                   <span className="block text-2xs text-muted-foreground">
                     {m.downloads.toLocaleString()} downloads · {m.likes.toLocaleString()} likes
-                    {openRepo === m.repoId ? ' · click to collapse' : ' · click for quantizations'}
+                    {m.pipelineTag ? ` · ${m.pipelineTag}` : ''}
+                    {openRepo === m.repoId ? ' · click to collapse' : ' · click for files'}
                   </span>
                 </span>
               </Button>
@@ -688,7 +703,7 @@ function HuggingFaceCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
                       <Loader2 className="size-3 animate-spin" /> Listing files…
                     </Row>
                   )}
-                  {repoFiles?.length === 0 && <Row muted>No GGUF files in this repository.</Row>}
+                  {repoFiles?.length === 0 && <Row muted>No files listed in this repository.</Row>}
                   {repoFiles?.map((f) => {
                     const id = `${m.repoId}/${f.filename}`;
                     return (
@@ -700,6 +715,9 @@ function HuggingFaceCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
                           {f.filename}
                         </p>
                         <div className="flex items-center gap-2 shrink-0">
+                          {f.filename.toLowerCase().endsWith('.gguf') && (
+                            <span className="text-2xs text-success-fg">servable</span>
+                          )}
                           <span className="text-2xs text-muted-foreground">{formatBytes(f.size)}</span>
                           <Button
                             size="sm"

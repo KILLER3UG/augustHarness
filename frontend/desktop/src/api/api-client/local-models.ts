@@ -147,8 +147,8 @@ export interface HfDownload {
   startedAt: string | null;
 }
 
-export function hfSearch(q: string, limit = 20): Promise<{ query: string; models: HfModel[] }> {
-  return api.get(`/api/hf/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+export function hfSearch(q: string, limit = 20, filter = ''): Promise<{ query: string; models: HfModel[] }> {
+  return api.get(`/api/hf/search?q=${encodeURIComponent(q)}&limit=${limit}&filter=${encodeURIComponent(filter)}`);
 }
 
 export function hfRepoFiles(repoId: string): Promise<{

@@ -153,14 +153,16 @@ async def start_download(repo_id: str, filename: str) -> dict[str, Any]:
     global _seq
     repo_id = (repo_id or '').strip().strip('/')
     filename = (filename or '').strip().lstrip('/')
-    if repo_id.count('/') != 1 or not filename.lower().endswith('.gguf'):
-        raise DownloadError('Expected a GGUF file inside an org/name repository')
+    # Any file in the repo is downloadable (browsing is not limited to what
+    # August can RUN — only serving is, and that gates on the extension).
+    if repo_id.count('/') != 1 or not filename:
+        raise DownloadError('Expected a file inside an org/name repository')
 
     # Meta first: the exact size drives the disk-space check and the bar.
     meta = await hf_hub.repo_files(repo_id)
     sizes = {f['filename']: int(f['size']) for f in meta['files']}
     if filename not in sizes:
-        raise DownloadError(f'{filename} is not a GGUF file in {repo_id}')
+        raise DownloadError(f'{filename} is not a file in {repo_id}')
     size = sizes[filename]
 
     dest = _dest_path(repo_id, filename)

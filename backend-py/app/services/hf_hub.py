@@ -18,16 +18,27 @@ _HUB_API = 'https://huggingface.co/api'
 _TIMEOUT = httpx.Timeout(15.0)
 
 
-async def search_models(query: str, *, limit: int = 20) -> dict[str, Any]:
-    """Search the Hub for GGUF model repos, most downloads first."""
+async def search_models(
+    query: str,
+    *,
+    limit: int = 20,
+    model_filter: str | None = None,
+) -> dict[str, Any]:
+    """Search the Hub — ALL models by default (the Hub is a browser, not a
+    GGUF shelf); pass ``model_filter='gguf'`` for the runnable-only view.
+
+    Sort stays downloads-descending so the default page is what people
+    actually use, not what shipped most recently.
+    """
     q = (query or '').strip()
     params: dict[str, str | int] = {
         'search': q,
-        'filter': 'gguf',
         'sort': 'downloads',
         'direction': -1,
         'limit': max(1, min(int(limit), 50)),
     }
+    if model_filter:
+        params['filter'] = str(model_filter).strip()
     async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(f'{_HUB_API}/models', params=params)
         if resp.status_code != 200:
@@ -49,13 +60,9 @@ async def search_models(query: str, *, limit: int = 20) -> dict[str, Any]:
     return {'query': q, 'models': [m for m in models if m['repoId']]}
 
 
-def _looks_like_gguf(filename: str) -> bool:
-    low = filename.lower()
-    return low.endswith('.gguf')
-
-
 async def repo_files(repo_id: str) -> dict[str, Any]:
-    """A repo's GGUF files with exact sizes — the quant picker's source.
+    """A repo's files with exact sizes — every file, any format (browsing is
+    not limited to what August can run; the UI marks what is servable).
 
     ``blobs=true`` makes the API carry per-file sizes; without it every
     size would be a guess, and a quant picker that guesses sizes lies
@@ -79,7 +86,7 @@ async def repo_files(repo_id: str) -> dict[str, Any]:
         if not isinstance(s, dict):
             continue
         name = str(s.get('rfilename', ''))
-        if not _looks_like_gguf(name):
+        if not name:
             continue
         files.append({'filename': name, 'size': int(s.get('size') or 0)})
     files.sort(key=lambda f: str(f['filename']))

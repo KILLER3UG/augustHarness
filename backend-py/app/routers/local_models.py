@@ -265,11 +265,13 @@ async def server_stop(body: ServerStopBody):
 
 
 @hf.get('/search')
-async def hf_search(q: str = '', limit: int = 20):
+async def hf_search(q: str = '', limit: int = 20, filter: str = ''):
+    """Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows
+    to what August can serve."""
     from app.services import hf_hub
 
     try:
-        return await hf_hub.search_models(q, limit=limit)
+        return await hf_hub.search_models(q, limit=limit, model_filter=filter or None)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
