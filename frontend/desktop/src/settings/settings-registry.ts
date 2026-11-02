@@ -37,6 +37,7 @@ import {
   FolderLock,
   GitBranch,
   Globe,
+  HardDrive,
   Kanban,
   Lightbulb,
   LineChart,
@@ -229,6 +230,23 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     ],
     keywords: ['provider', 'api key', 'base url', 'api format', 'model discovery', 'model settings', 'cost', 'reasoning', 'effort', 'temperature'],
     legacyAliases: ['models', 'providers', 'model-settings'],
+  },
+  {
+    id: 'model-local',
+    label: 'Local Models',
+    description: 'Detect local servers (LM Studio, Ollama, llama.cpp), find GGUF files on disk, download from Hugging Face, and serve models on this machine.',
+    icon: HardDrive,
+    category: 'capabilities',
+    tier: 'hidden',
+    settingHints: [
+      'Local server scan',
+      'GGUF files',
+      'Hugging Face download',
+      'llama.cpp runtime',
+      'CUDA 12 / CUDA 13',
+    ],
+    keywords: ['local models', 'local server', 'ollama', 'lm studio', 'llama.cpp', 'gguf', 'hugging face'],
+    legacyAliases: ['local-models'],
   },
   {
     id: 'browser-use',
@@ -870,6 +888,7 @@ const RAIL_PARENT: Readonly<Record<string, string>> = {
   'kernel-venv': 'agent-sandbox',
   'backend-monitor': 'observability',
   'health-simulator': 'system-health',
+  'model-local': 'model-providers',
 };
 
 

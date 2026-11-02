@@ -335,6 +335,10 @@ const ModelProvidersWrapper = lazySection(
   () => import('@/sections/workspace/models/ProvidersTab'),
   'ProvidersTab',
 );
+const ModelLocalWrapper = lazySection(
+  () => import('@/sections/workspace/models/LocalModelsTab'),
+  'LocalModelsTab',
+);
 const ModelCatalogWrapper = lazySection(
   () => import('@/sections/workspace/models/AllModelsTab'),
   'AllModelsTab',
@@ -387,6 +391,7 @@ export const SECTION_COMPONENTS: Record<string, React.ComponentType<SectionProps
   'recurring-tasks': RecurringTasksWrapper,
   'conversation-inspector': InspectorWrapper,
   'model-providers': ModelProvidersWrapper,
+  'model-local': ModelLocalWrapper,
   'model-catalog': ModelCatalogWrapper,
   'model-aliases': ModelAliasesWrapper,
   'model-fallback': ModelFallbackWrapper,

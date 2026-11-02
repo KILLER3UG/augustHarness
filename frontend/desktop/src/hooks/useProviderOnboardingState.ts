@@ -13,13 +13,24 @@ const SKIP_KEY = 'august-onboarding-skipped';
 const DONE_KEY = 'august-setup-checklist-done';
 
 export type SetupCheckItem = {
-  id: 'provider' | 'workspace' | 'google' | 'doctor';
+  id: 'provider' | 'workspace' | 'google' | 'doctor' | 'local';
   label: string;
   description: string;
   done: boolean;
   optional?: boolean;
   href?: string;
 };
+
+/** Loopback base URL — the same rule the backend uses to admit a keyless
+ * provider, so a local server counts as a connected provider. */
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === 'localhost' || host === '::1' || host.startsWith('127.');
+  } catch {
+    return false;
+  }
+}
 
 export function useProviderOnboardingState() {
   const providersQ = useQuery<Provider[]>({
@@ -52,6 +63,7 @@ export function useProviderOnboardingState() {
 
   const providers = providersQ.data ?? [];
   const hasProvider = providers.length > 0;
+  const hasLocalProvider = providers.some((p) => isLoopbackUrl(p.baseUrl ?? ''));
   const googleConnected = Boolean(googleQ.data?.connections?.google?.connected);
   const googleReady = Boolean(
     googleQ.data?.connections?.google?.connected ||
@@ -98,6 +110,16 @@ export function useProviderOnboardingState() {
         href: '/settings/system-health',
       },
       {
+        id: 'local',
+        label: 'Use local models (optional)',
+        description: hasLocalProvider
+          ? 'A local server is connected'
+          : 'Detect LM Studio, Ollama, or llama.cpp running on this machine',
+        done: hasLocalProvider,
+        optional: true,
+        href: '/settings/model-local',
+      },
+      {
         id: 'google',
         label: 'Sign in with Google (optional)',
         description: 'Gmail, Calendar, and Drive in one click when ready',
@@ -106,7 +128,7 @@ export function useProviderOnboardingState() {
         href: '/settings/plugins',
       },
     ],
-    [hasProvider, hasWorkspace, googleConnected, doctorOk, doctorDetail],
+    [hasProvider, hasWorkspace, googleConnected, doctorOk, doctorDetail, hasLocalProvider],
   );
 
   const requiredDone = hasProvider; // workspace is strongly recommended but provider is the hard gate

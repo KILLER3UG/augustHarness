@@ -11,6 +11,7 @@ import {
   Circle,
   Cloud,
   FolderOpen,
+  HardDrive,
   Mail,
   Activity,
   Upload,
@@ -29,6 +30,7 @@ const ICONS = {
   workspace: FolderOpen,
   google: Mail,
   doctor: Activity,
+  local: HardDrive,
 } as const;
 
 export function ProviderOnboardingModal() {
