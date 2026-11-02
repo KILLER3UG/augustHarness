@@ -1133,6 +1133,37 @@
         "title": "FallbackUpdate",
         "type": "object"
       },
+      "GgufScanBody": {
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "GgufScanBody",
+        "type": "object"
+      },
+      "GgufServeBody": {
+        "properties": {
+          "ctxSize": {
+            "default": 8192,
+            "title": "Ctxsize",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "GgufServeBody",
+        "type": "object"
+      },
       "GitCommand": {
         "description": "Retired — the arbitrary-argv body behind the removed ``/command``.\n\nKept only so a stale client gets a clear 410 rather than a confusing\nvalidation error, and so the shape is documented as deliberately gone.",
         "properties": {
@@ -1218,6 +1249,37 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HfCancelBody": {
+        "properties": {
+          "jobId": {
+            "title": "Jobid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jobId"
+        ],
+        "title": "HfCancelBody",
+        "type": "object"
+      },
+      "HfDownloadBody": {
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "repoId": {
+            "title": "Repoid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repoId",
+          "filename"
+        ],
+        "title": "HfDownloadBody",
         "type": "object"
       },
       "ImportBody": {
@@ -2794,6 +2856,24 @@
         "title": "RunBody",
         "type": "object"
       },
+      "RuntimeInstallBody": {
+        "description": "Empty body = auto-detect the variant; ``variant`` overrides it.",
+        "properties": {
+          "variant": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "title": "RuntimeInstallBody",
+        "type": "object"
+      },
       "SaveRoutineBody": {
         "properties": {
           "name": {
@@ -2876,6 +2956,19 @@
           }
         },
         "title": "SecurityBody",
+        "type": "object"
+      },
+      "ServerStopBody": {
+        "properties": {
+          "serverId": {
+            "title": "Serverid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverId"
+        ],
+        "title": "ServerStopBody",
         "type": "object"
       },
       "SessionPatch": {
@@ -10723,6 +10816,177 @@
         "summary": "Healthdetailed"
       }
     },
+    "/api/hf/downloads": {
+      "get": {
+        "operationId": "hf_downloads_api_hf_downloads_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Hf Downloads"
+      },
+      "post": {
+        "operationId": "hf_start_download_api_hf_downloads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HfDownloadBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hf Start Download"
+      }
+    },
+    "/api/hf/downloads/cancel": {
+      "post": {
+        "operationId": "hf_cancel_download_api_hf_downloads_cancel_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HfCancelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hf Cancel Download"
+      }
+    },
+    "/api/hf/repos/{repoId}": {
+      "get": {
+        "operationId": "hf_repo_api_hf_repos__repoId__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "repoId",
+            "required": true,
+            "schema": {
+              "title": "Repoid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hf Repo"
+      }
+    },
+    "/api/hf/search": {
+      "get": {
+        "operationId": "hf_search_api_hf_search_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Q",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hf Search"
+      }
+    },
     "/api/hooks": {
       "get": {
         "description": "Registry stats for every hook plus the user/workspace hook specs.",
@@ -11291,6 +11555,141 @@
         "summary": "Add"
       }
     },
+    "/api/local-models/gguf/scan": {
+      "post": {
+        "description": "List GGUF files under a user-picked folder (the Tauri folder picker's\nanswer); read-only, bounded walk.",
+        "operationId": "gguf_scan_api_local_models_gguf_scan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GgufScanBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gguf Scan"
+      }
+    },
+    "/api/local-models/gguf/serve": {
+      "post": {
+        "description": "Serve one GGUF via llama-server and register it as a provider.\n\nReturns the instance row immediately (status ``starting``); poll\nGET /servers for ``ready``/``failed``. The provider is created through\nthe ordinary create path, models discovered, priced 0.0.",
+        "operationId": "gguf_serve_api_local_models_gguf_serve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GgufServeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Gguf Serve"
+      }
+    },
+    "/api/local-models/runtime": {
+      "get": {
+        "description": "Runtime install state + the variant auto-detection, for the UI card.",
+        "operationId": "runtime_status_api_local_models_runtime_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runtime Status"
+      }
+    },
+    "/api/local-models/runtime/install": {
+      "post": {
+        "description": "Kick off the runtime install in the background; poll GET /runtime.\n\nThe download is hundreds of megabytes — the request returns at once and\nthe install state (progress, phase, error) is what the UI polls.",
+        "operationId": "runtime_install_api_local_models_runtime_install_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RuntimeInstallBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runtime Install"
+      }
+    },
     "/api/local-models/scan": {
       "post": {
         "description": "Probe loopback ports for local model servers; read-only.",
@@ -11333,6 +11732,59 @@
           }
         },
         "summary": "Scan"
+      }
+    },
+    "/api/local-models/servers": {
+      "get": {
+        "description": "Running llama-server instances and their status.",
+        "operationId": "servers_api_local_models_servers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Servers"
+      }
+    },
+    "/api/local-models/servers/stop": {
+      "post": {
+        "operationId": "server_stop_api_local_models_servers_stop_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerStopBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Server Stop"
       }
     },
     "/api/logs/recent": {

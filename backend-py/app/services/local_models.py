@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -159,3 +162,69 @@ async def scan_local_servers(extra_ports: list[int] | None = None) -> dict[str, 
     servers.sort(key=lambda s: int(str(s.get('port', 0))) if s.get('port') is not None else 0)
     logger.info('local model scan found %d server(s) on %d port(s)', len(servers), len(ports))
     return {'servers': servers}
+
+
+# ── GGUF files on disk ─────────────────────────────────────────────────────
+
+_GGUF_SUFFIX = '.gguf'
+_GGUF_MAX_DEPTH = 4
+_GGUF_MAX_FILES = 2000
+# llama.cpp split files:  model-00001-of-00003.gguf
+_SPLIT_FIRST = re.compile(r'-(\d{5})-of-(\d{5})\.gguf$', re.IGNORECASE)
+
+
+def scan_gguf_folder(root: str) -> dict[str, object]:
+    """Find GGUF files under a user-picked folder; read-only.
+
+    The path comes from the desktop app's own folder picker, so scanning it
+    is the user's choice, not an agent enumeration. Bounded walk: depth 4,
+    hidden directories skipped, no symlink following, results capped.
+    Split GGUFs collapse to their first shard — that is the file
+    llama-server takes.
+    """
+    base = Path(root)
+    if not base.is_dir():
+        raise ValueError(f'Not a folder: {root}')
+    found: list[dict[str, object]] = []
+    base_depth = len(base.parts)
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        depth = len(Path(dirpath).parts) - base_depth
+        if depth >= _GGUF_MAX_DEPTH:
+            dirnames[:] = []
+        dirnames[:] = [d for d in dirnames if not d.startswith('.')]
+        for name in filenames:
+            if not name.lower().endswith(_GGUF_SUFFIX):
+                continue
+            if name.startswith('.'):
+                continue
+            path = Path(dirpath) / name
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            found.append({'path': str(path), 'name': name, 'size': size, 'split': False})
+            if len(found) >= _GGUF_MAX_FILES:
+                logger.warning('GGUF scan hit the %d-file cap under %s', _GGUF_MAX_FILES, root)
+                break
+        if len(found) >= _GGUF_MAX_FILES:
+            break
+
+    # Split shards: keep the first shard of each series, mark it, drop the rest.
+    by_series: dict[str, list[dict[str, object]]] = {}
+    singles: list[dict[str, object]] = []
+    for entry in found:
+        m = _SPLIT_FIRST.search(str(entry['name']))
+        if m:
+            series = str(entry['name'])[: m.start()]
+            by_series.setdefault(series, []).append(entry)
+        else:
+            singles.append(entry)
+    for series, shards in by_series.items():
+        shards.sort(key=lambda e: str(e['name']))
+        first = shards[0]
+        first['split'] = True
+        first['shards'] = len(shards)
+        singles.append(first)
+
+    singles.sort(key=lambda e: str(e['name']).lower())
+    return {'root': str(base), 'models': singles, 'truncated': len(found) >= _GGUF_MAX_FILES}

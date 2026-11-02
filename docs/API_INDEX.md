@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-429 routes across 356 paths,
+440 routes across 366 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -501,7 +501,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (37)
+## Other (48)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -528,13 +528,24 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/goals` | Every goal, its runs, its artifacts with their movements, and claims versus marks. |
 | `POST` | `/api/goals/{env_id}/abandon` | Stop a goal from the UI. Filed outputs and marks stay; nothing the user wrote is deleted. |
 | `POST` | `/api/goals/runs/{run_id}/close` | Close a run the model left open. Only the run ends here — the goal keeps its state. |
+| `GET` | `/api/hf/downloads` | Hf Downloads |
+| `POST` | `/api/hf/downloads` | Hf Start Download |
+| `POST` | `/api/hf/downloads/cancel` | Hf Cancel Download |
+| `GET` | `/api/hf/repos/{repoId}` | Hf Repo |
+| `GET` | `/api/hf/search` | Hf Search |
 | `GET` | `/api/hooks` | Registry stats for every hook plus the user/workspace hook specs. |
 | `POST` | `/api/hooks/reload` | Force an immediate mtime re-check of every hook config. |
 | `POST` | `/api/hooks/revoke-workspace` | Withdraw that approval, and unregister the handlers it armed. |
 | `POST` | `/api/hooks/trust-workspace` | Approve running this session's workspace `.aug/hooks.json`. |
 | `GET` | `/api/host-agent/health` | Return host agent availability and health status. |
 | `POST` | `/api/local-models/add` | Create a provider for a detected local server and fetch its models. |
+| `POST` | `/api/local-models/gguf/scan` | List GGUF files under a user-picked folder (the Tauri folder picker's answer); read-only, bounded walk. |
+| `POST` | `/api/local-models/gguf/serve` | Serve one GGUF via llama-server and register it as a provider. |
+| `GET` | `/api/local-models/runtime` | Runtime install state + the variant auto-detection, for the UI card. |
+| `POST` | `/api/local-models/runtime/install` | Kick off the runtime install in the background; poll GET /runtime. |
 | `POST` | `/api/local-models/scan` | Probe loopback ports for local model servers; read-only. |
+| `GET` | `/api/local-models/servers` | Running llama-server instances and their status. |
+| `POST` | `/api/local-models/servers/stop` | Server Stop |
 | `GET` | `/api/overview` | Dashboard overview cards (requests / activity / errors / cost). |
 | `GET` | `/api/realtime/recent` | Recent realtime events (debug / reconnect catch-up). |
 | `GET` | `/api/realtime/stream` | Server-Sent Events stream of UI realtime events. |
@@ -548,4 +559,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (429 operations).
+Generated from `docs/api/openapi.json` (440 operations).

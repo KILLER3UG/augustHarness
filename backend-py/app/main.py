@@ -187,6 +187,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning('Health monitor start failed (non-fatal): %s', exc)
 
+    # A previous process may have died with llama-servers still up, holding
+    # GGUF file locks — kill them before anything wants the files.
+    try:
+        from app.services.llama_runtime import sweep_orphans
+
+        await sweep_orphans()
+    except Exception as exc:
+        logger.warning('llama-server orphan sweep failed (non-fatal): %s', exc)
+
     settings.reload()
     # Mirror Google OAuth keys from .env / process env into durable mcpGlobalEnv
     # so Integrations UI and MCP subprocesses keep them across restarts.
@@ -391,6 +400,14 @@ async def lifespan(app: FastAPI):
         await shutdown_runtime_services()
     except Exception:
         pass
+    # Kill the llama-servers we spawned — children can outlive the backend
+    # process on Windows, and a held model file locks the GGUF on disk.
+    try:
+        from app.services.llama_runtime import shutdown_all
+
+        await shutdown_all()
+    except Exception:
+        pass
     # Flush debounced workbench session saves — the daemon timer dies with
     # the process, so edits inside the debounce window would be lost
     # (audit finding).
@@ -576,6 +593,7 @@ app.include_router(skillsRoutes.router)
 app.include_router(curatorRoutes.router)
 app.include_router(providersRoutes.router)
 app.include_router(localModelsRoutes.router)
+app.include_router(localModelsRoutes.hf)
 app.include_router(privacyRoutes.router)
 app.include_router(modelsRoutes.router)
 app.include_router(proxyRoutes.router)
