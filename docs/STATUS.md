@@ -1,6 +1,6 @@
 # Status — the current round
 
-Last updated: 2026-10-31 · App version: **0.19.0**
+Last updated: 2026-11-02 · App version: **0.20.0**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
