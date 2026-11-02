@@ -105,6 +105,18 @@ def _hasApiKey(provider: dict[str, object]) -> bool:
     return client.resolveApiKey() is not None
 
 
+def _is_keyless_ok(provider: dict[str, object]) -> bool:
+    """Credential rule for availability: a key in any source, or a loopback
+    base URL. A local host needs no credential — the same rule that prices a
+    local model at 0.0 — so a keyless Ollama/LM Studio provider is usable,
+    not invisible."""
+    if _hasApiKey(provider):
+        return True
+    from app.providers.api_format import is_loopback_base_url
+
+    return is_loopback_base_url(provider.get('baseUrl'))
+
+
 def resolve(name: str) -> Optional[dict[str, object]]:
     """Find a configured provider by id, name, alias, or model-alias target."""
     if not name:
@@ -167,7 +179,7 @@ def resolve(name: str) -> Optional[dict[str, object]]:
         models = as_list(e.get('models'), [])
         model_ids = {as_str(m.get('id') if isinstance(m, dict) else m).lower() for m in models}
         if name_l in model_ids:
-            if _hasApiKey(p):
+            if _is_keyless_ok(p):
                 keyed.append(p)
             else:
                 any_match.append(p)
@@ -202,17 +214,18 @@ def resolve(name: str) -> Optional[dict[str, object]]:
 
 
 def list_available() -> list[dict[str, object]]:
-    """Enabled providers from providers.json that have credentials.
+    """Enabled providers from providers.json that are usable.
 
-    ``_hasApiKey`` also resolves environment-backed credentials — providers
+    ``_is_keyless_ok`` also resolves environment-backed credentials — providers
     configured via env vars have no literal ``apiKey`` field but are fully
-    usable (a raw ``apiKey`` check marked them unavailable).
+    usable (a raw ``apiKey`` check marked them unavailable) — and admits
+    keyless loopback hosts (Ollama, LM Studio), which need no credential.
     """
     out: list[dict[str, object]] = []
     for e in _iter_store_entries():
         if not e.get('enabled', True):
             continue
-        if not _hasApiKey(e):
+        if not _is_keyless_ok(e):
             continue
         out.append(entry_to_provider_dict(e))
     return out

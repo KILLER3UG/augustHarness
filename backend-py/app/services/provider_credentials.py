@@ -425,11 +425,19 @@ def _customProviderDict(entry: dict[str, object]) -> dict[str, object]:
 
 
 def resolve(nameOrId: str) -> Optional[dict[str, object]]:
-    """Return ``{provider, api_key, baseUrl, apiMode, source}`` or ``None``."""
+    """Return ``{provider, api_key, baseUrl, apiMode, source}`` or ``None``.
+
+    A keyless entry resolves when its base URL is loopback — a local host
+    (Ollama, LM Studio, a served GGUF) needs no credential. The ``api_key``
+    comes back as an empty string there, which the clients treat as "no
+    Authorization header".
+    """
     if not nameOrId:
         return None
+    from app.providers.api_format import is_loopback_base_url
+
     custom = _customEntry(loadStore(), nameOrId)
-    if custom and custom.get('enabled') and custom.get('apiKey'):
+    if custom and custom.get('enabled') and (custom.get('apiKey') or is_loopback_base_url(custom.get('baseUrl'))):
         api_key: Optional[str] = as_str(custom.get('apiKey'), '')
         return {
             'provider': _customProviderDict(custom),
@@ -449,7 +457,7 @@ def resolve(nameOrId: str) -> Optional[dict[str, object]]:
         client = getClient(provider)
         if client:
             api_key = client.resolveApiKey() or ''
-    if not api_key:
+    if not api_key and not is_loopback_base_url(provider.get('baseUrl')):
         return None
     return {
         'provider': provider,

@@ -27,10 +27,13 @@ router = APIRouter(prefix='/api/config')
 async def activeProvider():
     """Get active provider and list all available providers.
 
-    Only returns providers that have API keys configured —
-    either built-in providers with keys in config.json/env vars,
-    or custom providers from providers.json.
+    Returns providers that are usable — API keys configured (built-in
+    providers with keys in config.json/env vars, or custom providers from
+    providers.json) and keyless custom providers whose base URL is loopback
+    (Ollama, LM Studio — a local host needs no credential).
     """
+    from app.providers.api_format import is_loopback_base_url
+
     cfg = config_service.getConfig()
     active = cfg.get('activeProvider')
     providers = []
@@ -42,7 +45,7 @@ async def activeProvider():
             client = getClient(p)
             if client:
                 apiKey = client.resolveApiKey() or ''
-        if apiKey:
+        if apiKey or is_loopback_base_url(p.get('baseUrl')):
             providers.append(
                 {
                     'id': p['name'],
@@ -57,8 +60,10 @@ async def activeProvider():
         name = as_str(entry.get('name'), '')
         if not name or any((p['id'] == name for p in providers)):
             continue
+        if not entry.get('enabled', True):
+            continue
         apiKey = as_str(entry.get('apiKey'), '')
-        if apiKey:
+        if apiKey or is_loopback_base_url(entry.get('baseUrl')):
             providers.append(
                 {
                     'id': name,
@@ -99,7 +104,11 @@ async def providerDetails(provider: str = ''):
         'apiKeySet': bool(entry.get('apiKey')),
         'baseUrl': entry.get('baseUrl', ''),
     }
-    isAvailable = bool(entry.get('enabled')) and bool(entry.get('apiKey'))
+    from app.providers.api_format import is_loopback_base_url
+
+    isAvailable = bool(entry.get('enabled', True)) and (
+        bool(entry.get('apiKey')) or is_loopback_base_url(entry.get('baseUrl'))
+    )
     providerId = entry.get('id', provider)
     envVars = as_list(pd.get('envVars'), [])
     envStatus = {as_str(v): bool(os.getenv(as_str(v))) for v in envVars}

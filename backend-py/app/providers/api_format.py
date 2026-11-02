@@ -9,6 +9,7 @@ never hit "Unsupported API format" after picking a dropdown option.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,27 @@ def normalize_provider_base_url(base_url: object | None) -> str:
                 changed = True
                 break
     return base
+
+
+def is_loopback_base_url(base_url: object | None) -> bool:
+    """True when the provider base URL points at this machine.
+
+    A loopback host needs no credential — that is what makes a keyless
+    Ollama / LM Studio provider usable everywhere a key is otherwise
+    required, the same idea that prices a local model at 0.0. A remote host
+    is never loopback, whatever it is named.
+    """
+    base = str(base_url or '').strip()
+    if not base:
+        return False
+    if '://' not in base:
+        base = f'http://{base}'
+    try:
+        host = urlsplit(base).hostname or ''
+    except ValueError:
+        return False
+    host = host.strip('[]').lower()
+    return host == 'localhost' or host == '::1' or host.startswith('127.')
 
 
 def join_provider_url(base_url: object | None, *path_parts: str) -> str:

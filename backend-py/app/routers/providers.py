@@ -626,7 +626,9 @@ async def _discoverProviderModels(
         liveModels: list[str] = []
         baseUrl = as_str(p.get('baseUrl', ''))
         apiKey = as_str(p.get('apiKey', ''))
-        if baseUrl and apiKey:
+        # A keyless local host (Ollama, LM Studio) still serves /models — the
+        # Bearer header goes only when there is a key to put in it.
+        if baseUrl:
             try:
                 import httpx
 
@@ -639,7 +641,8 @@ async def _discoverProviderModels(
                     async with httpx.AsyncClient(timeout=5) as client:
                         try:
                             resp = await client.get(
-                                models_url, headers={'Authorization': f'Bearer {apiKey}'}
+                                models_url,
+                                headers={'Authorization': f'Bearer {apiKey}'} if apiKey else {},
                             )
                             if resp.status_code == 200:
                                 data = resp.json()

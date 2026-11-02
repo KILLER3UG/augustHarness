@@ -321,8 +321,11 @@ def resolve_workbench_provider(provider_name: str, model_hint: str = '') -> dict
             return as_dict(creds.get('provider'))
 
     if model_hint:
-        # 1) Custom providers that list this model id and have a key
+        # 1) Custom providers that list this model id and are usable
+        # (a key, or a keyless loopback host)
         try:
+            from app.providers.api_format import is_loopback_base_url
+
             store = config_service.getProvidersStore() or {}
             target = model_hint.lower()
             for entry in as_list(store.get('providers'), []):
@@ -330,7 +333,7 @@ def resolve_workbench_provider(provider_name: str, model_hint: str = '') -> dict
                     continue
                 if entry.get('enabled') is False:
                     continue
-                if not as_str(entry.get('apiKey')):
+                if not as_str(entry.get('apiKey')) and not is_loopback_base_url(entry.get('baseUrl')):
                     continue
                 models = as_list(entry.get('models'), [])
                 for m in models:
@@ -358,9 +361,14 @@ def resolve_workbench_provider(provider_name: str, model_hint: str = '') -> dict
 
 
 def _provider_has_key(provider: dict[str, object] | None) -> bool:
+    """Usable for chat: a key in any source, or a keyless loopback host."""
     if not provider:
         return False
     if provider.get('api_key') or provider.get('apiKey'):
+        return True
+    from app.providers.api_format import is_loopback_base_url
+
+    if is_loopback_base_url(provider.get('baseUrl')):
         return True
     try:
         from app.services import provider_credentials
@@ -368,7 +376,7 @@ def _provider_has_key(provider: dict[str, object] | None) -> bool:
         creds = provider_credentials.resolve(
             as_str(provider.get('id') or provider.get('name'))
         )
-        return bool(creds and creds.get('api_key'))
+        return bool(creds and (creds.get('api_key') or is_loopback_base_url(creds.get('baseUrl'))))
     except Exception:
         return False
 
