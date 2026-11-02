@@ -1712,9 +1712,10 @@ export interface paths {
          * Activeprovider
          * @description Get active provider and list all available providers.
          *
-         *     Only returns providers that have API keys configured —
-         *     either built-in providers with keys in config.json/env vars,
-         *     or custom providers from providers.json.
+         *     Returns providers that are usable — API keys configured (built-in
+         *     providers with keys in config.json/env vars, or custom providers from
+         *     providers.json) and keyless custom providers whose base URL is loopback
+         *     (Ollama, LM Studio — a local host needs no credential).
          */
         get: operations["activeProvider_api_config_activeProvider_get"];
         put?: never;
@@ -3565,6 +3566,50 @@ export interface paths {
          * @description Run a Live turn through the workbench chat path (non-stream summary).
          */
         post: operations["liveTurn_api_live_turn_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/add": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add
+         * @description Create a provider for a detected local server and fetch its models.
+         *
+         *     Reuses the ordinary provider-create route (id minting, base-URL
+         *     normalization, store write, realtime invalidations) so a local server is
+         *     stored exactly like any provider the user typed in by hand.
+         */
+        post: operations["add_api_local_models_add_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan
+         * @description Probe loopback ports for local model servers; read-only.
+         */
+        post: operations["scan_api_local_models_scan_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7985,6 +8030,24 @@ export interface components {
              */
             title: string;
         };
+        /**
+         * AddLocalServer
+         * @description One detected server, offered back for the add.
+         */
+        AddLocalServer: {
+            /**
+             * Apiformat
+             * @default openaiChat
+             */
+            apiFormat: string;
+            /** Baseurl */
+            baseUrl: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+        };
         /** AgentCreate */
         AgentCreate: {
             /**
@@ -9294,6 +9357,17 @@ export interface components {
              * @default
              */
             workstream: string;
+        };
+        /**
+         * ScanBody
+         * @description Optional extra ports to probe (the well-known list is always probed).
+         */
+        ScanBody: {
+            /**
+             * Ports
+             * @default []
+             */
+            ports: number[];
         };
         /** SecurityBody */
         SecurityBody: {
@@ -15467,6 +15541,72 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_api_local_models_add_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddLocalServer"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scan_api_local_models_scan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ScanBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
