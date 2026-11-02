@@ -129,7 +129,6 @@ export function ThoughtStep({
 
   const summaryCap = showFull ? THOUGHT_SUMMARY_LINES_FULL : THOUGHT_SUMMARY_LINES;
   const summaryLines = distilledLines.slice(0, summaryCap);
-  const hiddenSummaryCount = Math.max(0, distilledLines.length - summaryCap);
 
   if (!text && !isGenerating) return null;
 
@@ -192,9 +191,9 @@ export function ThoughtStep({
             data-slot="thought-summary"
           >
             {/* One sentence per line, the way the reference's thinking
-                card reads. The FIRST line is the header; the rest are the
-                card's body. Expansion shows more of the SAME list, never
-                the raw reasoning. */}
+                card reads. Collapsed shows exactly ONE line (the distilled
+                header) — the chevron below is the "there is more" signal,
+                so no "…and N more" filler line is rendered here. */}
             <span className="thought-summary-text">
               {summaryLines.map((line, i) => (
                 <span
@@ -207,11 +206,6 @@ export function ThoughtStep({
                   {line}
                 </span>
               ))}
-              {hiddenSummaryCount > 0 ? (
-                <span className="thought-summary-line block text-muted-foreground/50">
-                  …and {hiddenSummaryCount} more steps.
-                </span>
-              ) : null}
               {/* A settled thought whose every sentence the distiller
                   filtered (pure netlist/code noise) still owes the card a
                   body — an empty summary div reads as a rendering bug. */}

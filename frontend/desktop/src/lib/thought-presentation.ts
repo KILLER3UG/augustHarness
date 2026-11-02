@@ -22,11 +22,12 @@ export const THOUGHT_CLAMP_LINES = 6;
  *  at once, so a long thought must also truncate by length alone. */
 export const THOUGHT_CLAMP_CHARS = 480;
 
-/** Distilled summary lines a settled thought shows before expansion. The
- *  reference thinking card carries a SHORT summary — a couple of "what the
- *  model is doing" sentences under its settled title — never the
- *  raw chain of thought. */
-export const THOUGHT_SUMMARY_LINES = 12;
+/** Distilled summary lines a settled thought shows BEFORE the user expands
+ *  it: ONE line, the Claude reference's collapsed row — a single "what the
+ *  model is doing" sentence with a chevron. The block never opens on its
+ *  own; expansion (more distilled lines, then the raw reasoning behind
+ *  "Show full reasoning") is the user's click. */
+export const THOUGHT_SUMMARY_LINES = 1;
 
 /** Summary lines the expanded card shows. Still distilled sentences, not
  *  raw reasoning: expansion reveals more of the summary, the way the
