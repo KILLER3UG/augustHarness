@@ -30,11 +30,21 @@ waiting on the owner, and how to resume.
   API-format workflows in **Settings → ComfyUI**; the `generate_image` tool
   is registered only while the connection is enabled (honest surfaces) and
   writes into the workspace through the artifact-tools door.
-- Not yet verified by a human: the whole feature is gate-green and
-  service-tested (fake servers, real HF reads, workflow substitution,
-  registration toggling), but the desktop-app pass — a real LM Studio scan,
-  a real runtime install on CUDA 12 and 13 drivers, a served GGUF chat, and
-  a real ComfyUI generation — is the listed human step in the feature plan.
+- **Verified on the real machine**: the runtime installed (Vulkan
+  auto-selected after the 616.64 nvidia-smi banner fix; CUDA 13.4 variant
+  downloading), the user's own `LFM3-1.7B-Q8_0.gguf` served, auto-registered
+  with a clean model id, and answered August's Test probe — `Connected!`
+  in 889 ms through the ordinary OpenAI-compatible chat path.
+- **Follow-ups in the same round**: thinking blocks collapse to ONE line
+  and never auto-expand; SimulIDE `.sim/.sim1/.sim2` files parse, describe
+  (analyze_media), and render as schematics in the Circuit pane; chat
+  attachments are uncapped and carry original file bytes (binary + from-path
+  doors); Hugging Face search browses ALL models with a GGUF-only filter;
+  the loopback keyless exemption now reaches the chat callers and proxy
+  adapters (the Test button on a local model works).
+- Still on the human list: a real ComfyUI generation, the CUDA 12.4 variant
+  on a 12-series driver, and the desktop-app pass (the dev-backend test ran
+  on :8091 against the real data dir).
 - Previous round below; the self-edit loop and the rename shipped there.
 
 ## The round before — the app edits its own source, and is renamed
