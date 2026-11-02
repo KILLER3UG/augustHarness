@@ -1,6 +1,7 @@
 """Bot Mode — desktop-roster bots on the agent registry + canonical chats.
 
-Plan: docs/plans/2026-09-01-bot-mode.md. A Bot is an agent-registry record
+Plan: docs/plans/2026-09-01-bot-mode.md (purged 2026-11-02; recover with
+``git log -- docs/plans/2026-09-01-bot-mode.md``). A Bot is an agent-registry record
 plus ``uiMeta`` (title/avatar/hidden/groups) on the same KV blob — no new
 runtime entity, no migration. Each Bot owns exactly one canonical Bot Chat
 (a workbench session titled ``Bot Chat`` stamped

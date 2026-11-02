@@ -6,7 +6,8 @@ sender's text through the agent with ``guardMode`` from config (default
 discovered the bot username could approve workbench plans and drive tools
 on the user's machine.
 
-Rules (spec: docs/plans/2026-09-01-messaging-gateway.md §Phase 0):
+Rules (spec: docs/plans/2026-09-01-messaging-gateway.md §Phase 0, purged
+2026-11-02 — ``git log -- docs/plans/2026-09-01-messaging-gateway.md``):
 
 * **Allowlist, default-deny.** ``gateway.allowedUsers: {platform: [user_id…]}``
   in config.json, plus env ``{PLATFORM}_ALLOWED_USERS`` (comma list).

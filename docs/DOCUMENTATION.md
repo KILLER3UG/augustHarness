@@ -61,28 +61,15 @@ architectural read in the repo.
 | [One chat turn](state/chat-turn.md) | The turn lifecycle and the eight named stop reasons |
 | [Memory lanes](state/memory-lanes.md) | Profile, delta and recall — and which one is automatic |
 
-## Research and design references
+## Design references
 
 | Path | Contents |
 |------|----------|
-| [`research/`](research/) | Read-only studies of August and of the reference harnesses (pi, SimulIDE, DeepSeek harness), with citation ledgers |
 | [`design/`](design/) | The Signal Desk desktop and mobile mockups — the source of truth for the UI port |
 
-## Active plans
-
-Plans are working documents, not reference. Closed plans, audits and deep dives
-were deleted on 2026-10-29; `git log -- docs/plans/<name>` recovers any of them.
-
-| Plan | Status |
-|---|---|
-| [2026-10-25-goal-environments.md](plans/2026-10-25-goal-environments.md) | Owner goal: the harness as the agent's environment |
-| [2026-10-25-self-modification-autonomy.md](plans/2026-10-25-self-modification-autonomy.md) | Phase 0: environment + audit-and-undo autonomy |
-| [2026-10-26-signal-desk-ui-port.md](plans/2026-10-26-signal-desk-ui-port.md) | The whole-desktop Signal Desk port |
-| [AUGUST-UI-ENHANCEMENTS.md](plans/AUGUST-UI-ENHANCEMENTS.md) | The UI enhancement backlog, merged from the retired audits |
-| [2026-10-11-ui-reference-capture.md](plans/2026-10-11-ui-reference-capture.md) | The captured UI reference the port measures against |
-| [2026-10-07-google-workspace-classroom-capability.md](plans/2026-10-07-google-workspace-classroom-capability.md) | Proposed; needs an architecture decision |
-| [2026-10-07-hermes-august-capability-bridge.md](plans/2026-10-07-hermes-august-capability-bridge.md) | Capability-sharing design and rulings |
-| [2026-10-07-plugin-discovery-and-credential-storage.md](plans/2026-10-07-plugin-discovery-and-credential-storage.md) | Proposed; plugin discovery + credential storage |
+`docs/research/` and `docs/plans/` were purged on 2026-11-02 at the owner's
+instruction. `git log -- docs/plans/<name>` and `git log -- docs/research/<name>`
+recover any of them; the files are not archived elsewhere.
 
 ## Generated
 
