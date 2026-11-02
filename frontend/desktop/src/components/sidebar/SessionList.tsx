@@ -270,7 +270,6 @@ export function SessionList({
   const {
     available: updateAvailable,
     installing: updateInstalling,
-    check: checkForUpdates,
     install: installUpdate,
   } = useAppUpdate();
   const dropdownUser = activeAccount
@@ -1308,29 +1307,26 @@ export function SessionList({
             </div>
           </div>
 
-          {/* The update door, directly above the avatar. It is never a dead
-              control: with a release pending it downloads that release, and
-              with none it asks the updater. A button that only works sometimes
-              is a lie about what the app can do. */}
-          <Button variant="bare"
-            type="button"
-            className="nav-item"
-            data-testid="sidebar-update"
-            disabled={updateInstalling}
-            onClick={() => {
-              if (updateAvailable) void installUpdate('download');
-              else void checkForUpdates();
-            }}
-          >
-            <SignalIcon name="download" />
-            <span>
-              {updateInstalling
-                ? 'Downloading update…'
-                : updateAvailable
-                  ? `Update to ${updateAvailable.version}`
-                  : 'Check for updates'}
-            </span>
-          </Button>
+          {/* The update door, directly above the avatar — and only when there
+              IS an update. Detection is already automatic: useAppUpdate polls
+              on a 30-minute stale time and again on window focus, so a manual
+              "check" control is a chore the app does not need. One click here
+              downloads and applies, the same call the notifications panel
+              makes. */}
+          {updateAvailable ? (
+            <Button variant="bare"
+              type="button"
+              className="nav-item"
+              data-active="true"
+              data-testid="sidebar-update"
+              disabled={updateInstalling}
+              onClick={() => { void installUpdate(); }}
+            >
+              <SignalIcon name="download" />
+              <span>{updateInstalling ? 'Updating…' : 'Update'}</span>
+              <span className="nav-count">{updateAvailable.version}</span>
+            </Button>
+          ) : null}
 
           <UserDropdown
             selectedStatus={dropdownUser.status}
