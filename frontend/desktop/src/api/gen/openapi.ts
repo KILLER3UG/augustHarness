@@ -3279,6 +3279,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hf/downloads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Hf Downloads */
+        get: operations["hf_downloads_api_hf_downloads_get"];
+        put?: never;
+        /** Hf Start Download */
+        post: operations["hf_start_download_api_hf_downloads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hf/downloads/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Hf Cancel Download */
+        post: operations["hf_cancel_download_api_hf_downloads_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hf/repos/{repoId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Hf Repo */
+        get: operations["hf_repo_api_hf_repos__repoId__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/hf/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Hf Search */
+        get: operations["hf_search_api_hf_search_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/hooks": {
         parameters: {
             query?: never;
@@ -3596,6 +3665,94 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/local-models/gguf/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gguf Scan
+         * @description List GGUF files under a user-picked folder (the Tauri folder picker's
+         *     answer); read-only, bounded walk.
+         */
+        post: operations["gguf_scan_api_local_models_gguf_scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/gguf/serve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Gguf Serve
+         * @description Serve one GGUF via llama-server and register it as a provider.
+         *
+         *     Returns the instance row immediately (status ``starting``); poll
+         *     GET /servers for ``ready``/``failed``. The provider is created through
+         *     the ordinary create path, models discovered, priced 0.0.
+         */
+        post: operations["gguf_serve_api_local_models_gguf_serve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Runtime Status
+         * @description Runtime install state + the variant auto-detection, for the UI card.
+         */
+        get: operations["runtime_status_api_local_models_runtime_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/runtime/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runtime Install
+         * @description Kick off the runtime install in the background; poll GET /runtime.
+         *
+         *     The download is hundreds of megabytes — the request returns at once and
+         *     the install state (progress, phase, error) is what the UI polls.
+         */
+        post: operations["runtime_install_api_local_models_runtime_install_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/local-models/scan": {
         parameters: {
             query?: never;
@@ -3610,6 +3767,43 @@ export interface paths {
          * @description Probe loopback ports for local model servers; read-only.
          */
         post: operations["scan_api_local_models_scan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Servers
+         * @description Running llama-server instances and their status.
+         */
+        get: operations["servers_api_local_models_servers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/servers/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Server Stop */
+        post: operations["server_stop_api_local_models_servers_stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8445,6 +8639,21 @@ export interface components {
             /** Provider */
             provider?: string | null;
         };
+        /** GgufScanBody */
+        GgufScanBody: {
+            /** Path */
+            path: string;
+        };
+        /** GgufServeBody */
+        GgufServeBody: {
+            /**
+             * Ctxsize
+             * @default 8192
+             */
+            ctxSize: number;
+            /** Path */
+            path: string;
+        };
         /**
          * GitCommand
          * @description Retired — the arbitrary-argv body behind the removed ``/command``.
@@ -8510,6 +8719,18 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HfCancelBody */
+        HfCancelBody: {
+            /** Jobid */
+            jobId: string;
+        };
+        /** HfDownloadBody */
+        HfDownloadBody: {
+            /** Filename */
+            filename: string;
+            /** Repoid */
+            repoId: string;
         };
         /** ImportBody */
         ImportBody: {
@@ -9343,6 +9564,14 @@ export interface components {
             /** Id */
             id: string;
         };
+        /**
+         * RuntimeInstallBody
+         * @description Empty body = auto-detect the variant; ``variant`` overrides it.
+         */
+        RuntimeInstallBody: {
+            /** Variant */
+            variant?: string | null;
+        };
         /** SaveRoutineBody */
         SaveRoutineBody: {
             /**
@@ -9377,6 +9606,11 @@ export interface components {
             filesystemScope?: string | null;
             /** Postobservationscreenshot */
             postObservationScreenshot?: boolean | null;
+        };
+        /** ServerStopBody */
+        ServerStopBody: {
+            /** Serverid */
+            serverId: string;
         };
         /**
          * SessionPatch
@@ -15086,6 +15320,155 @@ export interface operations {
             };
         };
     };
+    hf_downloads_api_hf_downloads_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    hf_start_download_api_hf_downloads_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HfDownloadBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hf_cancel_download_api_hf_downloads_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HfCancelBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hf_repo_api_hf_repos__repoId__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repoId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    hf_search_api_hf_search_get: {
+        parameters: {
+            query?: {
+                q?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_hooks_api_hooks_get: {
         parameters: {
             query?: never;
@@ -15587,6 +15970,125 @@ export interface operations {
             };
         };
     };
+    gguf_scan_api_local_models_gguf_scan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GgufScanBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    gguf_serve_api_local_models_gguf_serve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GgufServeBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runtime_status_api_local_models_runtime_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    runtime_install_api_local_models_runtime_install_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RuntimeInstallBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     scan_api_local_models_scan_post: {
         parameters: {
             query?: never;
@@ -15597,6 +16099,59 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": components["schemas"]["ScanBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    servers_api_local_models_servers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    server_stop_api_local_models_servers_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerStopBody"];
             };
         };
         responses: {
