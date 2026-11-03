@@ -127,14 +127,39 @@ async def createAgent(
     permissions: list[str] | None = None,
     model_alias: str = '',
     parent_agent: str = '',
+    model: str = '',
+    provider: str = '',
+    setup_required: bool = False,
 ) -> str:
     # Bot Mode (one agent concept): agent creation goes through the roster
     # so every agent is a Bot with a canonical chat. Idempotent on name.
     from app.services.bot_mode import roster
+    from app.services.tools import agent_registry
+    from app.services.workbench.context import currentSessionId
+    from app.services.workbench.sessions import get_workbench_session
 
     refused = _authority_refusal({'permissions': permissions, 'tools': tools, 'model_alias': model_alias})
     if refused:
         return refused
+
+    # Pinning a model/provider is the FOREMAN's authority alone (rerun
+    # pattern): a designated team-builder bot may pick the model of a
+    # teammate it constructs, because the user asked IT to build the bot.
+    # Any other caller gets the same authority refusal as capabilities.
+    caller_is_foreman = False
+    sid = currentSessionId.get()
+    if sid and sid != 'default':
+        session = get_workbench_session(sid)
+        agent_id = str(getattr(session, 'agentId', '') or '')
+        if agent_id:
+            caller_is_foreman = bool((agent_registry.getAgent(agent_id) or {}).get('foreman'))
+    if (model or provider) and not caller_is_foreman:
+        return _err(
+            "Refused: an agent's model and provider are the user's to set. Only the "
+            'Foreman bot may pin a model when building a teammate the user asked it '
+            'to construct.',
+            refused=['model', 'provider'],
+        )
     # Lineage is the HUMAN's to set, for the same reason the capability
     # definition is: `parentId` is the graph the permission ceiling walks
     # (`agent_registry._effectivePermissions`), the "may not delete an
@@ -158,6 +183,9 @@ async def createAgent(
             name=name,
             description=description,
             role=role,
+            model=model,
+            provider=provider,
+            setup_required=bool(setup_required),
             actor='agent',
         )
         return _ok(agent=agent)
@@ -384,7 +412,7 @@ def register() -> None:
         'Create a new agent (a Bot) with a name, role and description. The agent is persisted '
         'and immediately usable — bind it to a session or invoke it as a sub-agent. Its tool '
         'surface is inherited from the turn that spawns it; capabilities are the user to set, '
-        'and so is its place in the agent hierarchy.',
+        'and so is its place in the agent hierarchy. Only the Foreman bot may pin model/provider.',
         createAgent,
         {
             'type': 'object',
@@ -392,6 +420,13 @@ def register() -> None:
                 'name': {'type': 'string', 'description': 'Human-readable agent name.'},
                 'description': {'type': 'string', 'description': 'What the agent does.'},
                 'role': {'type': 'string', 'description': "Role label (e.g. 'Researcher')."},
+                'model': {'type': 'string', 'description': 'Model id — Foreman bot only.'},
+                'provider': {'type': 'string', 'description': 'Provider name — Foreman bot only.'},
+                'setup_required': {
+                    'type': 'boolean',
+                    'description': 'True when the new bot must walk its owner through a guided '
+                    'setup in its chat first; the owner completes it with install_complete.',
+                },
             },
             'required': ['name'],
         },

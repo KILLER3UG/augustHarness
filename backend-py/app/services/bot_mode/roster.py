@@ -191,6 +191,92 @@ def ensure_default_bot(actor: str = 'system') -> dict[str, object]:
     )
 
 
+# ── the Foreman ────────────────────────────────────────────────────────────
+# Rerun's pattern, ported: a designated orchestrator bot that builds and
+# configures teammates, rewritten FROM CODE on every boot so each engine
+# update ships the Foreman it was built with — the user never edits its
+# persona, the way they never edit a binary.
+
+_FOREMAN_NAME = 'Foreman'
+_FOREMAN_ROLE = (
+    "You are the Foreman of this workspace: the bot that builds and maintains "
+    "the user's team of teammate bots. When asked for a teammate, interview the "
+    "user briefly (what the bot is for, how it should talk), then create it with "
+    "the create_agent tool — set a focused role for it and, when the user asks "
+    "for a specific model, name it; that authority is yours alone. Give a new "
+    "teammate a one-line description the roster can show. Introduce finished "
+    "teammates by name and say what to ask them first. Keep your own replies "
+    "short and lead with the result."
+)
+
+
+def is_foreman(agent_id: str) -> bool:
+    """True when the record is the workspace's Foreman."""
+    agent = agent_registry.getAgent(agent_id)
+    return bool(agent and agent.get('foreman'))
+
+
+def ensure_foreman_bot(actor: str = 'boot') -> dict[str, object]:
+    """Boot reconciler: the Foreman always exists with TODAY'S persona.
+
+    Idempotent on name; the role text and the ``foreman`` stamp are
+    rewritten from code on every boot, so a user-edited Foreman reverts at
+    the next start — deliberate, the same way rerun ships its Foreman.
+    """
+    existing = _find_by_name(_FOREMAN_NAME)
+    if existing is None:
+        agent = create_bot(
+            name=_FOREMAN_NAME,
+            title='Foreman',
+            description='Builds and maintains your team of bots.',
+            role=_FOREMAN_ROLE,
+            actor=actor,
+            intro=False,
+        )
+    else:
+        agent = existing
+    updates: dict[str, object] = {'foreman': True, 'role': _FOREMAN_ROLE}
+    agent_registry.updateAgent(as_str(agent['id']), updates, actor=actor)
+    return agent_registry.getAgent(as_str(agent['id'])) or agent
+
+
+# ── guided setup (INSTALL-style) ───────────────────────────────────────────
+
+
+def get_bot_setup(agent_id: str) -> dict[str, object]:
+    """``{'required': bool, 'completedAt': str|None}`` for a bot record."""
+    agent = agent_registry.getAgent(agent_id)
+    raw = agent.get('setup') if agent else None
+    block = raw if isinstance(raw, dict) else {}
+    return {
+        'required': bool(block.get('required')),
+        'completedAt': as_str(block.get('completedAt')) or None,
+    }
+
+
+def bot_setup_pending(agent_id: str) -> bool:
+    setup = get_bot_setup(agent_id)
+    return bool(setup['required']) and not setup['completedAt']
+
+
+def mark_bot_setup_complete(agent_id: str, actor: str = 'tool') -> bool:
+    """Close a bot's guided setup. Returns True when this call closed it."""
+    if not bot_setup_pending(agent_id):
+        return False
+    agent_registry.updateAgent(
+        agent_id,
+        {'setup': {'required': True, 'completedAt': _now_iso()}},
+        actor=actor,
+    )
+    return True
+
+
+def _now_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec='seconds')
+
+
 def create_bot(
     name: str,
     title: str = '',
@@ -203,6 +289,7 @@ def create_bot(
     actor: str = 'ui',
     intro: bool = True,
     work_dir: str = '',
+    setup_required: bool = False,
 ) -> dict[str, object]:
     """Create a Bot (idempotent on name) and its canonical Bot Chat.
 
@@ -215,6 +302,10 @@ def create_bot(
     It is a RECORD, not a capability: the tool surface still roots at the
     session workspace. Only the human door may set one — a turn calling
     ``create_agent`` cannot point a Bot at a folder.
+
+    ``setup_required`` marks a bot as carrying a guided setup the owner must
+    walk through in its chat; its ``install_complete`` tool and the pending
+    section in its system prompt disappear the moment setup closes.
     """
     existing = _find_by_name(name)
     if existing is not None:
@@ -251,6 +342,12 @@ def create_bot(
     if resolvedWorkDir:
         agent_registry.updateAgent(
             as_str(agent['id']), {'workDir': resolvedWorkDir}, actor=actor
+        )
+    if setup_required:
+        agent_registry.updateAgent(
+            as_str(agent['id']),
+            {'setup': {'required': True, 'completedAt': None}},
+            actor=actor,
         )
 
     bot = _bot_record(agent)

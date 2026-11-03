@@ -10,7 +10,7 @@ from __future__ import annotations
 def register_all() -> None:
     """Register all built-in tool groups (and external self-config/provider tools)."""
     from app.services import integration_tools, provider_setup_tool, self_config_tools
-    from app.services.bot_mode import dm, routines
+    from app.services.bot_mode import dm, routines, setup
     from app.services.tool_registrations import (
         agent_tools,
         artifact_tools,
@@ -69,6 +69,9 @@ def register_all() -> None:
     # Bot Mode Phase C: the message_agent DM tool (offered only in canonical
     # Bot Chats — the per-session gate lives in workbench toolDefinitions).
     dm.register()
+    # Guided setup for bots: install_complete is advertised only while a
+    # bot's setup is pending (bot_mode/setup.filter_setup_tools).
+    setup.register()
     # Harness self-inspection + proposals (read-only introspection; proposals
     # are filed for human review — never applied by the model).
     goal_tools.register()

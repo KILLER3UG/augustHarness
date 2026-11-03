@@ -54,6 +54,14 @@ waiting on the owner, and how to resume.
   session and bot can read and write — `{dataDir}/shared/` with
   `shared_list/read/write/search`, jailed through the sandbox door — is the
   handoff surface between chats and bots that separate workspaces lacked.
+- **The Foreman and guided setup ship (also rerun patterns).** A
+  boot-reconciled `Foreman` bot (persona rewritten from code each start, so
+  every update ships today's Foreman) holds the one non-human authority: pin
+  model/provider on teammates it builds through `create_agent`. A bot born
+  with `setup_required` carries a pending walkthrough in its chat and an
+  `install_complete` tool — advertised only while pending, fail-closed on
+  re-call, plan-blocked and subagent-blocked — that closes the setup and
+  activates the routines parked for it (`create_routine paused: true`).
 - Still on the human list: a real ComfyUI generation, the CUDA 12.4 variant
   on a 12-series driver, and the desktop-app pass (the dev-backend tests ran
   on :8091 against the real data dir).

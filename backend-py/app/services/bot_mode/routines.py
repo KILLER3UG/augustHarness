@@ -72,8 +72,13 @@ async def createRoutine(
     timezone: str = '',
     respond: bool = True,
     continuity: bool = False,
+    paused: bool = False,
 ) -> str:
-    """Create (or update, matched by title) a routine for the calling Bot."""
+    """Create (or update, matched by title) a routine for the calling Bot.
+
+    ``paused=True`` parks the routine for the bot's guided setup —
+    install_complete flips it on when the walkthrough closes.
+    """
     from app.services import automations_store
 
     try:
@@ -97,6 +102,8 @@ async def createRoutine(
             'continuity': bool(continuity),
             'schedule': schedule,
             'jobType': jobType or 'workbench',
+            # Parked for guided setup: install_complete flips it on.
+            'paused': bool(paused),
         }
         if timezone:
             job['timezone'] = timezone
@@ -258,6 +265,11 @@ def register() -> None:
                 'command': {
                     'type': 'string',
                     'description': 'Shell command to run each time (shell job).',
+                },
+                'paused': {
+                    'type': 'boolean',
+                    'description': 'True parks the routine until this bot completes its guided '
+                    'setup (install_complete activates it).',
                 },
                 'schedule': {
                     'type': 'string',

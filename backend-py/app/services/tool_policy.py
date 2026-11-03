@@ -239,6 +239,8 @@ _PLAN_BLOCKED_EXACT = frozenset({
     'desktop_click', 'desktop_type', 'desktop_press_key', 'desktop_ui_act',
     'desktop_open_url',
     'create_agent', 'update_agent', 'delete_agent', 'create_alias',
+    # Guided setup closes a bot's config state (create_agent precedent).
+    'install_complete',
     'update_alias', 'delete_alias', 'configure_fallback',
     # Bot Mode routines — create/delete persists a scheduled job that fires
     # later (create_agent precedent: persistent mutations are plan-blocked;

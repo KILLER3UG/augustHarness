@@ -76,6 +76,9 @@ _SUBAGENT_NEVER_TOOLS = frozenset(
         # Same reason as `create_agent`, and these two were missing: the whole
         # agent-management surface lets a turn rewrite shared authority state.
         'update_agent', 'delete_agent',
+        # A subagent completing its parent's guided setup would close config
+        # state nobody walked through.
+        'install_complete',
         'interrupt_subagent', 'send_subagent_message',
         # Sub-agents do not write durable memory — only the main model does.
         # The whole memory write/read-CRUD surface is blocked, not
