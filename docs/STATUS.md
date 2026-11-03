@@ -62,6 +62,13 @@ waiting on the owner, and how to resume.
   `install_complete` tool — advertised only while pending, fail-closed on
   re-call, plan-blocked and subagent-blocked — that closes the setup and
   activates the routines parked for it (`create_routine paused: true`).
+- **The last two rerun patterns shipped.** `request_secret` puts a masked
+  form on the tool-call card — the value goes straight into the encrypted
+  store (`chatSecrets.<NAME>`), the model learns only the NAME and status,
+  and MCP server env resolves `${NAME}` against it at launch. And the
+  data-dir migration ladder is live: numbered, re-runnable steps applied
+  before any store opens, version marker at `{dataDir}/data-version.json`,
+  a failed step refuses the boot.
 - Still on the human list: a real ComfyUI generation, the CUDA 12.4 variant
   on a 12-series driver, and the desktop-app pass (the dev-backend tests ran
   on :8091 against the real data dir).
