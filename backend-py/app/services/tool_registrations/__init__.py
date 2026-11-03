@@ -26,6 +26,7 @@ def register_all() -> None:
         media_tools,
         module_tools,
         office_tools,
+        secret_tools,
         session_tools,
         shared_tools,
         skill_tools,
@@ -72,6 +73,9 @@ def register_all() -> None:
     # Guided setup for bots: install_complete is advertised only while a
     # bot's setup is pending (bot_mode/setup.filter_setup_tools).
     setup.register()
+    # Chat-requested secrets: request_secret/secret_check — the value goes
+    # from the masked form straight into the encrypted store.
+    secret_tools.register()
     # Harness self-inspection + proposals (read-only introspection; proposals
     # are filed for human review — never applied by the model).
     goal_tools.register()

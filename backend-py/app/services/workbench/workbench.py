@@ -6040,7 +6040,16 @@ async def _sendWorkbenchMessageStreamImpl(
             if emit:
                 providerSetup = None
                 integrationSetup = None
+                secretRequest = None
                 _INTEGRATION_TOOLS = {'connect_github', 'connect_slack', 'connect_google', 'install_mcp_server'}
+                if toolName in ('request_secret', 'secret_check'):
+                    try:
+                        parsed = json.loads(result)
+                        sr = parsed.get('secretRequest') if isinstance(parsed, dict) else None
+                        if isinstance(sr, dict):
+                            secretRequest = sr
+                    except Exception:
+                        secretRequest = None
                 if toolName == 'setup_provider':
                     try:
                         parsed = json.loads(result)
@@ -6074,6 +6083,7 @@ async def _sendWorkbenchMessageStreamImpl(
                         'startedAtMs': tool_started_at,
                         'providerSetup': providerSetup,
                         'integrationSetup': integrationSetup,
+                        'secretRequest': secretRequest,
                     }
                 )
                 if toolName.startswith('browser_'):

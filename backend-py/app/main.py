@@ -162,6 +162,17 @@ async def lifespan(app: FastAPI):
                 LOCAL_AUTH_ENV,
             )
 
+    # The data-dir migration ladder runs BEFORE any store opens: every later
+    # boot service assumes today's layout, and a half-migrated dir must stop
+    # the boot rather than be served from (see data_migrations docstring).
+    try:
+        from app.services.data_migrations import apply_migrations
+
+        apply_migrations()
+    except Exception as exc:
+        logger.error('data-dir migrations FAILED — refusing to start: %s', exc)
+        raise
+
     # Register lifecycle hooks (secret guard, blast radius, test mapping, sensitive code).
     try:
         from app.services.hooks.builtin import register_builtin_hooks
@@ -546,6 +557,7 @@ from app.routers import automations as automationsRoutes  # noqa: E402
 from app.routers import brain_config as brainConfigRoutes  # noqa: E402
 from app.routers import browser as browserRoutes  # noqa: E402
 from app.routers import calendar as calendarRoutes  # noqa: E402
+from app.routers import chat_secrets as chatSecretsRoutes  # noqa: E402
 from app.routers import code_review as codeReviewRoutes  # noqa: E402
 from app.routers import comfyui as comfyuiRoutes  # noqa: E402
 from app.routers import config as configRoutes  # noqa: E402
@@ -597,6 +609,7 @@ app.include_router(providersRoutes.router)
 app.include_router(localModelsRoutes.router)
 app.include_router(localModelsRoutes.hf)
 app.include_router(comfyuiRoutes.router)
+app.include_router(chatSecretsRoutes.router)
 app.include_router(simulideRoutes.router)
 app.include_router(privacyRoutes.router)
 app.include_router(modelsRoutes.router)

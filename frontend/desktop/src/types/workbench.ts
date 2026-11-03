@@ -304,6 +304,8 @@ export interface WorkbenchEventHandlers {
     tone?: 'failure' | 'denial';
     providerSetup?: unknown;
     integrationSetup?: unknown;
+    /** request_secret's masked-form payload (the secret itself never rides). */
+    secretRequest?: unknown;
     /** Backend cut the SSE content at its 100 KB cap. */
     contentTruncated?: boolean;
     /** Full (pre-truncation) byte length when `contentTruncated`. */

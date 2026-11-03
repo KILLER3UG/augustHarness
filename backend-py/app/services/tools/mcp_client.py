@@ -617,8 +617,26 @@ def _child_env(server: dict[str, object]) -> dict[str, str]:
     env = noninteractive_env()
     env_cfg = server.get('env', {})
     if isinstance(env_cfg, dict):
-        env.update({str(k): str(v) for k, v in env_cfg.items()})
+        # ${NAME} in a configured value resolves against the chat-secrets
+        # store (what request_secret fills) and mcpGlobalEnv — the credential
+        # the user typed into the masked form reaches the server process
+        # without ever having entered a conversation or a plaintext file.
+        env.update(
+            {
+                str(k): _resolve_secret_ref(str(v))
+                for k, v in env_cfg.items()
+            }
+        )
     return env
+
+
+def _resolve_secret_ref(value: str) -> str:
+    try:
+        from app.services.tools import chat_secrets
+
+        return chat_secrets.resolve_reference(value)
+    except Exception:  # noqa: BLE001 — an unresolved ${REF} passes through
+        return value
 
 
 async def _startServerProcessLocked(

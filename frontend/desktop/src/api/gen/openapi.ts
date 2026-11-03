@@ -1661,6 +1661,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/chat-secrets/fill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fill
+         * @description Store the user-submitted value; the value never echoes back.
+         */
+        post: operations["fill_api_chat_secrets_fill_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat-secrets/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pending
+         * @description Pending chat-secret requests (the transcript cards are the primary
+         *     surface; this backs any roster-level badge).
+         */
+        get: operations["pending_api_chat_secrets_pending_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/code-review/rubric": {
         parameters: {
             query?: never;
@@ -9824,6 +9865,13 @@ export interface components {
              */
             ports: number[];
         };
+        /** SecretFillBody */
+        SecretFillBody: {
+            /** Name */
+            name: string;
+            /** Value */
+            value: string;
+        };
         /** SecurityBody */
         SecurityBody: {
             /** Allowedroots */
@@ -13127,6 +13175,59 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    fill_api_chat_secrets_fill_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SecretFillBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pending_api_chat_secrets_pending_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

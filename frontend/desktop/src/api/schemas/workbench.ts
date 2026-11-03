@@ -84,6 +84,7 @@ export const WorkbenchToolResultEventSchema = WorkbenchBaseSchema.extend({
   blocked: z.boolean().optional(),
   providerSetup: z.unknown().optional(),
   integrationSetup: z.unknown().optional(),
+  secretRequest: z.unknown().optional(),
 });
 
 /** Session snapshots are FLAT (no `data:` wrapper) and may be partial —

@@ -3037,6 +3037,24 @@
         "title": "ScanBody",
         "type": "object"
       },
+      "SecretFillBody": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "SecretFillBody",
+        "type": "object"
+      },
       "SecurityBody": {
         "properties": {
           "allowedRoots": {
@@ -8002,6 +8020,60 @@
           }
         },
         "summary": "Listinternalevents"
+      }
+    },
+    "/api/chat-secrets/fill": {
+      "post": {
+        "description": "Store the user-submitted value; the value never echoes back.",
+        "operationId": "fill_api_chat_secrets_fill_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretFillBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fill"
+      }
+    },
+    "/api/chat-secrets/pending": {
+      "get": {
+        "description": "Pending chat-secret requests (the transcript cards are the primary\nsurface; this backs any roster-level badge).",
+        "operationId": "pending_api_chat_secrets_pending_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pending"
       }
     },
     "/api/code-review/rubric": {

@@ -26,7 +26,7 @@
  * the stream and then calls `finalize` exactly once.
  */
 
-import type { ChatMessage, MessageBlock, WorkbenchBtwState, AppendBlockEvent, ProviderSetupResult, IntegrationSetupResult } from '@/types/chat';
+import type { ChatMessage, MessageBlock, WorkbenchBtwState, AppendBlockEvent, ProviderSetupResult, IntegrationSetupResult, SecretRequestResult } from '@/types/chat';
 import type { ActionNeededPayload } from '@/components/chat/ActionNeededCard';
 import type { ChatTurnRecord } from './chat-runtime';
 import type { WorkbenchEventHandlers, WorkbenchSession, WorkbenchTurnUsage } from '@/types/workbench';
@@ -422,7 +422,7 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       });
       scheduleUpdate();
     },
-    onToolResult: ({ id, content, isError, status, providerSetup, integrationSetup, tone, contentTruncated, contentFullLength }) => {
+    onToolResult: ({ id, content, isError, status, providerSetup, integrationSetup, secretRequest, tone, contentTruncated, contentFullLength }) => {
       retryNotice = undefined;
       let parsedResult: Record<string, unknown> | null;
       try {
@@ -517,6 +517,11 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       if (toolEntry?.name === 'setup_provider' && providerSetup && typeof providerSetup === 'object') {
         providerSetupResult = providerSetup as ProviderSetupResult;
       }
+      // Surface request_secret results so the UI can render the masked form.
+      let secretRequestResult: SecretRequestResult | undefined;
+      if (toolEntry?.name === 'request_secret' && secretRequest && typeof secretRequest === 'object') {
+        secretRequestResult = secretRequest as SecretRequestResult;
+      }
       // Surface integration tool results so the UI can render an inline widget.
       let integrationSetupResult: IntegrationSetupResult | undefined;
       const isIntegrationTool = toolEntry?.name &&
@@ -562,6 +567,7 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
         searchHits: searchHits ?? t.searchHits,
         providerSetup: providerSetupResult ?? t.providerSetup,
         integrationSetup: integrationSetupResult ?? t.integrationSetup,
+        secretRequest: secretRequestResult ?? t.secretRequest,
         actionNeeded: actionNeededResult ?? t.actionNeeded,
       } : t);
       // Minimal-output transcript: a failed command's inline
@@ -585,6 +591,7 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
         searchHits,
         providerSetup: providerSetupResult,
         integrationSetup: integrationSetupResult,
+        secretRequest: secretRequestResult,
         actionNeeded: actionNeededResult,
         tone,
         contentTruncated,

@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-449 routes across 374 paths,
+451 routes across 376 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -503,7 +503,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (55)
+## Other (57)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -515,6 +515,8 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `DELETE` | `/api/aug/content` | Remove the workspace AUG.md if present. |
 | `GET` | `/api/aug/context` | Return the current AUG.md for a workspace. |
 | `POST` | `/api/aug/init` | Analyze the workspace and generate (or refine) an AUG.md draft. |
+| `POST` | `/api/chat-secrets/fill` | Store the user-submitted value; the value never echoes back. |
+| `GET` | `/api/chat-secrets/pending` | Pending chat-secret requests (the transcript cards are the primary surface; this backs any roster-level badge… |
 | `GET` | `/api/code-review/rubric` | The severity rubric + conventions directive (transparency). |
 | `POST` | `/api/code-review/run` | Run one advisory review pass over the changeset diff. |
 | `GET` | `/api/comfyui/checkpoints` | Checkpoints |
@@ -568,4 +570,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (449 operations).
+Generated from `docs/api/openapi.json` (451 operations).

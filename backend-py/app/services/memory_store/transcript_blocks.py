@@ -383,6 +383,7 @@ _TOOL_FIELDS = frozenset(
         'searchHits',
         'providerSetup',
         'integrationSetup',
+        'secretRequest',
         'actionNeeded',
         'previewDropped',
         'contentTruncated',

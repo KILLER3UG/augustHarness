@@ -25,6 +25,12 @@ export interface ProviderSetupResult {
  *  `connect_slack` / `connect_google` / `install_mcp_server` tool results so
  *  the UI can render an inline token field / Google sign-in button / status.
  *  Secrets are never carried here — only masked status + action hints. */
+export interface SecretRequestResult {
+  name: string;
+  description?: string;
+  status: 'pending' | 'filled' | 'unknown';
+}
+
 export interface IntegrationSetupResult {
   kind?: 'google' | 'github' | 'slack' | 'mcp';
   provider?: string;
@@ -136,6 +142,7 @@ export interface MessageBlockToolCall {
   /** For integration tools: structured payload the UI renders as an inline
    *  token field / Google sign-in button / MCP status. */
   integrationSetup?: IntegrationSetupResult;
+  secretRequest?: SecretRequestResult;
   /** For browser tools: a login-wall/escalation payload extracted from the
    *  result JSON. Mirrors `AppendBlockEvent.actionNeeded`. */
   actionNeeded?: import('@/components/chat/ActionNeededCard').ActionNeededPayload;
@@ -272,6 +279,7 @@ export interface ChatMessage {
     providerSetup?: ProviderSetupResult;
     /** For integration tools: structured payload to render an inline setup widget. */
     integrationSetup?: IntegrationSetupResult;
+  secretRequest?: SecretRequestResult;
     /** For browser tools: a login-wall/escalation payload extracted from the
      *  result JSON (see AppendBlockEvent.actionNeeded). */
     actionNeeded?: import('@/components/chat/ActionNeededCard').ActionNeededPayload;
@@ -436,6 +444,7 @@ export interface AppendBlockEvent {
   providerSetup?: ProviderSetupResult;
   /** For integration tools: structured payload to render an inline setup widget. */
   integrationSetup?: IntegrationSetupResult;
+  secretRequest?: SecretRequestResult;
   /** For browser tools: a login-wall/escalation payload extracted from the
    *  result JSON (actionNeeded serializes last in the result, past the
    *  truncated summary — extraction is structural, not string-scanned). */

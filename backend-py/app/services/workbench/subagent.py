@@ -79,6 +79,10 @@ _SUBAGENT_NEVER_TOOLS = frozenset(
         # A subagent completing its parent's guided setup would close config
         # state nobody walked through.
         'install_complete',
+        # Secret requests route to the user via the main turn's card; a
+        # subagent's result transcript is not a place a secret form lives,
+        # and durable secrets are the main model's door only.
+        'request_secret', 'secret_check',
         'interrupt_subagent', 'send_subagent_message',
         # Sub-agents do not write durable memory — only the main model does.
         # The whole memory write/read-CRUD surface is blocked, not

@@ -1,4 +1,4 @@
-import type { IntegrationSetupResult, ProviderSetupResult } from '@/types/chat';
+import type { SecretRequestResult, IntegrationSetupResult, ProviderSetupResult } from '@/types/chat';
 import type { ActionNeededPayload } from '@/components/chat/ActionNeededCard';
 
 export interface ToolEntry {
@@ -31,6 +31,7 @@ export interface ToolEntry {
   providerSetup?: ProviderSetupResult;
   /** For integration tools: structured payload to render an inline setup widget. */
   integrationSetup?: IntegrationSetupResult;
+  secretRequest?: SecretRequestResult;
   /** For browser tools: a login-wall/escalation payload extracted from the
    *  result JSON. Extracted structurally because actionNeeded serializes
    *  last in the result and the summary is truncated long before it. */

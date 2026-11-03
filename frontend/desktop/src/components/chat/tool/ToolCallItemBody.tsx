@@ -9,6 +9,7 @@ import { formatToolContext } from '@/lib/tool-context-format';
 import { classifyTool } from '@/lib/tool-classify';
 import { ProviderSetupWidget } from '@/components/chat/ProviderSetupWidget';
 import { IntegrationSetupWidget } from '@/components/chat/IntegrationSetupWidget';
+import { SecretRequestWidget } from '@/components/chat/SecretRequestWidget';
 import { Markdown } from '@/sections/chat/ChatMarkdown';
 import { getAgentRoleLabel, pathBasename } from '@/lib/tool-labels';
 import { isSubagentToolName } from '@/components/chat/subagent-tools';
@@ -321,6 +322,7 @@ export function ToolCallItemBody({
     !tool.searchHits &&
     !tool.providerSetup &&
     !tool.integrationSetup &&
+    !tool.secretRequest &&
     !hasDiff
   ) {
     parts.push(
@@ -334,6 +336,10 @@ export function ToolCallItemBody({
 
   if (tool.integrationSetup) {
     parts.push(<IntegrationSetupWidget key="integration" setup={tool.integrationSetup} />);
+  }
+
+  if (tool.secretRequest) {
+    parts.push(<SecretRequestWidget key="secret" request={tool.secretRequest} workbenchSessionId={sessionId} />);
   }
 
   if (!isSubagent && !isCommand && tool.error) {
