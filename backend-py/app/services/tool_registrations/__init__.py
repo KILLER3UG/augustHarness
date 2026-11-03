@@ -27,6 +27,7 @@ def register_all() -> None:
         module_tools,
         office_tools,
         session_tools,
+        shared_tools,
         skill_tools,
         system_tools,
         web_tools,
@@ -60,6 +61,9 @@ def register_all() -> None:
     agent_tools.register()
     skill_tools.register()
     bulk_tools.register()
+    # The shared space: one folder every session and bot can read and write
+    # (the rerun-proven collaboration surface) — see services/tools/shared_space.
+    shared_tools.register()
     # Bot Mode routines: Bot-owned scheduled jobs + the M-11 notepad door.
     routines.register()
     # Bot Mode Phase C: the message_agent DM tool (offered only in canonical

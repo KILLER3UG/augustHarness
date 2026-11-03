@@ -42,8 +42,20 @@ waiting on the owner, and how to resume.
   doors); Hugging Face search browses ALL models with a GGUF-only filter;
   the loopback keyless exemption now reaches the chat callers and proxy
   adapters (the Test button on a local model works).
+- **SimulIDE circuits simulate in August, not just render.** A digital
+  engine (nets from wires/tunnels/Node junctions, a component library for
+  gates, sources, 7-segment displays, and the common 74-series subcircuits)
+  reproduced the user's calculator deck exactly — idle 0, key-5 pressed 5,
+  5−3=2 in subtract mode, 4-bit wrap on overflow — and the Circuit pane
+  gained source toggles plus a live render (wires colored by logic level,
+  DIP boxes on their real pin positions, real gate silhouettes). Analog
+  parts and MCUs stay honestly unsimulated in the notes.
+- **The shared space ships (from the rerun study).** One folder every
+  session and bot can read and write — `{dataDir}/shared/` with
+  `shared_list/read/write/search`, jailed through the sandbox door — is the
+  handoff surface between chats and bots that separate workspaces lacked.
 - Still on the human list: a real ComfyUI generation, the CUDA 12.4 variant
-  on a 12-series driver, and the desktop-app pass (the dev-backend test ran
+  on a 12-series driver, and the desktop-app pass (the dev-backend tests ran
   on :8091 against the real data dir).
 - Previous round below; the self-edit loop and the rename shipped there.
 
