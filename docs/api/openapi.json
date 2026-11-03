@@ -3140,6 +3140,14 @@
       },
       "SimulideParseBody": {
         "properties": {
+          "inputs": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "default": {},
+            "title": "Inputs",
+            "type": "object"
+          },
           "path": {
             "title": "Path",
             "type": "string"
@@ -3160,6 +3168,38 @@
           "path"
         ],
         "title": "SimulideParseBody",
+        "type": "object"
+      },
+      "SimulideSimulateBody": {
+        "properties": {
+          "inputs": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "default": {},
+            "title": "Inputs",
+            "type": "object"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sessionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessionid"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "SimulideSimulateBody",
         "type": "object"
       },
       "SkillCreate": {
@@ -15392,6 +15432,7 @@
     },
     "/api/simulide/parse": {
       "post": {
+        "description": "Parse + render, with live state when the circuit is digital.",
         "operationId": "parse_api_simulide_parse_post",
         "requestBody": {
           "content": {
@@ -15424,6 +15465,43 @@
           }
         },
         "summary": "Parse"
+      }
+    },
+    "/api/simulide/simulate": {
+      "post": {
+        "description": "Run the digital simulation; logic-only (no SVG).",
+        "operationId": "simulate_api_simulide_simulate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulideSimulateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Simulate"
       }
     },
     "/api/skills": {

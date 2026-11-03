@@ -5480,8 +5480,31 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Parse */
+        /**
+         * Parse
+         * @description Parse + render, with live state when the circuit is digital.
+         */
         post: operations["parse_api_simulide_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/simulide/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Simulate
+         * @description Run the digital simulation; logic-only (no SVG).
+         */
+        post: operations["simulate_api_simulide_simulate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -9842,6 +9865,27 @@ export interface components {
         };
         /** SimulideParseBody */
         SimulideParseBody: {
+            /**
+             * Inputs
+             * @default {}
+             */
+            inputs: {
+                [key: string]: boolean;
+            };
+            /** Path */
+            path: string;
+            /** Sessionid */
+            sessionId?: string | null;
+        };
+        /** SimulideSimulateBody */
+        SimulideSimulateBody: {
+            /**
+             * Inputs
+             * @default {}
+             */
+            inputs: {
+                [key: string]: boolean;
+            };
             /** Path */
             path: string;
             /** Sessionid */
@@ -19192,6 +19236,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SimulideParseBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    simulate_api_simulide_simulate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SimulideSimulateBody"];
             };
         };
         responses: {

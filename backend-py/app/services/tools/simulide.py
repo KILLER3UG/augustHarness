@@ -204,137 +204,20 @@ def describe_circuit(parsed: dict[str, Any]) -> str:
     subs = [c['label'] for c in parsed['components'] if c['type'] == 'Subcircuit']
     if subs:
         lines.append(f'Subcircuits: {", ".join(subs)}')
-    lines.append('This is a SimulIDE schematic; open it in the Circuit panel to see the drawing. Running the simulation needs SimulIDE itself.')
+    lines.append('This is a SimulIDE schematic; open it in the Circuit panel to see it drawn and run its digital logic (toggle the sources). Analog parts and MCUs still need SimulIDE itself.')
     return '\n'.join(lines)
 
 
-def render_svg(parsed: dict[str, Any]) -> str:
-    """Standalone SVG of the schematic, tuned for the dark drawer."""
-    xs: list[float] = []
-    ys: list[float] = []
-    for c in parsed['components']:
-        xs.append(c['x'])
-        ys.append(c['y'])
-    for w in parsed['wires']:
-        for x, y in w['points']:
-            xs.append(x)
-            ys.append(y)
-    if not xs:
-        min_x = min_y = 0.0
-        max_x, max_y = float(parsed['width'] or 800), float(parsed['height'] or 600)
-    else:
-        min_x, max_x = min(xs), max(xs)
-        min_y, min_y2 = min(ys), max(ys)
-        max_y = min_y2
-    min_x -= _PAD
-    min_y -= _PAD
-    view_w = max(max_x - min_x + _PAD * 2, 200)
-    view_h = max(max_y - min_y + _PAD * 2, 160)
+def render_svg(
+    parsed: dict[str, Any],
+    net_pin_values: dict[str, int | None] | None = None,
+    states: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    """Draw the schematic (see simulide_render for the shape library)."""
+    from app.services.tools import simulide_render
 
-    out: list[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{_fmt_num(min_x)} {_fmt_num(min_y)} '
-        f'{_fmt_num(view_w)} {_fmt_num(view_h)}" font-family="ui-monospace, monospace">',
-        f'<rect x="{_fmt_num(min_x)}" y="{_fmt_num(min_y)}" width="{_fmt_num(view_w)}" '
-        f'height="{_fmt_num(view_h)}" fill="transparent"/>',
-        '<g>',
-    ]
-    # Wires first — components sit on top.
-    for w in parsed['wires']:
-        pts = ' '.join(f'{_fmt_num(x)},{_fmt_num(y)}' for x, y in w['points'])
-        out.append(f'<polyline points="{pts}" fill="none" stroke="#7f7f7f" stroke-width="1.4"/>')
-        for x, y in (w['points'][0], w['points'][-1]):
-            out.append(f'<circle cx="{_fmt_num(x)}" cy="{_fmt_num(y)}" r="1.6" fill="#9c9c9c"/>')
+    return simulide_render.render_svg(parsed, net_pin_values, states)
 
-    for c in parsed['components']:
-        out.append(_component_svg(c))
-
-    out.append('</g></svg>')
-    return ''.join(out)
-
-
-# Component box geometry (centered on Pos).
-_BOX_W = 64
-_BOX_H = 36
-_PIN_R = 1.8
-
-
-def _component_svg(c: dict[str, Any]) -> str:
-    x, y = c['x'], c['y']
-    rot = float(c['rotation'])
-    glyph = c['glyph']
-    tone = c['tone']
-
-    if glyph == 'GND':
-        return (
-            f'<g transform="translate({_fmt_num(x)},{_fmt_num(y)})">'
-            f'<line x1="0" y1="-8" x2="0" y2="0" stroke="#a3a3a3" stroke-width="1.4"/>'
-            f'<line x1="-10" y1="0" x2="10" y2="0" stroke="#a3a3a3" stroke-width="2"/>'
-            f'<line x1="-6" y1="4" x2="6" y2="4" stroke="#a3a3a3" stroke-width="1.4"/>'
-            f'<line x1="-3" y1="8" x2="3" y2="8" stroke="#a3a3a3" stroke-width="1.4"/>'
-            f'</g>'
-        )
-    if glyph == 'TUN':
-        name = c['props'].get('Name') or c['label']
-        return (
-            f'<g transform="translate({_fmt_num(x)},{_fmt_num(y)})">'
-            f'<rect x="-22" y="-9" width="44" height="18" rx="4" fill="#1b2431" stroke="#4f7cc0" stroke-width="1"/>'
-            f'<text x="0" y="3.5" text-anchor="middle" font-size="9" fill="#8fb7ea">{_esc(name)}</text>'
-            f'</g>'
-        )
-
-    fill = {
-        'ic': '#211f2b',
-        'gate': '#232323',
-        'display': '#10241c',
-        'indicator': '#241a10',
-        'switch': '#22262b',
-        'passive': '#202020',
-        'source': '#261d1d',
-        'power': '#202020',
-        'io': '#1d232b',
-    }.get(tone, '#202020')
-    stroke = {
-        'ic': '#8f7cc0',
-        'gate': '#a3a3a3',
-        'display': '#5fae8f',
-        'indicator': '#c08f5f',
-        'switch': '#8fa3b5',
-        'passive': '#a3a3a3',
-        'source': '#c07c7c',
-        'io': '#7ca0c0',
-    }.get(tone, '#a3a3a3')
-
-    tf = ''
-    if rot:
-        tf = f' rotate({_fmt_num(rot)},{_fmt_num(x)},{_fmt_num(y)})'
-    label_y = y + _BOX_H / 2 + 11
-    parts = [
-        f'<g transform="{tf.strip()}">',
-        f'<rect x="{_fmt_num(x - _BOX_W / 2)}" y="{_fmt_num(y - _BOX_H / 2)}" '
-        f'width="{_BOX_W}" height="{_BOX_H}" rx="5" fill="{fill}" stroke="{stroke}" stroke-width="1.2"/>',
-        # Pin stubs on the two vertical edges.
-    ]
-    for dy in (-10, 0, 10):
-        parts.append(
-            f'<line x1="{_fmt_num(x - _BOX_W / 2 - 6)}" y1="{_fmt_num(y + dy)}" '
-            f'x2="{_fmt_num(x - _BOX_W / 2)}" y2="{_fmt_num(y + dy)}" stroke="{stroke}" stroke-width="1.2"/>'
-        )
-        parts.append(
-            f'<line x1="{_fmt_num(x + _BOX_W / 2)}" y1="{_fmt_num(y + dy)}" '
-            f'x2="{_fmt_num(x + _BOX_W / 2 + 6)}" y2="{_fmt_num(y + dy)}" stroke="{stroke}" stroke-width="1.2"/>'
-        )
-    parts.append(
-        f'<text x="{_fmt_num(x)}" y="{_fmt_num(y + 3.5)}" text-anchor="middle" '
-        f'font-size="10" fill="#e5e5e5">{_esc(glyph)}</text>'
-    )
-    label = c['label'] if c['label'] != c['type'] else ''
-    if label:
-        parts.append(
-            f'<text x="{_fmt_num(x)}" y="{_fmt_num(label_y)}" text-anchor="middle" '
-            f'font-size="8.5" fill="#9c9c9c">{_esc(label[:20])}</text>'
-        )
-    parts.append('</g>')
-    return ''.join(parts)
 
 
 def _esc(s: str) -> str:

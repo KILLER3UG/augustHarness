@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-448 routes across 373 paths,
+449 routes across 374 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -503,7 +503,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (54)
+## Other (55)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -558,7 +558,8 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/realtime/stream` | Server-Sent Events stream of UI realtime events. |
 | `GET` | `/api/requests` | Return tracked API requests in the Node.js contract shape. |
 | `GET` | `/api/requests/{request_id}` | Return detailed info for a specific request. |
-| `POST` | `/api/simulide/parse` | body: JSON |
+| `POST` | `/api/simulide/parse` | Parse + render, with live state when the circuit is digital. |
+| `POST` | `/api/simulide/simulate` | Run the digital simulation; logic-only (no SVG). |
 | `GET` | `/api/stats` | Return aggregate usage statistics in the Node.js StatsResponse shape. |
 | `POST` | `/api/system/restart` | Signal a soft restart intent — process managers (or the desktop shell) act on it. |
 | `GET` | `/api/whats-new` | Return commits + releases from the last ``hours`` (default 48). |
@@ -567,4 +568,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (448 operations).
+Generated from `docs/api/openapi.json` (449 operations).
