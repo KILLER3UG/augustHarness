@@ -22,16 +22,13 @@ export const THOUGHT_CLAMP_LINES = 6;
  *  at once, so a long thought must also truncate by length alone. */
 export const THOUGHT_CLAMP_CHARS = 480;
 
-/** Distilled summary lines a settled thought shows BEFORE the user expands
- *  it: ONE line, the Claude reference's collapsed row — a single "what the
- *  model is doing" sentence with a chevron. The block never opens on its
- *  own; expansion (more distilled lines, then the raw reasoning behind
- *  "Show full reasoning") is the user's click. */
-export const THOUGHT_SUMMARY_LINES = 1;
-
-/** Summary lines the expanded card shows. Still distilled sentences, not
- *  raw reasoning: expansion reveals more of the summary, the way the
- *  reference's opened card does. */
+/** Distilled summary rows a settled thought renders. The card is the
+ *  reference's activity list — ONE row per "what the model is doing" sentence,
+ *  each collapsed to its summary line and expandable in place to that row's
+ *  own reasoning. This is the ceiling on rows, not a "show only one": a
+ *  pathological thought with hundreds of sentences still bounds the transcript
+ *  to a readable stack. Expansion reveals the row's reasoning, never another
+ *  row's and never the whole chain. */
 export const THOUGHT_SUMMARY_LINES_FULL = 60;
 
 /** "1m 06s" / "6s" — the elapsed formatter both variants render. */

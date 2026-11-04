@@ -19,25 +19,57 @@ export function splitThinkingSentences(content: string): string[] {
 }
 
 /**
- * The distilled "what the model is doing" lines a thinking card renders —
+ * A thinking-card row: one distilled activity line PLUS the reasoning it
+ * summarises. `reasoning` is the raw source span the summary was distilled
+ * FROM, so a row and its detail are the same bytes — expanding a row shows the
+ * model's own text for THAT stretch, never another row's and never the whole
+ * chain. This is what lets the rail expand a line in place (Claude-desktop
+ * activity rows) without a second, drift-prone segmentation of the thought.
+ */
+export interface ThoughtStepLine {
+  summary: string;
+  reasoning: string;
+}
+
+/**
+ * The distilled "what the model is doing" rows a thinking card renders —
  * the ONE owner of summary-split → header-distill → noise-filter → dedupe.
  * Two cards (the main rail and the subagent panel) both render this list;
  * separate pipelines drifted the moment one of them filtered noise the
  * other showed. Consecutive duplicates collapse: a thought made of several
  * noise sentences distilled each to the same "Processing request."
  * placeholder, and a card that repeats one line reads as broken.
+ *
+ * A recitation sentence or an exact repeat is not its own activity line, but
+ * it is still part of the stretch the line above it names, so it folds into
+ * that row's reasoning. Every reasoning byte therefore belongs to exactly one
+ * row — none orphaned, none shared by two.
  */
-export function distillThoughtLines(content: string): string[] {
-  const out: string[] = [];
-  for (const line of splitThinkingSentences(content)) {
-    // Recitation is dropped here rather than distilled into a placeholder, so
-    // a thought made of five measurements yields its actions and not five
-    // copies of one filler line (the dedupe below would collapse them anyway).
-    if (isThoughtRecitation(line)) continue;
-    const distilled = summarizeThoughtHeader(line, false);
-    if (distilled && distilled !== out[out.length - 1]) out.push(distilled);
+export function distillThoughtSteps(content: string): ThoughtStepLine[] {
+  const steps: ThoughtStepLine[] = [];
+  for (const segment of splitThinkingSentences(content)) {
+    // Recitation is dropped from the LINE list rather than distilled into a
+    // placeholder, so a thought made of five measurements yields its actions
+    // and not five copies of one filler line (the dedupe below would collapse
+    // them anyway) — but it still belongs to the row's reasoning.
+    const distilled = isThoughtRecitation(segment)
+      ? ''
+      : summarizeThoughtHeader(segment, false);
+    if (distilled && distilled !== steps[steps.length - 1]?.summary) {
+      steps.push({ summary: distilled, reasoning: segment });
+    } else if (steps.length > 0) {
+      steps[steps.length - 1].reasoning = `${steps[steps.length - 1].reasoning} ${segment}`;
+    }
   }
-  return out.length > 0 ? out : ['Working through the details.'];
+  return steps;
+}
+
+/** The distilled lines only, for callers that render the summary and never
+ *  expand it per-row (the subagent card, the Arena lane). Derived from
+ *  `distillThoughtSteps` so the two cards can never drift. */
+export function distillThoughtLines(content: string): string[] {
+  const steps = distillThoughtSteps(content);
+  return steps.length > 0 ? steps.map((s) => s.summary) : ['Working through the details.'];
 }
 
 export function buildProcessSummaryLine(thinkingParts: string[]): string | null {

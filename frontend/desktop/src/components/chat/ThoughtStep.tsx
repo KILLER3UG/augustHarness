@@ -1,42 +1,45 @@
 /**
- * Thought step — the model's reasoning rendered as prose on the process rail.
+ * Thought step — the model's reasoning rendered as activity rows on the
+ * process rail.
  *
- * Layout: a clock icon on the threaded rail line, with the reasoning prose
- * beside it. Long settled thoughts are clamped to a fixed number of lines
- * with a bottom fade and a "Show more" affordance (the screenshot's look);
- * "Show less" restores the clamp. While the thought is still streaming it
- * grows unclamped so the live text is never hidden.
+ * Layout: a clock icon on the threaded rail line, and beside it the
+ * reference's thinking card — ONE rounded container whose hairline-divided
+ * rows are each a distilled "what the model is doing" sentence. A row expands
+ * in place to reveal that stretch's reasoning and nothing else; expanding one
+ * row never expands another, and a collapsed row never shows raw reasoning.
+ * This is the same visual language as the tool pack (ActivitySummary's
+ * `activity-card-box`: border + `divide-y`), so a thought block and a command
+ * block read as one row anatomy.
  *
- * The clock is a static marker (the whole rail collapses via ActivitySummary
- * for compactness); expand/collapse of the prose is driven solely by the
- * Show more/less control. The turn-level "Done" marker lives on the rail
- * (RailDoneRow), not on the thought.
+ * The rail clock stays a static marker (the whole pack collapses via
+ * ActivitySummary for compactness); a per-thought header would repeat the
+ * run's duration on every block, and the activity line above already carries
+ * it — "Thought for 49s" is the header's job, not each row's.
  *
- * Claude-parity rendering (2026-09-22, revised 2026-10-22, summary-only
- * 2026-10-23, full-reasoning reveal 2026-10-27): with the collapsed default on
- * (the out-of-box behaviour), a thought renders as the reference's card BODY —
- * one distilled sentence per line, no header, no reveal. The card's TITLE
- * ("Thought for 49s") belongs to the activity line above the pack, which
- * already carries the elapsed time; a per-thought header repeated that run
- * duration on every block. The reference stops at that summary; August does
- * not — "Show full reasoning" swaps the summary for the model's own prose,
- * which is the whole point of keeping the raw text in the transcript at all.
- * The operator can still opt out of summary rendering entirely
- * (august.collapseThinking = '0'), which shows the prose clamped with a
- * "Show more" that unclamps it.
+ * Live vs settled (Claude-desktop activity rows, 2026-11-10): while the
+ * thought is still streaming there is no settled sentence list to trace, so it
+ * keeps the single rotating summary line (the shimmer follower) and shows no
+ * disclosure — a chevron over nothing is a lie. It rests into the expandable
+ * rows the moment it settles. Nothing auto-expands on the user's behalf.
+ *
+ * The operator can still opt out of the row layout entirely
+ * (`august.collapseThinking = '0'`), which shows the raw prose clamped with a
+ * "Show more" that unclamps it — the pre-row behaviour, kept for the plain
+ * transcript the opt-out asks for.
  */
 
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Clock, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import {
-  distillThoughtLines,
+  distillThoughtSteps,
   summarizeThoughtHeader,
+  type ThoughtStepLine,
 } from '@/lib/process-summary';
 import {
   THOUGHT_CLAMP_LINES,
   THOUGHT_CLAMP_CHARS,
-  THOUGHT_SUMMARY_LINES,
   THOUGHT_SUMMARY_LINES_FULL,
 } from '@/lib/thought-presentation';
 import { Markdown } from '@/sections/chat/ChatMarkdown';
@@ -54,13 +57,13 @@ export function ThoughtStep({
 }: {
   content: string;
   isGenerating?: boolean;
-  /** Prose shown in full (unclamped). Parent seeds this: true while the turn
-   *  is streaming, false once settled (→ clamped if it overflows). */
+  /** Prose shown in full (unclamped). Only the opt-out layout uses it: true
+   *  unclamps the raw prose. The row layout expands per row and ignores it. */
   showFull?: boolean;
   onToggle?: () => void;
-  /** Collapse settled thoughts to a one-line summary (dsh-style think row).
-   *  Only applies while clamped and not generating; "Show full reasoning"
-   *  expands, "Show less" returns to the summary. */
+  /** Render the reference's expandable activity rows (the out-of-box
+   *  default). Off means the opt-out layout: raw prose clamped with "Show
+   *  more". */
   collapsedDefault?: boolean;
   className?: string;
 }) {
@@ -69,10 +72,10 @@ export function ThoughtStep({
   const text = content.trim();
   const proseRef = useRef<HTMLDivElement>(null);
   const [overflowing, setOverflowing] = useState(false);
-  // Whether this row is showing the model's own prose instead of its distilled
-  // summary. Declared with the other hooks: the render below has an early
-  // return, and a hook after it changes the hook order between renders.
-  const [revealRaw, setRevealRaw] = useState(false);
+  // Which rows the user opened, keyed by row index. Independent per row: a
+  // toggle writes only its own key, so opening one row never opens a sibling.
+  // Nothing seeds it, so nothing auto-expands.
+  const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
 
   // Measure the natural prose height against the clamp. The inner prose is
   // never the clip container, so its scrollHeight is the full height whether
@@ -94,10 +97,9 @@ export function ThoughtStep({
     return () => ro.disconnect();
   }, [text, showFull]);
 
-  // Distilled step header (participle form: "Loading the skill…",
-  // "Comparing benchmark results…"). While generating, distill the LATEST
-  // sentence so the header rotates with the model's progress; once settled
-  // it rests on the first informative sentence of the whole thought.
+  // The rotating live line. While the thought streams, distill the LATEST
+  // sentence so the line advances with the model's progress; a settled thought
+  // renders the distilled rows instead.
   // (Lives above the `!text && !isGenerating` early return — rules-of-hooks.)
   const summaryLine = useMemo(() => {
     if (isGenerating) {
@@ -112,48 +114,35 @@ export function ThoughtStep({
     return summarizeThoughtHeader(text, false);
   }, [text, isGenerating]);
 
-  // The reference's thinking card is a LIST of the model's distilled
-  // sentences - "Fixing a schematic diagram for a 3-to-8 decoder." /
-  // "Designing the gate layout and wiring for the corrected circuit." - one
-  // per line. The FULL list is computed once; the visible slice depends on
-  // expansion (collapsed cap, or the raised expanded cap). Expansion never
-  // reveals raw reasoning — the reference's opened card carries more of the
-  // summary, and so does this one.
-  //
-  // A LIVE thought has no settled sentence list yet, so it keeps the one
-  // rotating line until it settles.
-  const distilledLines = useMemo(() => {
-    if (isGenerating) return summaryLine ? [summaryLine] : [];
-    return distillThoughtLines(text);
-  }, [text, isGenerating, summaryLine]);
-
-  const summaryCap = showFull ? THOUGHT_SUMMARY_LINES_FULL : THOUGHT_SUMMARY_LINES;
-  const summaryLines = distilledLines.slice(0, summaryCap);
+  // The reference's thinking rows: one per distilled sentence, each traced to
+  // the reasoning it summarises (the same bytes), so a row opens onto its OWN
+  // stretch without a second segmentation and without repeating the whole
+  // thought under every row. A thought whose every sentence the distiller
+  // filtered (pure netlist/code noise) still owes the card a row — an empty
+  // body reads as a rendering bug — so it falls back to one row over the whole
+  // trimmed text. A LIVE thought has no settled sentence list yet, so it
+  // renders none of these; it keeps the rotating line until it settles.
+  const rows = useMemo<ThoughtStepLine[]>(() => {
+    if (isGenerating) return [];
+    const steps = distillThoughtSteps(text);
+    return steps.length > 0
+      ? steps
+      : [{ summary: summarizeThoughtHeader('', false), reasoning: text }];
+  }, [text, isGenerating]);
 
   if (!text && !isGenerating) return null;
 
-  // Clamp long thoughts whether streaming or settled: once the reasoning passes
-  // the clamp height it is bounded with a fade + Show more, and the live tail
-  // simply streams below the fold (matching the reference, where a mid-stream
-  // thought is already truncated). Only an explicit Show more unclamps it.
-  // `longThought` falls back to a length check when the pixel measurement is
-  // unavailable or stale — a long thought must never render untruncated.
+  // Opt-out layout only: clamp long thoughts whether streaming or settled —
+  // once the reasoning passes the clamp height it is bounded with a fade +
+  // Show more, and the live tail streams below the fold. `longThought` falls
+  // back to a length check when the pixel measurement is unavailable or stale,
+  // so a long thought never renders untruncated.
   const longThought = overflowing || text.length > THOUGHT_CLAMP_CHARS;
   const clamped = longThought && !showFull;
-
-  // Claude-style think row: when the collapsed default is on, a thought
-  // renders as its distilled "what the model is doing" sentences, and the one
-  // control beneath it — "Show full reasoning" — swaps in the raw chain of
-  // thought itself. The reveal is local to this row: the parent's `showFull`
-  // still owns the streaming/expansion seed, and reading the whole reasoning
-  // is not a decision the transcript should remember across reloads.
-  const summaryCollapsed = collapsedDefault && !revealRaw;
-  // A summary row is expandable whenever there IS a full reasoning behind it;
-  // in the operator's opt-out layout the control only exists when the parent
-  // wired a toggle to unclamp the prose.
-  const canReveal = collapsedDefault
-    ? !isGenerating && !!text
-    : !!text && typeof onToggle === 'function';
+  // The single "Show more" that unclamps the raw prose belongs to the opt-out
+  // layout. The row layout expands per row, so it advertises no whole-block
+  // control here.
+  const canReveal = !collapsedDefault && !!text && typeof onToggle === 'function';
 
   const clockIcon = isGenerating ? (
     <Loader2 className="process-thought-clock animate-spin" aria-hidden />
@@ -175,47 +164,77 @@ export function ThoughtStep({
       </div>
 
       <div className="process-thought-body">
-        {/* No per-thought header. The reference names the THINKING CARD
-            "Thought for 49s" once — here that title is the activity line's
-            job (it already carries the elapsed time while the turn is live),
-            and repeating the run's duration on every thought block is how
-            three blocks each claimed "Thought for 6s". */}
-        {summaryCollapsed ? (
-          <div
-            id={panelId}
-            className={cn(
-              'thought-summary',
-              isGenerating && 'thought-summary--live',
-              showFull && 'thought-summary--expanded',
-            )}
-            data-slot="thought-summary"
-          >
-            {/* One sentence per line, the way the reference's thinking
-                card reads. Collapsed shows exactly ONE line (the distilled
-                header) — the chevron below is the "there is more" signal,
-                so no "…and N more" filler line is rendered here. */}
-            <span className="thought-summary-text">
-              {summaryLines.map((line, i) => (
-                <span
-                  key={i}
-                  className={cn(
-                    'thought-summary-line block',
-                    i === 0 && 'thought-summary-line--first',
-                  )}
-                >
-                  {line}
-                </span>
-              ))}
-              {/* A settled thought whose every sentence the distiller
-                  filtered (pure netlist/code noise) still owes the card a
-                  body — an empty summary div reads as a rendering bug. */}
-              {summaryLines.length === 0 && !isGenerating ? (
+        {collapsedDefault ? (
+          isGenerating ? (
+            /* Live: one rotating summary line, no disclosure. Nothing behind
+               it is settled enough to reveal, so there is no row to open and
+               nothing is expanded on the user's behalf. */
+            <div
+              id={panelId}
+              className="thought-summary thought-summary--live"
+              data-slot="thought-summary"
+            >
+              <span className="thought-summary-text">
                 <span className="thought-summary-line block">
-                  {summarizeThoughtHeader('', false)}
+                  {summaryLine || summarizeThoughtHeader('', true)}
                 </span>
-              ) : null}
-            </span>
-          </div>
+              </span>
+            </div>
+          ) : (
+            /* Settled: the reference's activity card — one rounded container,
+               a hairline-divided row per distilled sentence, each expanding
+               its own reasoning in place. */
+            <div
+              id={panelId}
+              className="thought-steps rounded-xl border border-border/40 bg-card/30 divide-y divide-border/20 text-xs overflow-hidden"
+              data-slot="thought-steps"
+            >
+              {rows.slice(0, THOUGHT_SUMMARY_LINES_FULL).map((row, i) => {
+                const open = !!openRows[i];
+                const triggerId = `${panelId}-row-${i}-trigger`;
+                const regionId = `${panelId}-row-${i}-region`;
+                return (
+                  <div key={i} className="thought-step-row" data-open={open}>
+                    <Button
+                      variant="bare"
+                      type="button"
+                      id={triggerId}
+                      className="thought-step-row-head"
+                      onClick={() => setOpenRows((v) => ({ ...v, [i]: !v[i] }))}
+                      aria-expanded={open}
+                      aria-controls={regionId}
+                    >
+                      <span className="thought-step-summary">{row.summary}</span>
+                      <ChevronRight
+                        className={cn('thought-step-chevron', open && 'is-open')}
+                        aria-hidden
+                      />
+                    </Button>
+                    <div
+                      id={regionId}
+                      role="region"
+                      aria-labelledby={triggerId}
+                      hidden={!open}
+                      className="thought-step-detail"
+                    >
+                      {/* The row's own reasoning — the same bytes its summary
+                          was distilled from, and only this row's. The region
+                          stays mounted so `aria-controls` resolves while
+                          closed, but the body mounts lazily: a collapsed row
+                          carries no reasoning bytes in the DOM at all. Bounded
+                          with the transcript's clamp/scroll convention so a
+                          long stretch never blows up the rail. */}
+                      {open ? (
+                        <div className="thought-step-reasoning tool-result-scroll max-h-48 overflow-y-auto overscroll-contain">
+                          <Markdown content={row.reasoning} />
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )
         ) : (
           <div className={cn('thought-clamp', clamped && 'is-clamped')}>
             <div
@@ -240,26 +259,20 @@ export function ThoughtStep({
         )}
 
         {canReveal ? (
-          <button
+          <Button
+            variant="bare"
             type="button"
             className={cn('thought-toggle-btn', isGenerating && 'is-live')}
-            onClick={collapsedDefault ? () => setRevealRaw((v) => !v) : onToggle}
-            aria-expanded={collapsedDefault ? revealRaw : showFull}
+            onClick={onToggle}
+            aria-expanded={showFull}
             aria-controls={panelId}
           >
-            <span>
-              {collapsedDefault
-                ? revealRaw ? 'Show less' : 'Show full reasoning'
-                : showFull ? 'Show less' : 'Show more'}
-            </span>
+            <span>{showFull ? 'Show less' : 'Show more'}</span>
             <ChevronDown
-              className={cn(
-                'thought-toggle-chevron',
-                (collapsedDefault ? revealRaw : showFull) && 'is-open',
-              )}
+              className={cn('thought-toggle-chevron', showFull && 'is-open')}
               aria-hidden
             />
-          </button>
+          </Button>
         ) : null}
       </div>
     </div>

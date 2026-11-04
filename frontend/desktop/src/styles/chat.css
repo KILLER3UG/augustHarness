@@ -1781,3 +1781,69 @@ details[open] > summary .disclosure-chevron {
   -webkit-text-fill-color: transparent;
   animation: thought-summary-shimmer 1.8s linear infinite;
 }
+
+/* ── Thought steps — Claude-desktop activity rows (settled thoughts) ─── */
+/* One rounded container whose hairline-divided rows are each a distilled
+   sentence; clicking a row reveals that stretch's reasoning in place. The
+   container reuses the activity-card-box border + divide-y so a thought pack
+   and a tool pack read as the same row anatomy. The Tailwind utilities live
+   on the JSX (rounded-xl border ... divide-y divide-border/20 ...); these
+   rules only cover what utilities cannot — the button's full-width,
+   left-aligned row layout and the in-place chevron. */
+.thought-steps {
+  margin-block: 2px;
+}
+.thought-step-row {
+  min-width: 0;
+}
+.thought-step-row-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  text-align: left;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 82%, transparent);
+  transition: color 0.15s ease;
+}
+.thought-step-row-head:hover {
+  color: var(--dt-foreground);
+}
+.thought-step-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* A distilled sentence can carry an unbreakable token (a path, a hash)
+     wider than the rail; without this the token paints past the container. */
+  overflow-wrap: anywhere;
+}
+.thought-step-chevron {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  margin-top: 3px;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 70%, transparent);
+  transition: transform 0.18s ease;
+}
+/* ▸ closed, ▾ open — the reference's row chevron. */
+.thought-step-chevron.is-open {
+  transform: rotate(90deg);
+}
+.thought-step-detail {
+  padding: 0 10px 8px;
+}
+.thought-step-reasoning {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 92%, transparent);
+}
+.thought-step-reasoning > .markdown-content {
+  margin: 0;
+}
+.thought-step-reasoning > .markdown-content > :first-child {
+  margin-top: 0;
+}
+.thought-step-reasoning > .markdown-content > :last-child {
+  margin-bottom: 0;
+}
