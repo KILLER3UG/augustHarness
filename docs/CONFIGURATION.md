@@ -224,11 +224,11 @@ beat plan mode; `chat_default` and `cortex` sit behind those three and fill
 exactly the no-pick case. A role moves model and gateway together
 (`fleetProviders`), because a bare model id does not identify a gateway, and a
 role-owned turn does not rewrite `session.model` — the routing belongs to the
-turn that earned it. When an image turn's model *declares* text-only input (the
-model entry's `inputTypes`), the turn says so in chat rather than swapping or
-going blind quietly; a model that declares nothing is left alone, because
-refusing on a guess would deny a capability it may have. The routing decision is
-logged at info level with the role name.
+turn that earned it. Every model is then assumed to accept an image part: the
+app does not guess modality (a fetched model list carries no input types), so a
+gateway that refuses the attachment answers with its own error and the thread
+renders that, the same path any other provider failure takes. The routing
+decision is logged at info level with the role name.
 `maxWorkbenchToolLoops` here overrides the workbench tool-round cap (default `150`;
 `0 = uncapped`). It has no Settings panel any more — the Turn limits door was
 removed and every bound it held is set here (or in `config.json`) directly.

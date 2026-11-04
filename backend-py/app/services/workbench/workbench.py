@@ -2860,7 +2860,6 @@ async def _sendWorkbenchMessageStreamImpl(
     # turn; `chat_default`/`cortex` fill exactly those.
     from app.services.model_fleet_service import chatRoleForTurn as _fleetChatRole
     from app.services.workbench.image_parts import messageHasImage as _messageHasImage
-    from app.services.workbench.providers import provider_model_accepts_images as _acceptsImages
 
     _hasImage = _messageHasImage(message)
     role, roleModel, roleProvider = _fleetChatRole(
@@ -2906,23 +2905,12 @@ async def _sendWorkbenchMessageStreamImpl(
         _currentChatModel.set((resolvedModel, _turnProviderName))
     if emit:
         emit({'type': 'started', 'sessionId': sessionId, 'model': resolvedModel})
-    # An image turn on a model that proves it cannot see one says so instead of
-    # swapping quietly. `_acceptsImages` answers None when the install declares
-    # nothing about this model's inputs, and silence is the honest reply there —
-    # refusing on a guess would deny a capability the model may have.
-    if _hasImage and not role and emit:
-        if _acceptsImages(resolvedProvider, resolvedModel) is False:
-            emit(
-                {
-                    'type': 'warning',
-                    'kind': 'visionUnsupported',
-                    'message': (
-                        f'{resolvedModel} does not accept image input, so this turn cannot see '
-                        'the attached image. Pick a vision-capable model in the composer and '
-                        'send again; your selection is used as-is, it is never swapped.'
-                    ),
-                }
-            )
+    # Every model is assumed to accept an image part. August deliberately does
+    # not guess modality — a fetched model list carries no input types, so a
+    # predicate would answer "unknown" for every real install and the notice
+    # would be dead weight. A gateway that refuses the image says so in its own
+    # error, and that refusal travels the same path as any other provider error
+    # and is rendered in the thread.
     # Recurring-task daemon (B7): fire due reminders at turn start — surfaced
     # to the UI as recurringTask SSE events → notification bell. Tasks may
     # carry an `[agent:ID model:MODEL]` directive: the reminder ALSO dispatches
