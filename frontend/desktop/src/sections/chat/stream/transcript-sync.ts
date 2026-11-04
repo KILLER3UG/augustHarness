@@ -43,6 +43,10 @@ const MAX_SYNC_CHARS = 48_000;
 const STRUCTURED_FIELDS = [
   'thinking',
   'thinkingDuration',
+  // Must stay in step with the server's STRUCTURED_FIELDS and the restore list
+  // in session-history.ts, or a verdict written here is dropped when the
+  // transcript comes back.
+  'rating',
   'tools',
   'tool',
   'attachments',

@@ -54,6 +54,11 @@ function scheduleHistoryRetry(sessionId: string): void {
 const STRUCTURED_FIELDS = [
   'thinking',
   'thinkingDuration',
+  // The human verdict on a reply. The backend persists it inside blocks_json
+  // (it is a key in the server's STRUCTURED_FIELDS), but a restored message only
+  // receives the fields listed HERE — omit it and the store keeps a rating the
+  // UI then forgets on reload.
+  'rating',
   'tools',
   'tool',
   // The link between a standalone tool row and its assistant `toolCall` block.
