@@ -42,9 +42,12 @@ export const ThinkingDisclosure = memo(function ThinkingDisclosure({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
 
-  // Auto-open while streaming; always collapse when generation finishes —
-  // even if the user expanded the section mid-stream.
-  const open = userOpen ?? pending;
+  // Opened only by the user. It used to default to `pending`, which meant every
+  // thought flung itself open while the model was reasoning and then snapped
+  // shut at the end — the block moved on its own twice per turn. The live
+  // "what is it doing" line is the activity header's job; the thought body
+  // waits for a click.
+  const open = userOpen ?? false;
 
   useEffect(() => {
     setUserOpen(null);
