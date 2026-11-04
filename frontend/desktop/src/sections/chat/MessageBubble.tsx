@@ -366,7 +366,10 @@ function MessageBubbleInner({
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
     >
-      {/* todos are rendered in the layout-level Workbench sidebar */}
+      {/* The todo list is NOT rendered here: the one remaining surface is the
+          inline "Todo" card in the working strip above the composer
+          (components/chat/WorkingIndicator.tsx), which also carries each step's
+          commit + review proof and the manual check-off. */}
       {isUser ? (
         <UserMessageBubble
           message={message}

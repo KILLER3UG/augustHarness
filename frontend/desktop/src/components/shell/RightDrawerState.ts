@@ -14,7 +14,6 @@ export const ALL_SECTION_IDS = [
   'preview',
   'diff',
   'terminal',
-  'tasks',
   'plan',
   'browser',
   'notes',
@@ -66,7 +65,6 @@ export const SECTION_ORDER: RightDrawerSectionId[] = [
   'preview',
   'diff',
   'terminal',
-  'tasks',
   'plan',
   'browser',
   'notes',
@@ -198,6 +196,47 @@ export function openRightDrawerFile(file: FileAttachment) {
     // one — the caption belongs to the artifact, not to the file view.
     artifactCaption: undefined,
     chooserActive: false,
+  });
+}
+
+/**
+ * Show a figure the TURN just made, without displacing what the user opened.
+ *
+ * `openRightDrawerFile` is the right door for a CLICK — the user asked for
+ * that one document, so it takes the whole panel. It is the wrong door for an
+ * automated show: wiping the open sections unmounts the panes the user was
+ * reading (their drafts and scroll positions go with them, per the `hidden`
+ * note above), so a turn that writes a picture would cost them work. Here the
+ * figure joins the tab strip and takes focus instead; every other pane stays
+ * mounted behind it, and one click back is the whole undo. With nothing open
+ * it collapses to `['file']`, which is the focused document view — the panel
+ * was empty, so there is nothing to displace and the figure gets the room.
+ */
+export function showFigureInRightDrawer(file: FileAttachment, caption?: string) {
+  const current = useRightDrawerStore.getState();
+  const baseSections = current.sections.filter((item) => item !== 'file');
+  const nextSections = [...baseSections, 'file' as const].slice(-MAX_SECTIONS);
+  if (baseSections.length >= MAX_SECTIONS) {
+    const removed = baseSections[0];
+    const label = removed ? removed[0].toUpperCase() + removed.slice(1) : 'A panel';
+    toast.info(`${label} was replaced in the side panel.`, {
+      description: 'The side panel keeps up to four sections open.',
+    });
+  }
+  useRightDrawerStore.setState({
+    ...current,
+    open: true,
+    sections: nextSections,
+    activeSection: 'file',
+    file,
+    // The figure's own caption travels with it — the producing tool's words,
+    // when the tool wrote any.
+    artifactCaption: caption,
+    simulidePath: undefined,
+    chooserActive: false,
+    // A parked File tab must come back to life, or the strip would show a tab
+    // whose pane the drawer keeps off-screen.
+    hidden: (current.hidden ?? []).filter((id) => id !== 'file'),
   });
 }
 

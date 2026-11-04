@@ -7295,6 +7295,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workbench/figures/recent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recentfigures
+         * @description Figure files the session's workspace gained at or after ``since``.
+         *
+         *     ``/api/git/status`` answers this question precisely, but it reports NOTHING
+         *     for a workspace that is not a git work tree — and a chat workspace usually
+         *     is not (the anatomy figures that prompted this are written by
+         *     ``node build.mjs`` into a plain folder). A skill that promises a preview in
+         *     the side panel has to deliver it in the workspace the user actually has.
+         *
+         *     The client sends no path: the directory walked is the one the server already
+         *     binds to ``sessionId``, so there is nothing here to traverse out of. Bounded
+         *     by depth, by the skip list, and by a scanned-file ceiling, and it never
+         *     follows a symlink — a workspace that contains a link to a huge tree is the
+         *     user's, not this endpoint's to walk.
+         */
+        get: operations["recentFigures_api_workbench_figures_recent_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workbench/files/raw": {
         parameters: {
             query?: never;
@@ -22267,6 +22299,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    recentFigures_api_workbench_figures_recent_get: {
+        parameters: {
+            query?: {
+                sessionId?: string;
+                since?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

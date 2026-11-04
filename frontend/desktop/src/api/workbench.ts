@@ -59,6 +59,35 @@ export async function setWorkbenchSandboxMode(
   return workbenchClient.setSandboxMode(sessionId, sandboxMode, sandboxNetwork);
 }
 
+export interface RecentFigure {
+  path: string;
+  mtime: number;
+}
+
+export interface RecentFiguresResult {
+  workspace: string;
+  files: RecentFigure[];
+  truncated: boolean;
+}
+
+/** Figure files the session's workspace modified at or after `since`.
+ *
+ *  `/api/git/status` is the precise record of what a shell command wrote, but
+ *  it says nothing in a workspace that is not a repository — and a chat
+ *  workspace usually is not one. The server walks the session's own workspace
+ *  (the client sends no path) and returns figure kinds only. */
+export async function getRecentFigures(
+  sessionId: string,
+  since: string,
+): Promise<RecentFiguresResult> {
+  const res = await fetch(
+    `/api/workbench/figures/recent?sessionId=${encodeURIComponent(sessionId)}`
+    + `&since=${encodeURIComponent(since)}`,
+  );
+  if (!res.ok) throw new Error(`figures/recent failed: HTTP ${res.status}`);
+  return (await res.json()) as RecentFiguresResult;
+}
+
 /** Set a per-session spend ceiling in USD (0 clears it). New turns are
  *  blocked once the estimated cumulative cost reaches the ceiling. */
 export async function setWorkbenchCostCeiling(

@@ -12,7 +12,6 @@ import {
   FileDiff,
   GalleryVertical,
   Globe,
-  ListTodo,
   Play,
   Plus,
   StickyNote,
@@ -38,7 +37,6 @@ import {
   type RightDrawerSectionId,
 } from './RightDrawerState';
 import { RightDrawerDiffSection } from './RightDrawerDiffSection';
-import { RightDrawerTasksSection } from './RightDrawerTasksSection';
 import { RightDrawerPlanSection } from './RightDrawerPlanSection';
 import { RightDrawerPreviewSection } from './RightDrawerPreviewSection';
 import { RightDrawerBrowserSection } from './RightDrawerBrowserSection';
@@ -52,6 +50,7 @@ import { RightDrawerJobsSection } from './RightDrawerJobsSection';
 import { RoutinesPane } from '@/components/sidebar/RoutinesPane';
 import { getBot } from '@/api/api-client';
 import type { WorkbenchSession } from '@/types/workbench';
+import type { FileAttachment } from '@/types/chat';
 import { SECTION_ORDER, useRightDrawer } from './RightDrawerState';
 import { getFileIcon } from '@/lib/file-icon';
 import { PANEL_EASE, PANEL_MS } from '@/lib/motion';
@@ -98,7 +97,15 @@ export function RightDrawer({
   const hidden = useRightDrawerStore((st) => st.hidden ?? EMPTY_HIDDEN);
   const showingFile = sections.length === 1 && sections[0] === 'file' && !!filePreview;
   const HeaderFileIcon = filePreview ? getFileIcon(filePreview.name).Icon : null;
-  const ctx = { sessionId, workspacePath, workbenchSession, onApprovePlan, onRejectPlan, onRevisePlan };
+  const ctx = {
+    sessionId,
+    workspacePath,
+    workbenchSession,
+    onApprovePlan,
+    onRejectPlan,
+    onRevisePlan,
+    filePreview,
+  };
 
   // Single active view — one width, no wide/narrow split. The drawer grows
   // as the handle is dragged left, so the shared hook runs with direction -1.
@@ -225,6 +232,10 @@ export function RightDrawer({
                         key={sectionId}
                         sectionId={sectionId}
                         active={sectionId === activeSection}
+                        // A File tab names the document it holds — "File"
+                        // tells a user nothing when the turn just showed a
+                        // figure they asked for by name.
+                        label={sectionId === 'file' && filePreview ? filePreview.name : undefined}
                       />
                     ))}
                   {/* Parked panes (Hermes' "hidden"): a restore rail, because a parked
@@ -313,7 +324,6 @@ const TAB_META: Record<RightDrawerSectionId, { label: string; Icon: typeof FileD
   preview: { label: 'Preview', Icon: Play },
   diff: { label: 'Diffs', Icon: FileDiff },
   terminal: { label: 'Terminal', Icon: TerminalSquare },
-  tasks: { label: 'Tasks', Icon: ListTodo },
   plan: { label: 'Plan', Icon: ClipboardList },
   browser: { label: 'Browser', Icon: Globe },
   notes: { label: 'Notepad', Icon: StickyNote },
@@ -337,10 +347,20 @@ const SECTION_ADD_ORDER: RightDrawerSectionId[] = [
   'jobs',
 ];
 
-function DrawerTab({ sectionId, active }: { sectionId: RightDrawerSectionId; active: boolean }) {
+function DrawerTab({
+  sectionId,
+  active,
+  label,
+}: {
+  sectionId: RightDrawerSectionId;
+  active: boolean;
+  /** Overrides the pane's own name — a File tab shows the document it holds. */
+  label?: string;
+}) {
   const meta = TAB_META[sectionId];
   if (!meta) return null;
-  const { label, Icon } = meta;
+  const { Icon } = meta;
+  const shown = label ?? meta.label;
   return (
     <div
       role="tab"
@@ -363,10 +383,10 @@ function DrawerTab({ sectionId, active }: { sectionId: RightDrawerSectionId; act
       )}
     >
       <Icon className="size-3 shrink-0 opacity-80" />
-      <span className="truncate text-xs font-medium">{label}</span>
+      <span className="truncate text-xs font-medium">{shown}</span>
       <button
         type="button"
-        aria-label={`Hide ${label} (keeps it running)`}
+        aria-label={`Hide ${shown} (keeps it running)`}
         title="Hide — keeps the pane alive, stops its polling"
         data-testid={`drawer-tab-hide-${sectionId}`}
         onClick={(e) => {
@@ -379,7 +399,7 @@ function DrawerTab({ sectionId, active }: { sectionId: RightDrawerSectionId; act
       </button>
       <button
         type="button"
-        aria-label={`Close ${label} section`}
+        aria-label={`Close ${shown} section`}
         data-testid={`drawer-tab-close-${sectionId}`}
         onClick={(e) => {
           e.stopPropagation();
@@ -481,6 +501,7 @@ function renderSection(
     onApprovePlan: () => Promise<void>;
     onRejectPlan?: () => Promise<void>;
     onRevisePlan?: (feedback: string) => void | Promise<void>;
+    filePreview: FileAttachment | undefined;
   },
 ) {
   switch (sectionId) {
@@ -495,8 +516,6 @@ function renderSection(
       );
     case 'diff':
       return <RightDrawerDiffSection sessionId={ctx.sessionId} />;
-    case 'tasks':
-      return <RightDrawerTasksSection sessionId={ctx.sessionId} todos={ctx.workbenchSession?.todos ?? []} />;
     case 'plan':
       return (
         <RightDrawerPlanSection
@@ -521,6 +540,13 @@ function renderSection(
       return <RightDrawerArtifactsSection sessionId={ctx.sessionId} />;
     case 'circuit':
       return <RightDrawerCircuitSection sessionId={ctx.sessionId} />;
+    case 'file':
+      /* The file viewer as a TAB, not the whole panel. A turn that shows a
+         figure by itself opens it this way (`showFigureInRightDrawer`), so
+         the panes the user opened stay mounted behind it instead of being
+         unmounted by an automated action. One `file` section on its own still
+         renders through the focused view above — same document, no strip. */
+      return ctx.filePreview ? <RightDrawerFileSection file={ctx.filePreview} bare /> : null;
     case 'routines':
       // Bot Mode Phase B: routines are a Bot-chat surface — render only
       // inside a canonical Bot Chat (the pane derives the Bot handle).

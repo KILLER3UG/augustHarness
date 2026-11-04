@@ -1,7 +1,9 @@
 /* ── Chat-first layout ────────────────────────────────────────────── */
 /*                                                                          */
 /* The right-side Workbench sidebar is rendered as a layout sidebar with    */
-/* Preview, Diff, Terminal, Tasks, and Plan sections.                       */
+/* Preview, Diff, Terminal and Plan sections. Todo/plan progress is NOT a   */
+/* drawer tab — the inline "Todo" card in the thread (WorkingIndicator) is  */
+/* the only surface for it.                                                 */
 
 import { useState, useEffect, useRef } from "react";
 import { useShellWidth } from '@/hooks/useShellWidth';
@@ -18,7 +20,7 @@ import { MobileTopbar } from "./MobileTopbar";
 import { MobileTabbar } from "./MobileTabbar";
 import { SessionSidebar } from "./SessionSidebar";
 import { RightDrawer } from "./RightDrawer";
-import { addRightDrawerSection, closeRightDrawer, closeRightDrawerSection, isDrawerPanelVisible, openRightDrawer, setActiveRightDrawerSection, toggleBottomTerminal, useRightDrawer, useRightDrawerStore } from "./RightDrawerState";
+import { addRightDrawerSection, closeRightDrawer, closeRightDrawerSection, isDrawerPanelVisible, openRightDrawer, setActiveRightDrawerSection, SECTION_ORDER, toggleBottomTerminal, useRightDrawer, useRightDrawerStore } from "./RightDrawerState";
 import { BottomTerminalDock } from "./BottomTerminalDock";
 import { getDigest, getNeedsAttention } from "@/api/subagents";
 import { setNeedsAttention } from "@/components/sidebar/needs-handoff-store";
@@ -180,7 +182,7 @@ export function ChatLayout() {
           // `terminal` is deliberately absent: the terminal is a bottom-docked
           // surface (BottomTerminalDock), not a drawer tab, and the picker card
           // routes there. Nothing in the app adds it as a section.
-          if (['preview', 'diff', 'tasks', 'plan', 'browser', 'subagents'].includes(section)) {
+          if (['preview', 'diff', 'plan', 'browser', 'subagents'].includes(section)) {
             addRightDrawerSection(section);
             setActiveRightDrawerSection(section);
             setShowRightSidebar(true);
@@ -280,21 +282,6 @@ export function ChatLayout() {
       autoOpenedSubagentsForSessionRef.current = workbenchSessionId;
     }
   }, [activeSubagentCount, workbenchSessionId]);
-
-  // Auto-open Tasks when todos appear; close the section when they clear.
-  const hasTodosRef = useRef(false);
-  useEffect(() => {
-    const hasTodos = (workbenchSession?.todos?.length ?? 0) > 0;
-    if (hasTodos && !hasTodosRef.current) {
-      hasTodosRef.current = true;
-      addRightDrawerSection('tasks');
-    } else if (!hasTodos) {
-      if (hasTodosRef.current) {
-        closeRightDrawerSection('tasks');
-      }
-      hasTodosRef.current = false;
-    }
-  }, [workbenchSession?.todos?.length]);
 
   // Auto-open Plan when a plan is presented; close when gone.
   const hasPlanRef = useRef(false);
@@ -522,8 +509,12 @@ export function ChatLayout() {
         closeRightDrawer();
         return;
       }
-      // Reopen on whatever was last open; fall back to Tasks.
-      addRightDrawerSection(st.sections[st.sections.length - 1] ?? 'tasks');
+      // Reopen on whatever was last open. The fallback used to be the Tasks
+      // pane; the todo list is the inline card in the thread now, so the
+      // drawer falls back to the first declared section instead.
+      addRightDrawerSection(
+        st.sections[st.sections.length - 1] ?? SECTION_ORDER[0],
+      );
     };
     window.addEventListener('august:toggle-sidebar', onToggleSidebar);
     window.addEventListener('august:toggle-right-drawer', onToggleDrawer);

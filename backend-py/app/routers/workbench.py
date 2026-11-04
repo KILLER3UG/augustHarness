@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import uuid
 from pathlib import Path
@@ -1091,6 +1092,92 @@ async def readArtifactHtml(path: str = '', sessionId: str = Query('')):
             'X-Content-Type-Options': 'nosniff',
         },
     )
+
+
+_FIGURE_SCAN_EXTS = frozenset({'.html', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'})
+_FIGURE_SCAN_SKIP_DIRS = frozenset(
+    {
+        '.git', 'node_modules', '.aug', 'dist', 'build', 'out', 'venv', '.venv',
+        '__pycache__', '.idea', '.vscode', '.mypy_cache', '.ruff_cache', 'vendor',
+    }
+)
+_FIGURE_SCAN_MAX_DEPTH = 3
+_FIGURE_SCAN_MAX_SCANNED = 4000
+
+
+@router.get('/figures/recent')
+async def recentFigures(
+    sessionId: str = Query(''),
+    since: str = Query(''),
+    limit: int = Query(40),
+):
+    """Figure files the session's workspace gained at or after ``since``.
+
+    ``/api/git/status`` answers this question precisely, but it reports NOTHING
+    for a workspace that is not a git work tree — and a chat workspace usually
+    is not (the anatomy figures that prompted this are written by
+    ``node build.mjs`` into a plain folder). A skill that promises a preview in
+    the side panel has to deliver it in the workspace the user actually has.
+
+    The client sends no path: the directory walked is the one the server already
+    binds to ``sessionId``, so there is nothing here to traverse out of. Bounded
+    by depth, by the skip list, and by a scanned-file ceiling, and it never
+    follows a symlink — a workspace that contains a link to a huge tree is the
+    user's, not this endpoint's to walk.
+    """
+    from datetime import datetime
+
+    session = wb.getWorkbenchSession(sessionId)
+    workspace = as_str(getattr(session, 'workspacePath', '') or '') if session else ''
+    if not workspace:
+        return {'workspace': '', 'files': [], 'truncated': False}
+    root = Path(workspace)
+    if not root.is_dir():
+        return {'workspace': str(root), 'files': [], 'truncated': False}
+
+    try:
+        cutoff = datetime.fromisoformat(since.replace('Z', '+00:00')).timestamp()
+    except (TypeError, ValueError):
+        # An unreadable `since` is a broken caller, not an empty workspace.
+        # Refuse rather than return "everything ever modified".
+        raise HTTPException(status_code=400, detail='since must be an ISO-8601 timestamp')
+
+    found: list[tuple[float, str]] = []
+    scanned = 0
+    truncated = False
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = len(Path(dirpath).relative_to(root).parts)
+            dirnames[:] = [d for d in dirnames if d not in _FIGURE_SCAN_SKIP_DIRS]
+            if depth >= _FIGURE_SCAN_MAX_DEPTH:
+                dirnames[:] = []
+            for name in filenames:
+                scanned += 1
+                if scanned > _FIGURE_SCAN_MAX_SCANNED:
+                    truncated = True
+                    break
+                target = Path(dirpath) / name
+                if target.suffix.lower() not in _FIGURE_SCAN_EXTS:
+                    continue
+                try:
+                    stat = target.stat()
+                except OSError:
+                    continue
+                if target.is_symlink() or stat.st_mtime < cutoff:
+                    continue
+                found.append((stat.st_mtime, str(target)))
+            if truncated:
+                break
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f'workspace scan failed: {exc}')
+
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    cap = max(1, min(int(limit), 100))
+    return {
+        'workspace': str(root),
+        'files': [{'path': path, 'mtime': mtime} for mtime, path in found[:cap]],
+        'truncated': truncated or len(found) > cap,
+    }
 
 
 @router.post('/kernel/provision')

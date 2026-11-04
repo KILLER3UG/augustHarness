@@ -7000,7 +7000,7 @@ def _checkToolGuard(session: WorkbenchSession, toolName: str, args: dict[str, ob
             'Finish investigating with non-destructive tools, write the plan to that '
             'file, call `submit_plan`, and wait for the user to approve before executing.'
         )
-    # Edit automatically: file edits proceed; shell/commands still need approval.
+    # Auto approve: file edits proceed; shell/commands still need approval.
     # Cognitive budget hardening: at critical, nudge non-essential writes toward scratchpad/summarize/compact first.
     # This is advisory (not hard-blocked) but surfaces via deny string so model sees the prompt.
     try:

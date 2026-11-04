@@ -11,6 +11,7 @@ import { motion } from 'framer-motion';
 import { messagePop, userMessagePop } from '@/lib/motion';
 import { ScrollToTopButton } from '@/components/chat/ScrollToTopButton';
 import { WorkingIndicator } from '@/components/chat/WorkingIndicator';
+import { useSessionTodoRows } from '@/store/liveActivity';
 import { MessageTimestampTicker } from '@/components/chat/MessageTimestamp';
 import { MessageBubble } from './MessageBubble';
 import { InThreadSearch } from './InThreadSearch';
@@ -124,6 +125,10 @@ export function ChatThreadMessagePane({
     () => (sessionId ? resolveWorkbenchSessionId(sessionId) : null),
     [sessionId],
   );
+  // The thread strip's visibility gate reads the same session snapshot the card
+  // renders from — one query key, shared with ChatLayout through React Query.
+  const { rows: liveStripTodos } = useSessionTodoRows(sessionId);
+  const showLiveStrip = streaming || liveStripTodos.length > 0;
   const checkpointsQuery = useQuery({
     queryKey: ['workbench-checkpoints', wbSessionId],
     queryFn: () => listWorkbenchCheckpoints(wbSessionId!),
@@ -352,20 +357,24 @@ export function ChatThreadMessagePane({
       </div>
 
       {/* AUG — anchored above the composer; the slot grows with the live
-          strip (phase chip + sentence stack) and fades when streaming ends. */}
+          strip (phase chip + sentence stack) and fades when streaming ends.
+          It stays mounted while the session still has todos: the inline Todo
+          card is now the ONLY todo surface, so collapsing it at the end of the
+          turn would take the checklist, the per-step commit proof and the
+          check-off door down with the answer. */}
       <div
         className={cn(
           'mx-auto w-full august-transcript-column px-4 shrink-0 transition-[height,opacity] duration-200',
-          streaming ? 'h-auto opacity-100 pointer-events-auto' : 'h-0 overflow-hidden opacity-0 pointer-events-none',
+          showLiveStrip ? 'h-auto opacity-100 pointer-events-auto' : 'h-0 overflow-hidden opacity-0 pointer-events-none',
         )}
-        aria-hidden={!streaming}
+        aria-hidden={!showLiveStrip}
         /* `aria-hidden` alone does not withdraw a control from the tab order:
            with a plan posted, the collapsed strip still held its toggle button
            and Chromium focused it (measured by reverting this attribute). */
-        inert={!streaming || undefined}
+        inert={!showLiveStrip || undefined}
       >
         <div className="pt-1" data-testid="aug-working-indicator">
-          <WorkingIndicator sessionId={sessionId} />
+          <WorkingIndicator sessionId={sessionId} streaming={streaming} />
         </div>
       </div>
 

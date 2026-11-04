@@ -232,8 +232,9 @@ That baseline is the proof the later commit relies on.
 step's `summary` and `verification` as claims to verify, and calls the same
 read-only clean reviewer as `review_change`. It records `approved`,
 `changes_requested` or `failed` with the findings. A new commit resets the
-review to `unreviewed`; there is **no** automatic fix loop. The Tasks panel
-shows the short sha and review state per step.
+review to `unreviewed`; there is **no** automatic fix loop. The chat's own Todo
+card shows the short sha and review state per step, and is the only place a step
+can be checked off by hand.
 
 `commit_step` is a mutation: plan mode blocks it, ask/edit gate it like a
 command, and the user's git hooks run (a hook failure records nothing). It

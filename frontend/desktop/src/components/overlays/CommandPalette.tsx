@@ -207,22 +207,22 @@ export function CommandPalette() {
               <Copy className="size-3" /> Copy conversation
             </Command.Item>
             <Command.Item
-              value="mode ask before changes"
+              value="mode ask every time"
               onSelect={run(() =>
                 dispatchUiAction({ action: 'set_guard_mode', target: 'ask' }),
               )}
               className="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer aria-selected:bg-primary/15 aria-selected:text-tier-1 data-[selected=true]:bg-primary/15"
             >
-              <Shield className="size-3" /> Mode: Ask before changes
+              <Shield className="size-3" /> Mode: Ask every time
             </Command.Item>
             <Command.Item
-              value="mode edit automatically"
+              value="mode auto approve"
               onSelect={run(() =>
                 dispatchUiAction({ action: 'set_guard_mode', target: 'edit' }),
               )}
               className="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer aria-selected:bg-primary/15 aria-selected:text-tier-1 data-[selected=true]:bg-primary/15"
             >
-              <Shield className="size-3" /> Mode: Edit automatically
+              <Shield className="size-3" /> Mode: Auto approve
             </Command.Item>
             <Command.Item
               value="mode plan mode"
@@ -253,18 +253,6 @@ export function CommandPalette() {
               className="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer aria-selected:bg-primary/15 aria-selected:text-tier-1 data-[selected=true]:bg-primary/15"
             >
               <ListTodo className="size-3" /> Open plan panel
-            </Command.Item>
-            <Command.Item
-              value="open tasks todos panel drawer"
-              onSelect={run(() =>
-                dispatchUiAction({
-                  action: 'set_drawer_section',
-                  target: 'tasks',
-                }),
-              )}
-              className="flex items-center gap-2 px-2 py-1.5 text-sm rounded cursor-pointer aria-selected:bg-primary/15 aria-selected:text-tier-1 data-[selected=true]:bg-primary/15"
-            >
-              <ListTodo className="size-3" /> Open tasks panel
             </Command.Item>
             <Command.Item
               value="open diff changed files panel drawer"

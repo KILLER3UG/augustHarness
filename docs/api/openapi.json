@@ -19519,6 +19519,65 @@
         "summary": "Workbenchdoctor"
       }
     },
+    "/api/workbench/figures/recent": {
+      "get": {
+        "description": "Figure files the session's workspace gained at or after ``since``.\n\n``/api/git/status`` answers this question precisely, but it reports NOTHING\nfor a workspace that is not a git work tree — and a chat workspace usually\nis not (the anatomy figures that prompted this are written by\n``node build.mjs`` into a plain folder). A skill that promises a preview in\nthe side panel has to deliver it in the workspace the user actually has.\n\nThe client sends no path: the directory walked is the one the server already\nbinds to ``sessionId``, so there is nothing here to traverse out of. Bounded\nby depth, by the skip list, and by a scanned-file ceiling, and it never\nfollows a symlink — a workspace that contains a link to a huge tree is the\nuser's, not this endpoint's to walk.",
+        "operationId": "recentFigures_api_workbench_figures_recent_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sessionId",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Sessionid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Since",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 40,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recentfigures"
+      }
+    },
     "/api/workbench/files/raw": {
       "get": {
         "description": "Raw file bytes for embedded cross-origin viewers.\n\nServes the Surfer waveform viewer iframe (Circuit panel) workspace\nVCD/FST/GHW files: surfer's WASM build runs on its own origin and\nfetches the waveform over CORS from this route. Same sandbox rules\nas /files/read (hardline + workspace/temp roots + size cap).",

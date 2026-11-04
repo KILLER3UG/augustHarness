@@ -466,7 +466,16 @@ def _workspace() -> str:
 
 
 async def _tool_generate(args: dict[str, Any]) -> str:
-    """The generate_image tool handler — returns the file path as text."""
+    """The generate_image tool handler — the receipt is a JSON document.
+
+    A tool's RESULT is the record of what it produced: the desktop reads a
+    produced path out of it (``PRODUCED_KEYS`` in
+    ``frontend/desktop/src/lib/produced-artifacts.ts``) and the line under the
+    preview out of ``caption`` (``CAPTION_KEYS``). As a sentence — the old
+    shape — nothing downstream could see the file at all: no artifact card, no
+    drawer, and the promise inside this very receipt ("the chat renders it as
+    a file card") was a lie the model repeated to the user.
+    """
     try:
         result = await generate_image(
             prompt=str(args.get('prompt', '')),
@@ -479,9 +488,16 @@ async def _tool_generate(args: dict[str, Any]) -> str:
             seed=int(args['seed']) if args.get('seed') is not None else None,
             out_path=str(args.get('path') or '') or None,
         )
-        return (
-            f"Image written to {result['path']} (seed {result['seed']}). "
-            'The chat renders it as a file card; reference the path to discuss it.'
+        return json.dumps(
+            {
+                'path': str(result['path']),
+                'filename': str(result.get('filename') or Path(str(result['path'])).name),
+                'seed': result['seed'],
+                'caption': (
+                    f"Image written to {result['path']} (seed {result['seed']}). "
+                    'It previews in the side panel; reference the path to discuss or edit it.'
+                ),
+            }
         )
     except Exception as exc:  # noqa: BLE001 — tool receipts must stay strings
         return f'Error: {exc}'

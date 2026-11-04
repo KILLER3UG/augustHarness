@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-451 routes across 376 paths,
+452 routes across 377 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -24,7 +24,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/v1/models` | Delegate model listing to the model-service-backed OpenAI route. |
 | `POST` | `/v1/responses` | OpenAI Responses API proxy. |
 
-## Workbench chat (70)
+## Workbench chat (71)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -54,6 +54,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/workbench/confirm-mutation` | Alias for POST /mutations/respond (legacy frontend path). |
 | `POST` | `/api/workbench/cost-ceiling` | Set a per-session spend ceiling (USD). 0 clears it. |
 | `GET` | `/api/workbench/doctor` | Setup / health doctor for the first-run checklist and Settings. |
+| `GET` | `/api/workbench/figures/recent` | Figure files the session's workspace gained at or after ``since``. |
 | `GET` | `/api/workbench/files/raw` | Raw file bytes for embedded cross-origin viewers. |
 | `GET` | `/api/workbench/files/read` | Read a file as base64 for the right-drawer viewer. |
 | `POST` | `/api/workbench/goal` | Set/clear/status for goals. |
@@ -570,4 +571,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (451 operations).
+Generated from `docs/api/openapi.json` (452 operations).

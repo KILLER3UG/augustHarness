@@ -1,10 +1,21 @@
 /**
- * Live turn activity for the right-side Workbench panel.
+ * Live turn activity for the inline working strip above the composer.
  * Keeps users informed while chat thoughts are collapsed mid-stream.
  * State is keyed per session so concurrent chats do not overwrite each other.
+ *
+ * The todo checklist is only half here: `todosUpdated` publishes the live
+ * statuses, and the session snapshot (`useSessionTodoRows` at the bottom of
+ * this file) carries the host-owned step-commit/review proof. Both surfaces —
+ * the card and the thread strip's visibility gate — read that one hook.
  */
 
+import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { create } from 'zustand';
+import { getWorkbenchSession } from '@/api/workbench';
+import { normalizeWorkbenchSession } from '@/lib/workbench-plan';
+import { useSessionsStore } from '@/store/sessions';
+import type { WorkbenchTodo } from '@/types/workbench';
 
 export type LiveActivityKind = 'thinking' | 'view' | 'edit' | 'run' | 'tool';
 
@@ -134,4 +145,90 @@ export function selectSessionLiveActivity(
 ): SessionLiveActivity {
   if (!sessionId) return { headline: '', items: [] };
   return state.bySession[sessionId] ?? { headline: '', items: [] };
+}
+
+/* ── The todo checklist the inline card renders ─────────────────────────── */
+
+/**
+ * One row of the kept todo card: the live checklist fields, plus the
+ * host-owned proof fields (`commit` / `review`) the session snapshot carries.
+ * Those two fields are the reason this hook reads REST at all — see below.
+ */
+export interface SessionTodoRow {
+  id: string;
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  commit?: WorkbenchTodo['commit'];
+  review?: WorkbenchTodo['review'];
+}
+
+/**
+ * The session's todo rows, read by BOTH mount points of the one remaining todo
+ * surface: the card itself and the thread strip's visibility gate (a gate the
+ * card cannot own, because its parent collapses the subtree when no turn is
+ * streaming).
+ *
+ * Why the snapshot and not a widened SSE payload: `commit_step` / `review_step`
+ * write the host fields onto the session's todos and only invalidate
+ * `workbench-session` — they never emit a `todosUpdated` frame, so no live
+ * payload can carry a SHA or a review state. The live entry is also cleared the
+ * moment the stream settles, so a store-only card would take the checklist —
+ * and the manual check-off door — down with it. The frame stays the FAST path:
+ * when it is newer than the last snapshot fetch its statuses overlay the
+ * server's, so a model tick lands on screen before the refetch does.
+ */
+export function useSessionTodoRows(
+  sessionId?: string | null,
+): { rows: SessionTodoRow[]; wbId: string | null } {
+  // Primitive selectors only — an object-returning selector re-renders every
+  // consumer on any session-list change (the same trap noted above).
+  const uiKey = useSessionsStore((s) => {
+    if (!sessionId) return null;
+    const hit = s.sessions.find(
+      (m) => m.id === sessionId || m.workbenchSessionId === sessionId,
+    );
+    return hit?.id ?? sessionId;
+  });
+  // Strictly the backend id: a chat that has never opened a Workbench session
+  // has none, and must not fire a request for its UI id (that is a 404 on every
+  // thread mount). `resolveWorkbenchSessionId` falls back to the UI id.
+  const wbId = useSessionsStore((s) => {
+    if (!sessionId) return null;
+    const hit = s.sessions.find(
+      (m) => m.id === sessionId || m.workbenchSessionId === sessionId,
+    );
+    return hit?.workbenchSessionId ?? null;
+  });
+  const live = useLiveActivityStore((s) => (uiKey ? s.bySession[uiKey]?.todos : undefined));
+  const snapshot = useQuery({
+    queryKey: ['workbench-session', wbId],
+    queryFn: () => getWorkbenchSession(wbId as string),
+    enabled: Boolean(wbId),
+    retry: false,
+  });
+  // Depend on the raw query result, not a derived array: `normalizeWorkbenchSession`
+  // builds a fresh object per render, which would re-run the merge every tick.
+  const data = snapshot.data;
+  const fetchedAt = snapshot.dataUpdatedAt;
+
+  const rows = useMemo<SessionTodoRow[]>(() => {
+    const server = normalizeWorkbenchSession(data)?.todos ?? [];
+    const liveItems = live?.items ?? [];
+    if (server.length === 0) return liveItems;
+    const overlayLive = !!live && live.at > fetchedAt;
+    const byId = new Map(liveItems.map((item) => [item.id, item]));
+    const merged: SessionTodoRow[] = server.map((todo) => ({
+      ...todo,
+      status: overlayLive ? byId.get(todo.id)?.status ?? todo.status : todo.status,
+    }));
+    if (overlayLive) {
+      // A fresh `submit_todos` list can hold rows the last fetch never saw.
+      for (const item of liveItems) {
+        if (!server.some((todo) => todo.id === item.id)) merged.push({ ...item });
+      }
+    }
+    return merged;
+  }, [data, live, fetchedAt]);
+
+  return { rows, wbId };
 }

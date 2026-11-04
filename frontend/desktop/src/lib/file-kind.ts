@@ -7,7 +7,11 @@
  * viewer with reveal-in-folder fallback).
  */
 
-import { openRightDrawerCircuitSim, openRightDrawerFile } from '@/components/shell/RightDrawerState';
+import {
+  openRightDrawerCircuitSim,
+  openRightDrawerFile,
+  showFigureInRightDrawer,
+} from '@/components/shell/RightDrawerState';
 import { ChatAttachmentService } from '@/sections/chat/services/ChatAttachmentService';
 import { revealInFolder } from '@/lib/tauri-shell';
 import { toast } from 'sonner';
@@ -24,10 +28,27 @@ export interface FileKindInfo {
   badgeTone: FileKind;
 }
 
-const IMAGE_EXTS = new Set(['PNG', 'JPG', 'JPEG', 'SVG', 'WEBP', 'GIF', 'BMP', 'ICO']);
+const IMAGE_EXTS = new Set(['PNG', 'JPG', 'JPEG', 'SVG', 'WEBP', 'GIF', 'BMP', 'ICO', 'AVIF']);
 const VIDEO_EXTS = new Set(['MP4', 'MOV', 'WEBM', 'AVI', 'MKV']);
 /** SimulIDE schematics — XML circuits with their layout saved in the file. */
 const CIRCUIT_SIM_EXTS = new Set(['SIM', 'SIM1', 'SIM2']);
+
+/**
+ * The extensions the right drawer can SHOW rather than print.
+ *
+ * A FIGURE is a file you look at: a raster image renders in an `<img>`, and an
+ * SVG or an HTML document renders LIVE through the artifact route
+ * (`RightDrawerFileSection` → `/api/workbench/artifact/html`), which is what
+ * the anatomy figures are — inline script and all. Everything else a turn can
+ * write (a `.md`, a `.pptx`, a `.csv`) is a document with its own card, and
+ * stealing the user's pane for it is not what "show the figure" means.
+ */
+const FIGURE_EXTS = new Set(['PNG', 'JPG', 'JPEG', 'SVG', 'WEBP', 'GIF', 'BMP', 'ICO', 'AVIF', 'HTML', 'HTM']);
+
+/** True when the file is a figure the drawer should show by itself. */
+export function isFigurePath(path: string): boolean {
+  return FIGURE_EXTS.has(extOf(path));
+}
 /** Document kinds keep the down-arrow glyph convention (document/download). */
 const DOCUMENT_EXTS = new Set([
   'MD', 'TXT', 'RTF', 'DOC', 'DOCX', 'ODT', 'XLS', 'XLSX', 'CSV', 'TSV', 'PPT', 'PPTX',
@@ -84,8 +105,18 @@ export function classifyFileKind(path: string): FileKindInfo {
  *
  * Read order: Tauri FS invoke → backend `/api/workbench/files/read` (dev /
  * backend-only runs have no desktop FS API) → reveal in folder.
+ *
+ * `opts.asTab` is the door a TURN uses when it shows a figure by itself. The
+ * focused view (`openRightDrawerFile`) replaces every open pane with the
+ * document — right when the user clicked into one deliberately. As a tab the
+ * figure joins the strip and takes focus, and the panes the user opened stay
+ * mounted underneath it, so an automated action costs them nothing to undo.
  */
-export async function openFileInDrawer(path: string, sessionId?: string): Promise<void> {
+export async function openFileInDrawer(
+  path: string,
+  sessionId?: string,
+  opts: { asTab?: boolean; caption?: string } = {},
+): Promise<void> {
   try {
     // SimulIDE schematics open in the Circuit pane's viewer — a text dump of
     // the XML is not what "open the circuit" means.
@@ -104,7 +135,8 @@ export async function openFileInDrawer(path: string, sessionId?: string): Promis
       // the user drags in or picks goes through the composer instead and
       // stays a static render.
       attachment.sessionAuthored = true;
-      openRightDrawerFile(attachment);
+      if (opts.asTab) showFigureInRightDrawer(attachment, opts.caption);
+      else openRightDrawerFile(attachment);
     } else {
       await revealInFolder(path);
     }

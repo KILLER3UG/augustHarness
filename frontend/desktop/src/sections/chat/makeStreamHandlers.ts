@@ -30,7 +30,8 @@ import type { ChatMessage, MessageBlock, WorkbenchBtwState, AppendBlockEvent, Pr
 import type { ActionNeededPayload } from '@/components/chat/ActionNeededCard';
 import type { ChatTurnRecord } from './chat-runtime';
 import type { WorkbenchEventHandlers, WorkbenchSession, WorkbenchTurnUsage } from '@/types/workbench';
-import type { GitDiffResult } from '@/api/git';
+import type { GitDiffResult, GitStatus } from '@/api/git';
+import { getRecentFigures } from '@/api/workbench';
 import type { ToolProgressEvent, ToolProgressMap } from '@/lib/tool-progress';
 import { applyToolProgress, formatProgressStatus, formatStreamIdle, STALL_HINT_SEC } from '@/lib/tool-progress';
 import { classifyTool } from '@/lib/tool-classify';
@@ -58,6 +59,9 @@ import {
   addRightDrawerSection,
   closeRightDrawerSection,
 } from '@/components/shell/RightDrawerState';
+import { isFigurePath, openFileInDrawer } from '@/lib/file-kind';
+import { collectResultArtifacts, producedFilePath, proseFromResult } from '@/lib/produced-artifacts';
+import { figurePathsFromWorkspaceStatus, figureToShowFromPaths } from '@/lib/produced-files';
 import { toast } from 'sonner';
 import { useArenaStore } from './arena/arena-store';
 import { isDebateSession, debateTurnDone } from './debate/debate-store';
@@ -100,7 +104,12 @@ export interface MakeStreamHandlersOptions {
 
 
 
-  gitApi: { diff: (sessionId: string) => Promise<GitDiffResult> };
+  gitApi: {
+    diff: (sessionId: string) => Promise<GitDiffResult>;
+    /** The workspace's dirty-file list (`??` untracked included) and its
+     *  absolute root — the only record of what a shell command wrote. */
+    status: (sessionId?: string, repoPath?: string) => Promise<GitStatus>;
+  };
   streamUpdateIntervalMs: number;
   initialMutationCount?: number;
 
@@ -273,6 +282,129 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
     if (updateRaf !== null) {
       window.cancelAnimationFrame(updateRaf);
       updateRaf = null;
+    }
+  };
+
+  // ---- the turn's figure watcher -------------------------------------
+  /* A figure this turn MADE has to reach the right drawer. Three shapes, and
+   * they are read differently:
+   *
+   *  (1) A tool that says in its RESULT what it wrote. The existing
+   *      collector reads that (`collectResultArtifacts`), so ONE entry
+   *      freshly completed is fed through it — the same function the
+   *      transcript cards use, which is the only way the pane and the cards
+   *      cannot disagree about what a result produced.
+   *  (2) An edit-class call whose ARGUMENTS name the file it wrote (a figure
+   *      page authored with `write_file`) — `producedFilePath`, again the
+   *      cards' own rule.
+   *  (3) A file a SHELL command wrote — `node references/<name>/build.mjs`,
+   *      the anatomy workflow. No collector sees it, so this reads the
+   *      workspace itself: `git status` when the folder is a repository
+   *      (limits in `figurePathsFromWorkspaceStatus`, lib/produced-files.ts),
+   *      and the server's modification-time scan of the session's workspace
+   *      when it is not — which is the common case, because a chat workspace
+   *      is a folder the user pointed at, not a repo they cloned.
+   *
+   * `figureKey` is the path with its transport accidents removed (slashes,
+   * case). A path is shown ONCE per turn — at most one automated panel change
+   * per figure — and a rebuild lands in the same tab, which re-reads the file
+   * when the tab is re-opened. What the turn's own files are is decided
+   * against `figureBaseline`, captured at turn start below.
+   */
+  const figureKey = (path: string): string => path.replace(/\\/g, '/').toLowerCase();
+  let figureBaseline: Set<string> | null = null;
+  const shownFigures = new Set<string>();
+  let figureWatchInFlight = false;
+  let figureRecordAbsent = false;
+  /** Which record this workspace answers to. `gitApi.status` is the precise
+   *  one, and it reports NOTHING for a folder that is not a repository — which
+   *  is what a chat workspace normally is. Then the turn falls back to the
+   *  server's modification-time scan of that same workspace, anchored at
+   *  `figureScanSince`, and anything the turn writes shows up on its own. */
+  let figureScanSince = '';
+
+  /* The baseline is read at TURN START, not at the first command's result.
+   * The one thing this must not do is show the workspace's OLD dirt — a repo
+   * that was already dirty when the turn began lists those figures on the
+   * very first look, and if that look happens after the first command has
+   * run, the turn's own file is already inside it and never gets shown. Only
+   * the moment before any tool executes is provably before any tool writes.
+   * The price is one `git status` per turn (three short-lived subprocesses,
+   * off the event path, never awaited by the UI); a session with no git
+   * work tree pays one and then stops asking. The consequence of baselining
+   * is that a figure ALREADY dirty when the turn began is not re-shown — a
+   * second turn's rebuild of the same page updates the pane only when its tab
+   * is re-opened. Keeping the panel from dumping the repo's old dirt on the
+   * user is worth more than that. */
+  const figureBaselineReady: Promise<void> = (async () => {
+    if (!sessionId) {
+      figureRecordAbsent = true;
+      return;
+    }
+    try {
+      const status = await gitApi.status(sessionId);
+      if (status.workspace) {
+        figureBaseline = new Set(figurePathsFromWorkspaceStatus(status).map(figureKey));
+      } else {
+        // Not a work tree: the scan's own `since` is the baseline, so nothing
+        // modified before this moment can be mistaken for the turn's output.
+        figureScanSince = new Date().toISOString();
+        figureBaseline = new Set();
+      }
+    } catch (e) {
+      figureRecordAbsent = true;
+      console.debug('[makeStreamHandlers] figure baseline read failed:', e);
+    }
+  })();
+
+  /** Put a figure this turn made in front of the user. */
+  const showTurnFigure = (path: string, caption?: string, notice?: string) => {
+    const key = figureKey(path);
+    if (shownFigures.has(key)) return;
+    shownFigures.add(key);
+    void openFileInDrawer(path, sessionId, { asTab: true, caption });
+    if (notice) {
+      // A shell-written figure gets no artifact card (no collector sees the
+      // command's output, and `changedFiles` lands after the answer), so the
+      // transcript says out loud what appeared in the panel.
+      streamBlocks = appendBlockEvent(streamBlocks, { type: 'system', content: notice });
+      scheduleUpdate();
+    }
+  };
+
+  /** Ask the workspace what it gained since the last look. */
+  const surfaceShellFigures = async () => {
+    await figureBaselineReady;
+    if (figureRecordAbsent || figureWatchInFlight || !figureBaseline) return;
+    const baseline = figureBaseline;
+    figureWatchInFlight = true;
+    try {
+      const paths = figureScanSince
+        ? (await getRecentFigures(sessionId, figureScanSince)).files.map((f) => f.path)
+        : figurePathsFromWorkspaceStatus(await gitApi.status(sessionId));
+      const fresh: string[] = [];
+      for (const path of paths) {
+        const key = figureKey(path);
+        if (baseline.has(key)) continue;
+        baseline.add(key);
+        fresh.push(path);
+      }
+      if (fresh.length === 0) return;
+      const shown = figureToShowFromPaths(fresh);
+      if (!shown) return;
+      const more = fresh.length - 1;
+      showTurnFigure(
+        shown,
+        undefined,
+        `📐 ${pathBasename(shown)} written this turn — shown in the side panel` +
+          (more > 0 ? ` · ${more} more figure${more === 1 ? '' : 's'} on disk` : ''),
+      );
+    } catch (e) {
+      // No git, no session, no route — the honest answer is silence here, and
+      // the figure is still on disk where the command put it.
+      console.debug('[makeStreamHandlers] workspace status read failed:', e);
+    } finally {
+      figureWatchInFlight = false;
     }
   };
 
@@ -609,6 +741,33 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
         parsedResult?.type !== 'mutation_pending_confirmation'
       ) {
         editToolsThisTurn += 1;
+      }
+      // A figure this call MADE goes into the right drawer as it lands —
+      // after the answer is the old behaviour, and "after" is what the owner
+      // reported as "it does not". THREE shapes, one door:
+      //
+      //  (1) the RESULT names its output (`create_html_artifact` answers
+      //      {"path", "bytes"}, a generated image {"path", "seed"}) — read by
+      //      the same collector the transcript cards use;
+      //  (2) the ARGUMENTS name it, from an edit-class call (a figure page
+      //      the model authored with `write_file`);
+      //  (3) neither names it, because a command wrote it — the anatomy
+      //      workflow's `node build.mjs`. The workspace's git status is the
+      //      only record of that file, so it is what gets asked.
+      if (
+        toolEntry &&
+        !blockFailed &&
+        parsedResult?.type !== 'mutation_pending_confirmation'
+      ) {
+        const settled = toolResults.find((t) => t.id === id);
+        for (const produced of collectResultArtifacts(settled ? [settled] : [])) {
+          if (isFigurePath(produced.path)) showTurnFigure(produced.path, produced.caption);
+        }
+        const written = producedFilePath(toolEntry.name || '', toolEntry.context);
+        if (written && isFigurePath(written)) {
+          showTurnFigure(written, proseFromResult(settled?.result));
+        }
+        if (isCommandResult || classifyTool(toolEntry.name) === 'run') void surfaceShellFigures();
       }
       // A tool result closes this round's model call; the next round starts a
       // fresh attempt. Commit the current stream as the rollback floor so a

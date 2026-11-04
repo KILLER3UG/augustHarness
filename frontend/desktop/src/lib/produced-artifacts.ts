@@ -43,6 +43,13 @@ export interface ProducedToolEntry {
 /** Internal `.aug/` bookkeeping paths are not artifacts. */
 const AUG_INTERNAL = /(^|[\\/])\.aug([\\/]|$)/;
 
+/** True for August's own bookkeeping paths (`<workspace>/.aug/...`).
+ *  ONE rule, so the card collectors and the figure watcher cannot disagree
+ *  about what is a deliverable and what is the app's private scratch. */
+export function isAugInternalPath(path: string): boolean {
+  return AUG_INTERNAL.test(path);
+}
+
 /**
  * The path a tool call WROTE, read from its input.
  *
