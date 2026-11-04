@@ -3834,6 +3834,12 @@ async def _sendWorkbenchMessageStreamImpl(
     # mid-word as if it were complete (audit finding 2026-09-15 #3).
     _MAX_LENGTH_CONTINUATIONS = 2
     _lengthContinuations = 0
+    # A round that ends holding only reasoning and no answer gets ONE "say the
+    # answer now" round rather than the turn closing on an apology. Same failure
+    # shape as a truncated sentence: the output budget went into thinking. The
+    # flag is turn-scoped so a rescue cannot repeat itself every round.
+    _thinkingOnlyRescueFired = False
+    _thinkingOnlyRescue = False
     # Why the tool loop ended, reported on the turn_end event so a user report
     # of "it stopped after N commands" is one query instead of a code audit
     # (audit finding 2026-09-15 #8).
@@ -5121,9 +5127,14 @@ async def _sendWorkbenchMessageStreamImpl(
                     stop_reason or 'unknown',
                     len(thinkingContent),
                 )
-                if emit and (
+                _thinkingOnlyRescue = (
+                    stop_reason in ('max_tokens', 'length') or len(thinkingContent) > 2000
+                ) and not _thinkingOnlyRescueFired
+                if not _thinkingOnlyRescue and emit and (
                     stop_reason in ('max_tokens', 'length') or len(thinkingContent) > 2000
                 ):
+                    # The rescue already spent its one round and the model still
+                    # sent no answer. Only now is "it stopped" the truth.
                     emit(
                         {
                             'type': 'finalOutput',
@@ -5135,6 +5146,37 @@ async def _sendWorkbenchMessageStreamImpl(
                         }
                     )
             currentMessages.append(assistantMsg)
+            if _thinkingOnlyRescue:
+                # Ask for the answer once, with the reasoning already in the
+                # history it can see. This advances the transcript rather than
+                # replaying a round, so no work is re-run: the tool results are
+                # still there and the model is only told to spend its remaining
+                # budget on the reply.
+                _thinkingOnlyRescueFired = True
+                _thinkingOnlyRescue = False
+                currentMessages.append(
+                    {
+                        'role': 'user',
+                        'source': SOURCE_HARNESS_NUDGE,
+                        'content': (
+                            '[Proxy Self-Heal] You reasoned about the tool results and sent no '
+                            'answer. Reply now in text: state what the results mean and what is '
+                            'still open. Do not restate your reasoning.'
+                        ),
+                    }
+                )
+                if emit:
+                    emit(
+                        {
+                            'type': 'warning',
+                            'message': (
+                                'Thinking used up the reply, so the agent was asked to answer '
+                                'again from what it already knows.'
+                            ),
+                        }
+                    )
+                _emitRecovery(emit, 'thinking-only', 1, 'retrying', False)
+                continue
             # Refusal detection: a model claiming it cannot use tools (or
             # hosted on a gateway that silently drops `tools`) would end the
             # turn with the refusal as its final answer — re-prompt once with

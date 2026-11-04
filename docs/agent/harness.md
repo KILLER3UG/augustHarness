@@ -56,6 +56,20 @@ spinner that is really a wait list. Measured both ways with the scripted
 provider: refused turns fail in 0.5 s naming the 3600 s the gateway asked for;
 with the predicate disabled the turn was still asleep at 45 s.
 
+**A round that ends with reasoning and no answer spends one round answering.**
+After a tool round, a model can return thinking only — the output budget went
+into reasoning — and this used to close the turn on the notice "Stopped after
+tools with reasoning but no final answer", leaving the user the tool results and
+an apology. The rung (trigger: `stop_reason` is `max_tokens`/`length`, or more
+than 2000 thinking chars) appends the assistant row, adds a
+`[Proxy Self-Heal]` nudge to reply in text from what it already has, emits
+`recovery {kind: 'thinking-only', outcome: 'retrying'}` and continues. It fires
+once per turn (`_thinkingOnlyRescueFired`), consumes a normal round, and does not
+strip tools — a model that answers with a new tool call is still working. When
+the second round also ends thinking-only, the old notice is emitted, because
+only then is "it stopped" the truth. The reason vocabulary is unchanged: a turn
+the rescue completes ends `finished`.
+
 ## Two bounds are armed by default
 
 Until 2026-10-22 nothing bounded a turn at all — `MAX_MANAGED_TOOL_ROUNDS` 0,

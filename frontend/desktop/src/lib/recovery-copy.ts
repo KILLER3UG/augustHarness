@@ -45,6 +45,9 @@ const BY_KIND: Record<string, Record<string, string>> = {
     retrying: 'The answer hit the length limit, so the agent carried on with it.',
     exhausted: 'The answer hit the length limit and could not be carried on.',
   },
+  'thinking-only': {
+    retrying: 'The agent thought about the results without replying, so it was asked for the answer.',
+  },
   'stuck-request': {
     flattened:
       'The provider rejected the request, so earlier tool calls were flattened into text and the turn was retried.',
@@ -62,6 +65,7 @@ const BY_KIND_FALLBACK: Record<string, string> = {
   'context-reduction': 'The conversation was too large and was reduced to make room.',
   'auto-compact': 'The conversation was compacted before this turn.',
   'length-continuation': 'The answer hit the length limit and was continued.',
+  'thinking-only': 'The agent thought without replying and was asked for the answer.',
   'stuck-request': 'The provider rejected the request, so the turn was retried in a simpler shape.',
 };
 
