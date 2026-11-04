@@ -211,13 +211,24 @@ six along with themselves.
 
 **Chat role routing** (`chatRoleForTurn`) is opt-in by configuration: until one of
 `chat_vision`, `chat_plan`, `chat_slow`, `chat_default` or `cortex` is filled, a
-turn runs on exactly the model the composer picked. Once one is set, a turn is
-claimed in that order — vision (an image is attached), plan (agent mode is
-orchestrator/planner), then slow (effort is `max`) — and the first *configured*
-role wins, so leaving `chat_plan` empty is how you make max effort beat plan
-mode. Those three override the selected model because the condition was chosen
-explicitly; `chat_default` and `cortex` only fill a turn that arrived with no
-model at all. The routing decision is logged at info level with the role name.
+turn runs on exactly the model the composer picked. Once one is set, routing
+claims only a turn that arrived **with no model of its own** — every Bot,
+automation and bench turn. A model the user selected is never replaced, for any
+condition: `chat_vision` used to move an image turn onto another model while the
+composer kept showing the pick, and nothing ever asked whether the selected model
+can already see one. Routing therefore applies to turns that arrive with no
+model. Claimed turns pick in order — vision (an image is attached), plan (agent
+mode is orchestrator/planner), then slow (effort is `max`) — and the first
+*configured* role wins, so leaving `chat_plan` empty is how you make max effort
+beat plan mode; `chat_default` and `cortex` sit behind those three and fill
+exactly the no-pick case. A role moves model and gateway together
+(`fleetProviders`), because a bare model id does not identify a gateway, and a
+role-owned turn does not rewrite `session.model` — the routing belongs to the
+turn that earned it. When an image turn's model *declares* text-only input (the
+model entry's `inputTypes`), the turn says so in chat rather than swapping or
+going blind quietly; a model that declares nothing is left alone, because
+refusing on a guess would deny a capability it may have. The routing decision is
+logged at info level with the role name.
 `maxWorkbenchToolLoops` here overrides the workbench tool-round cap (default `150`;
 `0 = uncapped`). It has no Settings panel any more — the Turn limits door was
 removed and every bound it held is set here (or in `config.json`) directly.

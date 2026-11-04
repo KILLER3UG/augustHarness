@@ -2852,16 +2852,19 @@ async def _sendWorkbenchMessageStreamImpl(
     effectiveEffort = resolveEffectiveEffort(effort or as_str(session.metadata.get('effort', '')), session)
     # Persist so later turns / BTW inherit the composer effort selection.
     session.metadata['effort'] = effectiveEffort
-    # The model the user picked always wins — unless a chat role they configured
-    # claims the turn on a condition they also chose (an image attached, plan
-    # mode, max effort). With no chat role configured this is a no-op, so the
-    # default path is unchanged; `chat_default`/`cortex` only fill a turn that
-    # arrived with no pick at all. See model_fleet_service.chatRoleForTurn.
+    # The model the user picked always wins. No chat role may replace it, for any
+    # condition — a selection is a choice, not a default, and `chat_vision` used
+    # to swap on an image without ever asking whether the picked model can already
+    # see one (see model_fleet_service.chatRoleForTurn). Routing still owns a turn
+    # that arrives with no pick at all, which is every Bot, automation and bench
+    # turn; `chat_default`/`cortex` fill exactly those.
     from app.services.model_fleet_service import chatRoleForTurn as _fleetChatRole
     from app.services.workbench.image_parts import messageHasImage as _messageHasImage
+    from app.services.workbench.providers import provider_model_accepts_images as _acceptsImages
 
+    _hasImage = _messageHasImage(message)
     role, roleModel, roleProvider = _fleetChatRole(
-        has_image=_messageHasImage(message),
+        has_image=_hasImage,
         plan_mode=as_str(getattr(session, 'agent_mode', '') or '') in ('orchestrator', 'planner'),
         max_effort=effectiveEffort == 'max',
         explicit_model=model or '',
@@ -2873,6 +2876,9 @@ async def _sendWorkbenchMessageStreamImpl(
             roleModel,
             roleProvider or 'unconfigured',
         )
+        # Model and gateway move together: a model id does not identify a
+        # gateway, so a role's model paired with no provider runs the turn on
+        # whichever configured provider happens to list that id first.
         model, modelProvider = roleModel, roleProvider
     resolvedProvider, resolvedModel = _resolveChatLlm(
         model=model or '',
@@ -2880,15 +2886,43 @@ async def _sendWorkbenchMessageStreamImpl(
         session_provider=session.provider or provider or '',
         session_model=session.model or '',
     )
-    # Remember model/provider on the session so BTW and Live use the same ones.
-    if resolvedModel:
+    # Remember model/provider on the session so BTW and Live use the same ones —
+    # never a role model. A role belongs to the turn that earned it; parking it
+    # on the session would make it the next turn's default (and media_tools
+    # reads `session.model` when no turn context is bound).
+    _turnProviderName = as_str((resolvedProvider or {}).get('name') or (resolvedProvider or {}).get('id'))
+    if resolvedModel and not role:
         session.model = resolvedModel
-    if resolvedProvider:
-        pname = as_str(resolvedProvider.get('name') or resolvedProvider.get('id'))
-        if pname:
-            session.provider = pname
+    if resolvedProvider and not role and _turnProviderName:
+        session.provider = _turnProviderName
+    # Publish the pair that answers THIS turn for anything that spends a model
+    # inside it (the image analyzer). The session cannot carry it: a role-owned
+    # turn deliberately leaves the session alone, and a sub-agent's tool call
+    # reads its own stub session, which has no model at all.
+    # See workbench.context.currentChatModel.
+    from app.services.workbench.context import currentChatModel as _currentChatModel
+
+    if resolvedModel:
+        _currentChatModel.set((resolvedModel, _turnProviderName))
     if emit:
         emit({'type': 'started', 'sessionId': sessionId, 'model': resolvedModel})
+    # An image turn on a model that proves it cannot see one says so instead of
+    # swapping quietly. `_acceptsImages` answers None when the install declares
+    # nothing about this model's inputs, and silence is the honest reply there —
+    # refusing on a guess would deny a capability the model may have.
+    if _hasImage and not role and emit:
+        if _acceptsImages(resolvedProvider, resolvedModel) is False:
+            emit(
+                {
+                    'type': 'warning',
+                    'kind': 'visionUnsupported',
+                    'message': (
+                        f'{resolvedModel} does not accept image input, so this turn cannot see '
+                        'the attached image. Pick a vision-capable model in the composer and '
+                        'send again; your selection is used as-is, it is never swapped.'
+                    ),
+                }
+            )
     # Recurring-task daemon (B7): fire due reminders at turn start — surfaced
     # to the UI as recurringTask SSE events → notification bell. Tasks may
     # carry an `[agent:ID model:MODEL]` directive: the reminder ALSO dispatches
@@ -4457,22 +4491,26 @@ async def _sendWorkbenchMessageStreamImpl(
                         _wireTools = []
                         _wireOpenaiTools = []
                     _attemptMessages = currentMessages
-                    if not toolsFallbackUsed:
-                        # Multimodal turns: user messages that
-                        # reference stored image attachments carry the image
-                        # inline on the wire (storage keeps plain text).
-                        try:
-                            from app.services.workbench.image_parts import inline_image_parts
-
-                            _attemptMessages = inline_image_parts(currentMessages)
-                        except Exception:
-                            logger.debug('image part inline failed', exc_info=True)
                     if toolsFallbackUsed:
                         # The stripped request — no tools array,
                         # tool-call history flattened to text.
                         _wireTools = []
                         _wireOpenaiTools = []
                         _attemptMessages = toolsFallbackMessages or currentMessages
+                    # Multimodal turns: user messages that
+                    # reference stored image attachments carry the image
+                    # inline on the wire (storage keeps plain text).
+                    # This runs on the fallback leg too. Stripping the tool
+                    # surface repairs the request SHAPE; the image is the user's
+                    # own content and was never part of what got flattened, so
+                    # inlining it after the flatten is what keeps a stuck turn
+                    # from going blind mid-repair.
+                    try:
+                        from app.services.workbench.image_parts import inline_image_parts
+
+                        _attemptMessages = inline_image_parts(_attemptMessages)
+                    except Exception:
+                        logger.debug('image part inline failed', exc_info=True)
                     if isAnthropic:
                         response = await _callAnthropicWorkbench(
                             _attemptMessages,

@@ -67,6 +67,24 @@ currentSubagentDenied: ContextVar[frozenset[str]] = ContextVar('workbench_subage
 contextWindowOverride: ContextVar[int] = ContextVar('workbench_context_window_override', default=0)
 
 
+# The model answering RIGHT NOW, as ``(model, providerName)`` — the pair the
+# turn resolved after all its overrides, not the session's stored default.
+#
+# Anything that spends a model outside the main wire call (the image analyzer
+# in ``tools.media_tools``) used to re-resolve from ``get_workbench_session(
+# currentSessionId)``. A sub-agent sets that var to its own stub session
+# (``subagent.py``), whose ``model`` is empty, so ``resolve_model`` fell through
+# to the resolved provider's ``defaultModel`` — the image was read by a model no
+# human selected, on a gateway the chat never named. A contextvar carries the
+# truth instead of re-deriving it: an asyncio task copies the context at
+# creation, so a child inherits the parent turn's model and overrides it with
+# its own once it resolves one.
+#
+# ``('', '')`` means "no turn is running" — callers then resolve as before and
+# must say which model they picked, never stay silent about a substitution.
+currentChatModel: ContextVar[tuple[str, str]] = ContextVar('workbench_chat_model', default=('', ''))
+
+
 # The combined Tier-1 index budget for the prompt build now executing:
 # (memory boot-index chars, skills-index chars, skills-index names). Published by
 # `workbench.buildSystemPrompt` via `prompt_build.publishTier1IndexBudget` and read

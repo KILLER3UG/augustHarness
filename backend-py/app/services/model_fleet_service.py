@@ -87,11 +87,17 @@ def resolveRoleModel(role: str) -> tuple[str, str]:
     return getModelForRole(role), getFleetProviders().get(role, '')
 
 
-#: The roles that choose the model for a CHAT turn, in precedence order.
-#: Vision first because it is a capability constraint (a text-only model cannot
-#: read the attachment at all), then the mode preference, then the effort
-#: preference. ``cortex`` sits under ``chat_default`` because both are documented
-#: as "the conscious chat loop" model, and the latter is the newer name.
+#: The roles that choose the model for a CHAT turn that arrived with NO pick,
+#: in precedence order. Vision first because an image turn is the one where the
+#: wrong default is fatal (a text-only model cannot read the attachment at all),
+#: then the mode preference, then the effort preference. ``cortex`` sits under
+#: ``chat_default`` because both are documented as "the conscious chat loop"
+#: model, and the latter is the newer name.
+#:
+#: None of these may replace a model the user selected — see chatRoleForTurn.
+#: The old `_CAPABILITY_ROLES` set named the roles that DID override a pick; that
+#: behavior is gone, and a constant saying "these override what the human chose"
+#: with nothing reading it would only teach the next reader the wrong rule.
 CHAT_ROUTING_ROLES: tuple[str, ...] = (
     'chat_vision',
     'chat_plan',
@@ -99,13 +105,6 @@ CHAT_ROUTING_ROLES: tuple[str, ...] = (
     'chat_default',
     'cortex',
 )
-
-#: Roles that override a model the user picked for this message, because the
-#: condition — an image, plan mode, max effort — is something they asked for
-#: explicitly. ``chat_default`` and ``cortex`` are NOT in this set: they fill a
-#: turn that arrived with no pick, so setting them never makes the composer's
-#: model selector lie.
-_CAPABILITY_ROLES = frozenset({'chat_vision', 'chat_plan', 'chat_slow'})
 
 
 def chatRoleForTurn(
@@ -123,7 +122,17 @@ def chatRoleForTurn(
     before this existed. When several conditions hold, the first *configured*
     role wins — leaving ``chat_plan`` empty is the documented way to make max
     effort beat plan mode.
+
+    Routing does not apply to a turn that carries an ``explicit_model``: a model
+    the user selected is a choice, not a default. ``chat_vision`` used to be
+    allowed to replace it unconditionally, and nothing ever asked whether the
+    selected model can take an image — so an image turn ran on another model
+    while the composer kept showing the pick. Asking that question is now the
+    turn's job, and it reports the answer instead of acting on it (see the
+    vision notice in ``workbench._sendWorkbenchMessageStreamImpl``).
     """
+    if explicit_model:
+        return '', '', ''
     fleet = getFleet()
     if not any((fleet.get(role) or '').strip() for role in CHAT_ROUTING_ROLES):
         return '', '', ''
@@ -135,9 +144,7 @@ def chatRoleForTurn(
             ('chat_slow', max_effort),
         )
         if active
-    ]
-    if not explicit_model:
-        wanted += ['chat_default', 'cortex']
+    ] + ['chat_default', 'cortex']
     providers = getFleetProviders()
     for role in wanted:
         model = (fleet.get(role) or '').strip()

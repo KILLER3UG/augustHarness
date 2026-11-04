@@ -407,6 +407,37 @@ def _provider_lists_model(provider: dict[str, object], model_hint: str) -> bool 
     return False
 
 
+def provider_model_accepts_images(provider: dict[str, object] | None, model: str) -> bool | None:
+    """Whether the model's own entry proves it can be sent an image part.
+
+    Three-valued on purpose. ``False`` means the install *declares* this model's
+    input types and images are not among them — the only case a turn may name as
+    a limit. ``None`` means it does not say: the model is not in the provider's
+    list, or its entry carries no ``inputTypes``. Guessing ``False`` there would
+    take away a capability the model may well have, which is the same lie as
+    advertising one it does not.
+    """
+    if not provider or not model:
+        return None
+    target = model.strip().lower()
+    for entry in as_list(provider.get('models'), []):
+        if not isinstance(entry, dict):
+            continue
+        if as_str(entry.get('id')).strip().lower() != target:
+            continue
+        # ``inputTypes`` is the stored spelling of the Settings model editor's
+        # modality pills, saved lowercased ('text', 'image', 'video', 'pdf');
+        # the snake_case twin is what the typed config model uses. An empty
+        # list pops the key rather than persisting, so a list here is a choice.
+        for key in ('inputTypes', 'input_types'):
+            raw = entry.get(key)
+            if isinstance(raw, list):
+                values = {as_str(v).strip().lower() for v in raw}
+                return not values.isdisjoint({'image', 'vision'})
+        return None
+    return None
+
+
 def resolve_chat_llm(
     model: str = '',
     model_provider: str = '',

@@ -712,6 +712,17 @@ async def executeSubAgent(
         updateJob(jobId, {'status': 'failed', 'error': err})
         return {'jobId': jobId, 'agentId': resolvedAgentId, 'status': 'error', 'error': err}
     resolvedModel = _resolveModel(provider, model)
+    # The child's own answer, published for the tools it runs: a worker's session
+    # is a stub with no model, so a `analyze_media` inside a sub-agent would
+    # otherwise read the image with some unrelated default while the worker
+    # itself answers on this model. Overrides the value inherited from the parent
+    # turn only when this worker really resolved one.
+    from app.services.workbench.context import currentChatModel as _currentChatModel
+
+    if resolvedModel:
+        _currentChatModel.set(
+            (resolvedModel, providerName or as_str(provider.get('name') or provider.get('id')))
+        )
     agentCtx = renderAgentContext(resolvedAgentId) if not as_bool(agent.get('_synthetic', False)) else ''
     if not agentCtx:
         agentCtx = f'Agent: {as_str(agent.get("name"), "General")}\nRole: {as_str(agent.get("role"), "General")}'

@@ -162,9 +162,26 @@ async def _vision_describe(
 
     sid = currentSessionId.get() or ''
     session = get_workbench_session(sid) if sid else None
+    # The turn's own model first. It is the only source that is true while a
+    # sub-agent runs (its session stub carries no model) and on a role-owned turn
+    # (those deliberately leave `session.model` alone).
+    from app.services.workbench.context import currentChatModel
+
+    turnModel, turnProvider = currentChatModel.get()
+    session_provider = turnProvider or str(getattr(session, 'provider', '') or '')
+    session_model = turnModel or str(getattr(session, 'model', '') or '')
+    if not session_model:
+        # No turn context bound (a tool run outside a chat) or a session that
+        # never sent. With nothing to resolve against, `resolve_chat_llm` fell
+        # through to "first provider with a key" plus its `defaultModel` — a
+        # model the user never chose, silently. The fleet already owns the
+        # honest answer: inherit the composer's model and its gateway together.
+        from app.services.model_fleet_service import composerModel
+
+        session_model, session_provider = composerModel()
     provider, model = resolve_chat_llm(
-        session_provider=str(getattr(session, 'provider', '') or ''),
-        session_model=str(getattr(session, 'model', '') or ''),
+        session_provider=session_provider,
+        session_model=session_model,
     )
     if not provider or not model:
         return (
