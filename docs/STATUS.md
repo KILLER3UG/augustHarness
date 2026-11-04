@@ -1,12 +1,78 @@
 # Status — the current round
 
-Last updated: 2026-11-03 · App version: **0.21.0**
+Last updated: 2026-11-04 · App version: **0.22.0**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — local models, GGUFs, Hugging Face, ComfyUI
+## This round — the model you picked answers, one plan surface, thought rows
+
+- **The composer's model choice is honoured everywhere.** A chat that attached
+  an image used to be handed to the `chat_vision` fleet role without asking
+  whether the selected model can already see one, so the answer came from a
+  model nobody chose while the chip showed another. Routing now claims only a
+  turn that arrives with no model of its own — every Bot, automation and bench
+  turn. `analyze_media` had the same disease from the other side: it
+  re-resolved from the session, and a sub-agent runs against a stub session with
+  no model, so the image was read on a provider default. The turn publishes its
+  own `(model, gateway)` pair (`context.currentChatModel`) and the analyzer reads
+  it first. Probed in-process: `pick+image → no role`, `no-pick+image →
+  chat_vision`, empty fleet → inert.
+- **No local capability guessing.** The modality predicate and its
+  `visionUnsupported` notice were deleted: 0 of the 380 fetched model entries on
+  this machine declare input types, so the guard could never fire. Every model
+  is assumed to accept an image; a gateway that refuses answers with its own
+  error and `onError` renders it in the thread like any other provider failure.
+- **A settled thought is a stack of activity rows.** One bordered container,
+  hairline-divided, each row a one-line summary with a chevron that opens that
+  row's OWN reasoning — `distillThoughtSteps` pairs each summary with the exact
+  segment it came from, so nothing is orphaned or repeated across rows. Nothing
+  auto-expands, and a live thought keeps the single rotating line because a
+  chevron over unsettled text is a lie. Measured at 1754px in an isolated mount:
+  4 rows, full-width heads, opening row 0 left rows 1–3 with zero reasoning
+  bytes in the DOM.
+- **A turn that thinks without answering spends one round answering.** After a
+  tool round, reasoning-only output closed the turn on "Stopped after tools with
+  reasoning but no final answer". It now appends the assistant row, nudges for
+  the text answer, and continues; the notice survives only when the second round
+  also ends thinking-only. Proven both ways on the scripted provider under a
+  throwaway `HARNESS_DATA_DIR`: rescue run ends `finished` with the answer and no
+  notice; the two-thinking control emits exactly one `recovery {thinking-only}`
+  and then the notice.
+- **One plan surface, not three.** The right drawer's blue Tasks pane and the
+  composer's blue progress pill both rendered the list the thread's Todo card
+  renders. Both are gone, and everything only the pane carried moved into the
+  card: A1..An step labels, per-step commit SHA and review state, status groups
+  with counts, and the manual check-off (it was the only caller of
+  `PATCH /api/workbench/todos`). The card reads the session snapshot because
+  `commit_step`/`review_step` never emit `todosUpdated`, and a check-off cannot
+  erase a step's proof — verified in `submitTodos → step_commits.enrich_todos`.
+- **A shell-written figure reaches the side panel, repo or not.** The anatomy
+  skill promises a live preview and builds it with `node build.mjs`, which no
+  collector could see. A turn now baselines its workspace at turn start and
+  opens what appeared — `git status` in a repository, and the new
+  `GET /api/workbench/figures/recent` scan (server-side workspace, no client
+  path, depth/skip/scan ceilings) when it is not, which is what a chat workspace
+  normally is. Probed on the real folder: both perfboard HTML files found;
+  controls exclude a 3-day-old SVG, a `.txt`, a `node_modules` page and a
+  depth-4 page; a future `since` returns nothing; a bad timestamp raises 400.
+- **The composer strip lost a duplicate.** The `+` and the chevron beside the
+  mic were two controls wired to the same popover. The permission level moved out
+  of the `+` menu onto the footer line at the left, under the `+`, and its menu
+  now reads like the reference: icon, bold title, one muted line, check on the
+  selected row, danger colour on the unrestricted level. Each line was written
+  from the branch that enforces it, and the whole contract is now in
+  [`agent/security.md`](agent/security.md) §The four composer permission levels.
+- **Shipped:** `v0.22.0` — CI gates green, bundle green, live (not draft) with
+  `AugustHarness_0.22.0_x64-setup.exe` + `.sig`, the MSI pair, `latest.json` and
+  the manifest. `v0.21.0` is a dead tag: its build died at Tauri's 180-second
+  NSIS download cap and published nothing, so it names no shipped version.
+- **Not yet verified in the product:** every UI item above was measured in an
+  isolated Vite mount or a scripted turn, not inside a streamed answer in the
+  desktop app. The owner's own run of 0.22.0 is the remaining check.
+
+## The round before — local models, GGUFs, Hugging Face, ComfyUI
 
 - **Local servers are detected and one click from usable.** A keyless
   provider whose base URL is loopback now resolves everywhere a key was
@@ -74,7 +140,7 @@ waiting on the owner, and how to resume.
   on :8091 against the real data dir).
 - Previous round below; the self-edit loop and the rename shipped there.
 
-## The round before — the app edits its own source, and is renamed
+## The round before that — the app edits its own source, and is renamed
 
 - **The self-edit loop ships.** The model edits August's source only inside a
   user-local clone (`{appData}/clone`), and with self-edit on that clone *is*
@@ -119,7 +185,7 @@ waiting on the owner, and how to resume.
   locking does not stop `git push <explicit-url>`, so the push guarantee is a
   pattern guard plus a lock, not either alone.
 
-## The round before that — the harness stops asking
+## Two rounds before — the harness stops asking
 
 - **Learned skills apply on their own.** `skillAutonomy` ships on for
   `skill_create`/`skill_patch`, the burn-in rail no longer deadlocks a fresh
@@ -182,9 +248,10 @@ waiting on the owner, and how to resume.
    The matrix in [`UPDATE_VERIFICATION.md`](UPDATE_VERIFICATION.md) has never
    been run, and `0.18.26 → 0.19.0` is the transition it was never tested for:
    the bundle identifier, the binary name and the data root all change at once.
-   0.19.0 is bumped and green on `master` but **not tagged** — the tag publishes
-   it as the latest release, which an installed 0.18.2x would download and
-   install without asking. The owner installs the renamed build by hand first.
+   That transition is now history rather than a pending check — 0.19.0 shipped,
+   and the live release is **0.22.0** — so what remains is running the matrix
+   against a real installed machine, where an old install must show the update
+   row, download, and restart itself without losing memory.
 3. **The mobile companion.** The decision below is unresolved, and it changes
    the size of the work by an order of magnitude. The Expo `package` is now
    `com.august.harness`, which makes it a separate install on a phone rather
