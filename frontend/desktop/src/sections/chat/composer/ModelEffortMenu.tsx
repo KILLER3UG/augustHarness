@@ -25,8 +25,10 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Download, Search, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { chipTrigger, menuFlyout, menuPanel } from '@/lib/motion';
 import { groupModelsByProvider, modelMatchesQuery } from '@/components/model/modelList';
@@ -243,6 +245,7 @@ export function ModelEffortMenu({
     setPane('models');
   }, [groups, pane, selected]);
 
+  const navigate = useNavigate();
   const closeAll = useCallback(() => {
     setPane(null);
   }, []);
@@ -581,13 +584,32 @@ export function ModelEffortMenu({
                       modelRow(m, searching),
                     )
                   ) : (
-                    <div className="px-3 py-2 text-[0.8125rem] text-muted-foreground/70">
-                      {loading
-                        ? 'Loading…'
-                        : searching
-                          ? `No model matches “${query.trim()}”.`
-                          : 'No models for this provider.'}
-                    </div>
+                    <>
+                      <div className="px-3 py-2 text-[0.8125rem] text-muted-foreground/70">
+                        {loading
+                          ? 'Loading…'
+                          : searching
+                            ? `No model matches “${query.trim()}”.`
+                            : 'No models for this provider.'}
+                      </div>
+                      {!loading && (
+                        <div className="px-3 pb-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="w-full"
+                            onClick={() => {
+                              closeAll();
+                              void navigate('/settings/explore');
+                            }}
+                          >
+                            <Download className="size-3" />
+                            Explore models
+                          </Button>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 

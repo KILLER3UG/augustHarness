@@ -13,8 +13,10 @@
 /* ──────────────────────────────────────────────────────────────────────── */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, Download, Search, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
+import { Button } from '@/components/ui/button';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 // Straight from the display module rather than via ChatThread: a popover has no
@@ -64,6 +66,7 @@ export function ModelPickerDropdown({
   onChange,
   disabled,
 }: ModelPickerDropdownProps) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [expandedProviders, setExpandedProviders] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
@@ -291,8 +294,24 @@ export function ModelPickerDropdown({
               }}
             >
               {grouped.length === 0 ? (
-                <div className="px-3 py-4 text-sm text-muted-foreground text-center">
-                  {searchQuery.trim() ? `No models match “${searchQuery.trim()}”` : 'No models configured yet'}
+                <div className="px-3 py-4 text-sm text-muted-foreground text-center space-y-2">
+                  <div>
+                    {searchQuery.trim() ? `No models match “${searchQuery.trim()}”` : 'No models configured yet'}
+                  </div>
+                  {/* Downloads are reachable from the picker itself — no
+                      settings URL or search term required. */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      close();
+                      void navigate('/settings/explore');
+                    }}
+                  >
+                    <Download className="size-3" />
+                    Explore models
+                  </Button>
                 </div>
               ) : (
                 grouped.map((g) => {

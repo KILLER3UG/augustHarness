@@ -23,12 +23,12 @@ export const THOUGHT_CLAMP_LINES = 6;
 export const THOUGHT_CLAMP_CHARS = 480;
 
 /** Distilled summary rows a settled thought renders. The card is the
- *  reference's activity list — ONE row per "what the model is doing" sentence,
- *  each collapsed to its summary line and expandable in place to that row's
- *  own reasoning. This is the ceiling on rows, not a "show only one": a
- *  pathological thought with hundreds of sentences still bounds the transcript
- *  to a readable stack. Expansion reveals the row's reasoning, never another
- *  row's and never the whole chain. */
+ *  reference's activity list — ONE row per whole thought, each collapsed to
+ *  its summary line and expandable in place to that thought's own reasoning.
+ *  This is the ceiling on rows, not a "show only one": a turn with many
+ *  distinct thoughts still bounds the transcript to a readable stack.
+ *  Expansion reveals the row's reasoning, never another row's and never the
+ *  whole chain. */
 export const THOUGHT_SUMMARY_LINES_FULL = 60;
 
 /** "1m 06s" / "6s" — the elapsed formatter both variants render. */

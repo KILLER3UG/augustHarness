@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
   distillThoughtSteps,
+  splitThinkingTexts,
   summarizeThoughtHeader,
   type ThoughtStepLine,
 } from '@/lib/process-summary';
@@ -97,31 +98,22 @@ export function ThoughtStep({
     return () => ro.disconnect();
   }, [text, showFull]);
 
-  // The rotating live line. While the thought streams, distill the LATEST
-  // sentence so the line advances with the model's progress; a settled thought
-  // renders the distilled rows instead.
+  // The rotating live line. One summary for the WHOLE latest thought, never
+  // one per sentence. While streaming, the in-flight `tail` is the newest
+  // thought; once settled, the last whole thought is. A thought made of five
+  // sentences still produces exactly one line here.
   // (Lives above the `!text && !isGenerating` early return — rules-of-hooks.)
   const summaryLine = useMemo(() => {
-    if (isGenerating) {
-      const sentences = text
-        .replace(/```[\s\S]*?```/g, ' ')
-        .split(/(?<=[.!?]["')\]]?)\s+|\n+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const tail = sentences[sentences.length - 1] ?? '';
-      return summarizeThoughtHeader(tail, true);
-    }
-    return summarizeThoughtHeader(text, false);
+    const { thoughts, tail } = splitThinkingTexts(text, isGenerating);
+    const latest = tail || thoughts[thoughts.length - 1] || '';
+    return summarizeThoughtHeader(latest, isGenerating);
   }, [text, isGenerating]);
 
-  // The reference's thinking rows: one per distilled sentence, each traced to
-  // the reasoning it summarises (the same bytes), so a row opens onto its OWN
-  // stretch without a second segmentation and without repeating the whole
-  // thought under every row. A thought whose every sentence the distiller
-  // filtered (pure netlist/code noise) still owes the card a row — an empty
-  // body reads as a rendering bug — so it falls back to one row over the whole
-  // trimmed text. A LIVE thought has no settled sentence list yet, so it
-  // renders none of these; it keeps the rotating line until it settles.
+  // The reference's thinking rows: ONE row per whole thought, each traced to
+  // that thought's own reasoning, so a row opens onto the complete thought
+  // rather than a sentence fragment. A second distinct thought adds a second
+  // row. A LIVE thought has no settled row list yet — it keeps the rotating
+  // line until it settles, so partial thoughts never churn the card.
   const rows = useMemo<ThoughtStepLine[]>(() => {
     if (isGenerating) return [];
     const steps = distillThoughtSteps(text);
@@ -182,8 +174,8 @@ export function ThoughtStep({
             </div>
           ) : (
             /* Settled: the reference's activity card — one rounded container,
-               a hairline-divided row per distilled sentence, each expanding
-               its own reasoning in place. */
+               a hairline-divided row per whole thought, each expanding
+               that thought's reasoning in place. */
             <div
               id={panelId}
               className="thought-steps rounded-xl border border-border/40 bg-card/30 divide-y divide-border/20 text-xs overflow-hidden"

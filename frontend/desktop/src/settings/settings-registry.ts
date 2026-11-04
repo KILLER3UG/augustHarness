@@ -36,6 +36,7 @@ import {
   Code2,
   FolderLock,
   GitBranch,
+  Github,
   Globe,
   HardDrive,
   Image,
@@ -248,6 +249,36 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     ],
     keywords: ['local models', 'local server', 'ollama', 'lm studio', 'llama.cpp', 'gguf', 'hugging face'],
     legacyAliases: ['local-models'],
+  },
+  /* ── Explore — downloadable-model catalog ───────────────────────────
+   * Rail-visible on purpose: this is the front door for model downloads.
+   * `model-local` stays hidden (it is the power-user surface for servers,
+   * the llama.cpp runtime and files already on disk). A person who just
+   * wants a model should never need a URL or a search word to find it. */
+  {
+    id: 'explore',
+    label: 'Explore',
+    description:
+      'Browse a curated catalog of GGUF models and download one to run locally on this machine.',
+    icon: Github,
+    category: 'basics',
+    tier: 'basic',
+    settingHints: [
+      'Model search',
+      'Model download',
+      'Download progress',
+    ],
+    keywords: [
+      'models',
+      'download',
+      'search models',
+      'hub',
+      'huggingface',
+      'gguf catalog',
+      'model library',
+      'downloadable models',
+    ],
+    legacyAliases: [],
   },
   {
     id: 'comfyui',

@@ -8,8 +8,9 @@
  */
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, X, Zap, Settings } from 'lucide-react';
+import { Search, X, Zap, Settings, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { useModels } from '@/hooks/useModels';
 import { useProviderAvailability } from '@/hooks/useProviderAvailability';
 import { StatusDot } from '@/components/workspace/StatusPill';
@@ -150,19 +151,35 @@ export function ModelPickerCard({ onDismiss, context }: VoiceCommandCardProps) {
             No models available
           </div>
           <div className="text-xs text-muted-foreground">
-            Add a provider in Settings to get started.
+            Add a provider in Settings, or download a model to run locally.
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              void navigate('/settings/providers');
-              onDismiss();
-            }}
-            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
-          >
-            <Settings className="size-3" />
-            Go to Settings
-          </button>
+          <div className="flex items-center justify-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                void navigate('/settings/providers');
+                onDismiss();
+              }}
+            >
+              <Settings className="size-3" />
+              Go to Settings
+            </Button>
+            {/* The front door for downloads: someone with no provider yet
+                should not have to know a settings URL or a search word. */}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void navigate('/settings/explore');
+                onDismiss();
+              }}
+            >
+              <Download className="size-3" />
+              Explore models
+            </Button>
+          </div>
         </div>
       </div>
     );

@@ -26,7 +26,7 @@ import { isSubagentToolName } from '@/components/chat/subagent-tools';
 import { SubagentDelegateRow } from '@/components/chat/SubagentDelegateRow';
 import { ActivityGroup } from '@/components/chat/ActivityGroup';
 import { countSharedFiles, summarizeToolRun } from '@/lib/tool-summary';
-import { splitThinkingSentences } from '@/lib/process-summary';
+import { splitThinkingTexts, summarizeThoughtHeader } from '@/lib/process-summary';
 import { collectSnapshots, fromSnapshot, readSnapshot } from '../stream/subagent-blocks';
 import { classifyTool, normalizeToolName } from '@/lib/tool-classify';
 import { Markdown } from '../ChatMarkdown';
@@ -53,9 +53,10 @@ function isToolFailure(status: string | undefined): boolean {
 
 type DisplayBlock = MessageBlock;
 
-/** Completed thinking sentences kept in the live feed per thinking block —
- *  the working indicator shows the last 3 lines, so older ones are ballast. */
-const MAX_LIVE_THINKING_SENTENCES = 6;
+/** Whole thoughts kept in the live feed per thinking block. A long turn can
+ *  emit many thought paragraphs; the working indicator only shows the last
+ *  few lines, so the rest is ballast. */
+const MAX_LIVE_THOUGHTS = 6;
 
 /** update_state phase → present-continuous title for the "Working…" row. */
 const PHASE_ACTION_TITLES: Record<string, string> = {
@@ -591,25 +592,28 @@ export function AssistantBlockTimeline({
     let runningTitle = '';
     let completedTitle = '';
     let phaseTitle = '';
+    // Only the final thinking block can still be in flight. Earlier blocks are
+    // settled, so they must never be handed to the splitter as "streaming" —
+    // otherwise a settled thought that happens to lack a trailing full stop
+    // would render a phantom running line.
+    const lastThinkingBlock = [...displayBlocks].reverse().find((b) => b.type === 'thinking');
     for (const block of displayBlocks) {
+      const inFlight =
+        isLast && streaming && !hasFinalOutput && block === lastThinkingBlock;
       if (block.type === 'thinking' && block.content?.trim()) {
-        // One item per completed sentence so the working indicator advances
-        // with the thought instead of pinning the same first-80-char snippet
-        // for the whole turn; the in-flight tail rides as the newest item.
-        const parts = splitThinkingSentences(block.content.trim());
-        const lastPart = parts.length > 0 ? parts[parts.length - 1] : '';
-        const lastIsComplete = /[.!?]$/.test(lastPart);
-        const completed = (
-          lastIsComplete ? parts : parts.slice(0, -1)
-        ).slice(-MAX_LIVE_THINKING_SENTENCES);
-        const tail = lastIsComplete ? '' : lastPart;
+        // ONE item per whole thought. Boundaries come from the thought
+        // splitter (blank lines / headings / separate thinking blocks), never
+        // from periods, so a five-sentence thought is one line. The still
+        // streaming thought arrives as `tail` and is the only running item.
+        const { thoughts, tail } = splitThinkingTexts(block.content.trim(), inFlight);
+        const completed = thoughts.slice(-MAX_LIVE_THOUGHTS);
         const blockKey = block.id || `think_${items.length}`;
         for (let si = 0; si < completed.length; si++) {
           items.push({
             id: `${blockKey}_s${si}`,
             kind: 'thinking',
             label: 'Thinking',
-            detail: completed[si].slice(0, 120),
+            detail: summarizeThoughtHeader(completed[si], false),
             status: 'done',
             at: Date.now(),
           });
@@ -619,8 +623,8 @@ export function AssistantBlockTimeline({
             id: `${blockKey}_tail`,
             kind: 'thinking',
             label: 'Thinking',
-            detail: tail.slice(0, 120),
-            status: isLast && streaming ? 'running' : 'done',
+            detail: summarizeThoughtHeader(tail, true),
+            status: inFlight ? 'running' : 'done',
             at: Date.now(),
           });
         }
@@ -683,7 +687,7 @@ export function AssistantBlockTimeline({
       }
     }
     return { liveDetail, liveItems: items };
-  }, [displayBlocks, showPendingThinking, isLast, streaming]);
+  }, [displayBlocks, showPendingThinking, isLast, streaming, hasFinalOutput]);
 
   useEffect(() => {
     if (!livePacked) {

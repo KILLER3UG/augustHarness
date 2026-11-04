@@ -4,27 +4,88 @@
  * fall back to count segments when this returns null.
  */
 
-/** Split running thinking text into sentence-ish parts (period + whitespace
- *  or paragraph breaks). The final part is the still-in-flight tail.
+/**
+ * Split a thinking block's content into WHOLE thoughts.
  *
- *  ONE owner: the live working indicator and the settled thinking card
- *  both need "the model's thinking, one sentence at a time", and two
- *  splitters would drift - the live list would show a different set of
- *  sentences from the card that claims to be the same thought. */
-export function splitThinkingSentences(content: string): string[] {
-  return content
-    .split(/\.\s+|\n+/)
-    .map((p) => p.replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+ * A thought is a logical block, not a sentence. Splitting on every period
+ * turned a five-sentence thought into five "activity" rows, which reads as a
+ * transcript of the thought instead of a summary of it. There is no reliable
+ * punctuation-level boundary between two thoughts, so we use the structural
+ * ones the model actually emits:
+ *
+ *   1. Blank lines (paragraph breaks). `AssistantBlockTimeline` joins
+ *      consecutive thinking blocks with `\n\n`, so one SSE thinking block
+ *      becomes one paragraph and therefore one thought.
+ *   2. Heading lines (`# …`, `## …`, a standalone `**Bold label**` line, or
+ *      a numbered bold heading). A heading opens a new thought.
+ *
+ * A single continuous paragraph is ONE thought, however many sentences it
+ * holds. A second distinct thought (another block, another paragraph, a new
+ * heading) becomes another entry. Periods are never boundaries.
+ *
+ * Fenced code is spanned rather than split: a `# comment` inside a code
+ * block is not a thought heading.
+ *
+ * `streaming` marks the last block as an in-flight `tail` when it has not
+ * ended in sentence punctuation. Callers that render a settled card pass
+ * false, so a thought without a trailing full stop still gets its own line.
+ */
+export interface ThinkingTextBlock {
+  /** Whole thoughts, in order. Each is one paragraph / thought block. */
+  thoughts: string[];
+  /** The still-streaming trailing thought, or '' once the text has settled. */
+  tail: string;
+}
+
+const THOUGHT_HEADING = /^(?:#{1,6}\s+\S|\*\*[^*\n]{1,80}\*\*\s*$|\d+[.)]\s+\*\*)/;
+const THOUGHT_ENDS = /[.!?…]["')\]]?\s*$/;
+
+export function splitThinkingTexts(
+  content: string,
+  streaming = false,
+): ThinkingTextBlock {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let inFence = false;
+
+  const flush = () => {
+    const text = current.join(' ').replace(/\s+/g, ' ').trim();
+    if (text) blocks.push(text);
+    current = [];
+  };
+
+  for (const raw of content.replace(/\r\n?/g, '\n').split('\n')) {
+    const line = raw.trim();
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      current.push(line);
+      continue;
+    }
+    if (!inFence && !line) {
+      flush();
+      continue;
+    }
+    if (!inFence && THOUGHT_HEADING.test(line)) {
+      flush();
+      current = [line];
+      continue;
+    }
+    if (line) current.push(line);
+  }
+  flush();
+
+  if (blocks.length === 0) return { thoughts: [], tail: '' };
+  if (streaming && !THOUGHT_ENDS.test(blocks[blocks.length - 1])) {
+    return { thoughts: blocks.slice(0, -1), tail: blocks[blocks.length - 1] };
+  }
+  return { thoughts: blocks, tail: '' };
 }
 
 /**
  * A thinking-card row: one distilled activity line PLUS the reasoning it
- * summarises. `reasoning` is the raw source span the summary was distilled
- * FROM, so a row and its detail are the same bytes — expanding a row shows the
- * model's own text for THAT stretch, never another row's and never the whole
- * chain. This is what lets the rail expand a line in place (Claude-desktop
- * activity rows) without a second, drift-prone segmentation of the thought.
+ * summarises. `reasoning` is the WHOLE thought the summary was distilled
+ * FROM, so expanding a row shows that thought and only that thought — never
+ * a sentence fragment, never another row's text.
  */
 export interface ThoughtStepLine {
   summary: string;
@@ -32,36 +93,27 @@ export interface ThoughtStepLine {
 }
 
 /**
- * The distilled "what the model is doing" rows a thinking card renders —
- * the ONE owner of summary-split → header-distill → noise-filter → dedupe.
- * Two cards (the main rail and the subagent panel) both render this list;
- * separate pipelines drifted the moment one of them filtered noise the
- * other showed. Consecutive duplicates collapse: a thought made of several
- * noise sentences distilled each to the same "Processing request."
- * placeholder, and a card that repeats one line reads as broken.
+ * One summary row per whole thought — the ONE owner of thought-split →
+ * header-distill for both the main rail and the subagent panel.
  *
- * A recitation sentence or an exact repeat is not its own activity line, but
- * it is still part of the stretch the line above it names, so it folds into
- * that row's reasoning. Every reasoning byte therefore belongs to exactly one
- * row — none orphaned, none shared by two.
+ * There is deliberately no sentence loop and no "collapse consecutive
+ * duplicates" step. Two distinct thoughts are two lines even if they distill
+ * to similar headers; merging them would silently drop a thought the model
+ * actually had. `summarizeThoughtHeader` already owns the noise filtering and
+ * returns an honest placeholder when a thought is pure recitation, so every
+ * thought gets a line and every reasoning byte belongs to exactly one row.
  */
 export function distillThoughtSteps(content: string): ThoughtStepLine[] {
-  const steps: ThoughtStepLine[] = [];
-  for (const segment of splitThinkingSentences(content)) {
-    // Recitation is dropped from the LINE list rather than distilled into a
-    // placeholder, so a thought made of five measurements yields its actions
-    // and not five copies of one filler line (the dedupe below would collapse
-    // them anyway) — but it still belongs to the row's reasoning.
-    const distilled = isThoughtRecitation(segment)
-      ? ''
-      : summarizeThoughtHeader(segment, false);
-    if (distilled && distilled !== steps[steps.length - 1]?.summary) {
-      steps.push({ summary: distilled, reasoning: segment });
-    } else if (steps.length > 0) {
-      steps[steps.length - 1].reasoning = `${steps[steps.length - 1].reasoning} ${segment}`;
-    }
+  const { thoughts } = splitThinkingTexts(content);
+  if (thoughts.length === 0) {
+    return content.trim()
+      ? [{ summary: summarizeThoughtHeader(content, false), reasoning: content.trim() }]
+      : [];
   }
-  return steps;
+  return thoughts.map((thought) => ({
+    summary: summarizeThoughtHeader(thought, false),
+    reasoning: thought,
+  }));
 }
 
 /** The distilled lines only, for callers that render the summary and never
@@ -114,6 +166,8 @@ const VERB_PARTICIPLES: Record<string, string> = {
   verifying: 'Verifying',
   run: 'Running',
   running: 'Running',
+  rerun: 'Rerunning',
+  rerunning: 'Rerunning',
   test: 'Testing',
   testing: 'Testing',
   draft: 'Drafting',
@@ -270,8 +324,9 @@ function formatHeader(sentence: string): string {
     h = h[0].toUpperCase() + h.slice(1);
   }
 
-  // Ensure ends with period
-  if (!/[.!?]$/.test(h)) {
+  // Ensure ends with punctuation. An ellipsis already reads as "in progress";
+  // appending a dot to it produced "Thinking…." in the live feed.
+  if (!/[.!?…]$/.test(h)) {
     h = `${h}.`;
   }
 
@@ -282,6 +337,13 @@ export function summarizeThoughtHeader(text: string, isGenerating = false): stri
   const trimmed = text.trim();
   if (!trimmed) {
     return isGenerating ? 'Thinking…' : 'Thinking.';
+  }
+  // A streaming fragment is not yet a sentence, let alone a thought.
+  // Distilling "Now I will re" minted "Ring." — hold the live placeholder
+  // until there is enough text to name an activity. Settled text is never
+  // gated here: a short thought still owes the card its own row.
+  if (isGenerating && trimmed.length < 20 && !/[.!?]["')\]]?\s*$/.test(trimmed)) {
+    return 'Thinking…';
   }
 
   const cleaned = cleanThinkingText(trimmed);
@@ -309,7 +371,10 @@ export function summarizeThoughtHeader(text: string, isGenerating = false): stri
   // Pass 2: Look for intent phrases ("Let me load...", "I'll check...", "Next I'm checking...", "I need to verify...")
   for (const s of candidateSentences) {
     const intentMatch = s.match(
-      /(?:let me|i will|i'll|i need to|i should|plan is to|plan to|going to|next i'm|now i'm|now)\s+(?:try to\s+|also\s+|first\s+)?([a-z]+)\b\s*(.*)/i,
+      // A bare `now` here used to swallow the pronoun in "Now I will rerun…"
+      // and mint "Iing will rerun…". Lead-ins are handled in Pass 2b, so
+      // this pass only matches an explicit intent phrase.
+      /(?:let me|i will|i'll|i need to|i should|plan is to|plan to|going to|next i'm|now i'm)\s+(?:try to\s+|also\s+|first\s+)?([a-z]+)\b\s*(.*)/i,
     );
     if (intentMatch) {
       const verb = intentMatch[1].toLowerCase();
@@ -336,14 +401,16 @@ export function summarizeThoughtHeader(text: string, isGenerating = false): stri
   // first word has to already be a participle ("I'm checking").
   const BARE_VERB_AUX = /^(?:'ll|will|shall|would|should|must|can|could|need\s+to|have\s+to)\b/i;
   for (const original of candidateSentences) {
-    // Expand the contraction first. Matching `^i\b[\s']*` instead leaves a bare
-    // "m" at the head of the remainder, which is why "I'm checking…" survived
-    // the first version of this pass and printed verbatim.
-    const s = original.replace(
-      /^(i|we|you)'(m|ll|re|ve|d)\b/i,
-      (_x, p: string, c: string) =>
-        `${p} ${c === 'm' ? 'am' : c === 'll' ? 'will' : c === 're' ? 'are' : c === 've' ? 'have' : 'would'}`,
-    );
+    // Drop a conversational lead-in so "Now I will rerun…" / "So I'm
+    // checking…" still reach the first-person rewrite below instead of
+    // falling through to a verbatim quote.
+    const s = original
+      .replace(/^(?:so|and|then|also|okay|ok|well|now|next|sure),?\s+/i, '')
+      .replace(
+        /^(i|we|you)'(m|ll|re|ve|d)\b/i,
+        (_x, p: string, c: string) =>
+          `${p} ${c === 'm' ? 'am' : c === 'll' ? 'will' : c === 're' ? 'are' : c === 've' ? 'have' : 'would'}`,
+      );
     const head = s.match(/^(?:i|we|you)\s+(.*)$/i);
     if (!head) continue;
     let tail = head[1];
