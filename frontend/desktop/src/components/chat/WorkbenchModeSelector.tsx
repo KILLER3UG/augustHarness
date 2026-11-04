@@ -14,9 +14,9 @@ import {
   GitBranch,
   Hand,
   MessageSquare,
-  Shield,
   ShieldCheck,
   Terminal,
+  TriangleAlert,
   Bot,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -49,37 +49,51 @@ export interface WorkbenchGuardModeConfig {
   description: string;
   agentId: 'plan' | 'build';
   Icon: typeof Hand;
+  /** The unrestricted level: named in the danger colour, with a warning glyph,
+   *  in the menu row AND on the composer chip. Not a decoration — this level
+   *  returns before any permission prompt is queued. */
+  danger?: boolean;
 }
 
-/** Display order matches the reference: Ask → Edit → Plan → Full. */
+/** Display order matches the reference: Ask → Edit → Plan → Full.
+ *
+ *  Each line states what the BACKEND actually does with the level, read off
+ *  `workbench._checkToolGuard`: `ask` queues a prompt for every mutating tool
+ *  (commands and file edits), `edit` queues one only for a shell mutation and
+ *  lets edits through, `plan` refuses mutations until the plan is approved,
+ *  `full` returns before any prompt. Structural blocks — the read-only sandbox,
+ *  deleting the session that is running, the git-push hardline — sit outside
+ *  this axis and still fire in every level, so no label promises "anything
+ *  goes". */
 export const WORKBENCH_GUARD_MODES = {
   ask: {
     id: 'ask',
-    label: 'Ask before changes',
-    description: 'Ask before file changes.',
+    label: 'Ask every time',
+    description: 'Asks before every command and every file change.',
     agentId: 'build' as const,
     Icon: Hand,
   },
   edit: {
     id: 'edit',
-    label: 'Edit automatically',
-    description: 'Edit files automatically.',
+    label: 'Auto approve',
+    description: 'File edits run on their own; a shell command still asks first.',
     agentId: 'build' as const,
     Icon: ShieldCheck,
   },
   plan: {
     id: 'plan',
     label: 'Plan mode',
-    description: 'Plan before editing.',
+    description: 'Nothing is written or run until you approve the plan.',
     agentId: 'plan' as const,
     Icon: ClipboardList,
   },
   full: {
     id: 'full',
     label: 'Full access',
-    description: 'Run with fewer confirmations.',
+    description: 'Never asks — it changes files and runs commands directly.',
     agentId: 'build' as const,
-    Icon: Shield,
+    Icon: TriangleAlert,
+    danger: true,
   },
 } as const satisfies Record<WorkbenchGuardMode, WorkbenchGuardModeConfig>;
 
@@ -90,7 +104,7 @@ export const WORKBENCH_GUARD_MODE_ORDER: WorkbenchGuardMode[] = [
   'full',
 ];
 
-export function getWorkbenchGuardMode(mode: WorkbenchGuardMode) {
+export function getWorkbenchGuardMode(mode: WorkbenchGuardMode): WorkbenchGuardModeConfig {
   return WORKBENCH_GUARD_MODES[mode] ?? WORKBENCH_GUARD_MODES.full;
 }
 
@@ -155,7 +169,7 @@ export function WorkbenchModeSelector({
   const sandbox = getWorkbenchSandboxMode(sandboxMode);
   const harness = normalizeHarnessMode(harnessMode);
   const harnessMeta = HARNESS_OPTIONS.find((h) => h.id === harness) ?? HARNESS_OPTIONS[0];
-  const agentOptions = WORKBENCH_GUARD_MODE_ORDER.map((id) => WORKBENCH_GUARD_MODES[id]);
+  const agentOptions: WorkbenchGuardModeConfig[] = WORKBENCH_GUARD_MODE_ORDER.map((id) => WORKBENCH_GUARD_MODES[id]);
   const reachOptions = Object.values(WORKBENCH_SANDBOX_MODES) as WorkbenchSandboxModeConfig[];
 
   const [primaryPos, setPrimaryPos] = useState<{
@@ -322,19 +336,39 @@ export function WorkbenchModeSelector({
                   <Icon
                     className={cn(
                       'size-4 mt-0.5 shrink-0',
-                      selected ? 'text-foreground' : 'text-muted-foreground',
+                      option.danger
+                        ? 'text-destructive'
+                        : selected
+                          ? 'text-foreground'
+                          : 'text-muted-foreground',
                     )}
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-foreground leading-snug">
+                    <span
+                      className={cn(
+                        'block text-sm font-semibold leading-snug',
+                        option.danger ? 'text-destructive' : 'text-foreground',
+                      )}
+                    >
                       {option.label}
                     </span>
-                    <span className="block mt-0.5 text-2xs leading-snug text-muted-foreground">
+                    <span
+                      className={cn(
+                        'block mt-0.5 text-2xs leading-snug',
+                        option.danger ? 'text-destructive/85' : 'text-muted-foreground',
+                      )}
+                    >
                       {option.description}
                     </span>
                   </span>
                   {selected ? (
-                    <Check className="size-4 shrink-0 mt-0.5 text-foreground" aria-hidden />
+                    <Check
+                      className={cn(
+                        'size-4 shrink-0 mt-0.5',
+                        option.danger ? 'text-destructive' : 'text-foreground',
+                      )}
+                      aria-hidden
+                    />
                   ) : (
                     <span className="size-4 shrink-0" aria-hidden />
                   )}
@@ -532,13 +566,22 @@ export function WorkbenchModeSelector({
             * the edge appears.
            *
            * The MODE SWITCH ITSELF IS NOT REMOVED — it is the only place the
-           * app says "Ask before changes / Full access / Orchestrator / tool
-           * reach". This is a density change, not a deletion. */
+           * app says "Ask every time / Auto approve / Full access / Orchestrator
+           * / tool reach". This is a density change, not a deletion. */
           'h-8 px-2.5 py-1 rounded-full text-2xs font-medium text-muted-foreground border border-transparent hover:border-border/50 hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:border-border/50 focus-visible:bg-muted/40 focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40 transition-colors inline-flex items-center gap-1.5 max-w-[240px]',
           /* The orchestrator is still called out — in the TEXT, not with a
            * box. A fill plus a tinted border was a second box on top of the
            * pill's own. */
           harness === 'orchestrator' && 'text-primary hover:text-primary',
+          /* The chip names the permission level, so it carries the level's
+           * colour too — the reference shows `⚠ Full access` in red at the
+           * bottom of the composer, not just inside the menu. Only when the
+           * chip is actually showing that label. */
+          guard.danger === true &&
+            harness !== 'orchestrator' &&
+            harness !== 'chat' &&
+            harness !== 'code' &&
+            'text-destructive hover:text-destructive',
         )}
         title={`${harnessMeta.label}. ${guard.description}\nTool reach: ${sandbox.description}`}
         aria-label={`${harnessMeta.label}. Approvals: ${guard.label}. Tool reach: ${sandbox.shortLabel}`}

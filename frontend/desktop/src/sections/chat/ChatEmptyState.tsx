@@ -87,10 +87,6 @@ function Launchpad({ children }: { children: ReactNode }) {
           <br />
           building today?
         </h1>
-        <p className="launch-sub">
-          Start with a goal, a file, or a dataset. August can read the workspace, run the work,
-          and leave the output in a canvas.
-        </p>
 
         {recent.length > 0 && (
           <div className="recent-strip">

@@ -112,6 +112,34 @@ the walk was bounded it raised `RecursionError`, which the ceiling swallowed int
 "no ceiling", i.e. the fail-OPEN direction (measured, at
 `agent_registry._effectivePermissions`).
 
+## The four composer permission levels
+
+`_checkToolGuard` is the ONLY door that reads `session.guardMode`, and the four
+levels answer one question — does this call pause for the user:
+
+- **ask** ("Ask every time") — every tool the central classifier calls mutating
+  queues a pending mutation, commands *and* file edits. `run_command` is in
+  `_PLAN_BLOCKED_EXACT`, so a shell call is a mutating call here; an MCP tool is
+  mutating by prefix rule because a server can write, delete or drive a device.
+- **edit** ("Auto approve") — a shell mutation still queues
+  (`is_shell_mutation`); file edits proceed without asking.
+- **plan** — mutating tools are refused until `approveWorkbenchPlan` sets
+  `planApproved`. The session's own plan markdown is the only writable file, and
+  the low/medium advisory allowance is fail-closed: an UNASSESSED risk blocks.
+- **full** — returns before any prompt is queued.
+
+An unrecognised spelling normalises to **plan**, the most restrictive answer, and
+logs what was refused. It used to fall through to `full`, which made a typo the
+widest open door in the product.
+
+Three things sit OUTSIDE this axis and fire in every level, so no label may
+promise "anything goes": the read-only sandbox (`sandboxMode`), deleting the
+session that is currently executing, and the git-push hardline. The durable
+approval policy is a SECOND axis (`_resolveCommandApproval`: deny/allow prefix
+rules, destructive and external-path heuristics) and it is `enabled=False`
+unless configured — so an `ask` install with the policy on passes a command
+through two doors, and the first refusal returns before the second is reached.
+
 ## Listing and shell doors
 
 **Listing doors** — a credential store is **unlistable**, and that one rule is

@@ -6,7 +6,19 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatc
 import { cn } from '@/lib/utils';
 import type { WorkbenchSession } from '@/types/workbench';
 import type { ChatMessage, FileAttachment } from '@/types/chat';
-import type { WorkbenchGuardMode } from '@/components/chat/WorkbenchModeSelector';
+import {
+  WorkbenchModeSelector,
+  type WorkbenchGuardMode,
+} from '@/components/chat/WorkbenchModeSelector';
+import {
+  normalizeSandboxMode,
+  type WorkbenchSandboxMode,
+} from '@/components/chat/SandboxModeSelector';
+import {
+  setWorkbenchGuardMode,
+  setWorkbenchSandboxMode,
+  setWorkbenchAgentMode,
+} from '@/api/workbench';
 import { QueuePills } from './QueuePills';
 import { StreamLinkBanner } from './StreamLinkBanner';
 import { ArenaLaunchModal } from './composer/ArenaLaunchModal';
@@ -15,7 +27,6 @@ import type { DebateRun } from './debate/debate-store';
 import { WifiOff } from 'lucide-react';
 import type { QueuedUserMessage } from './queue-store';
 import { Markdown } from './ChatMarkdown';
-import { TaskProgressPill } from '@/components/chat/TaskProgressPill';
 import { ScrollToBottomButton } from '@/components/chat/ScrollToBottomButton';
 import type { ModelItem } from './model-display';
 import type { SessionUsageState } from './hooks/useChatUsage';
@@ -40,7 +51,7 @@ import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { useFocusedSubagent } from '@/components/chat/focused-subagent';
 import { setContinueWorkstream, useContinueWorkstream } from '@/components/chat/composer-intent';
-import { normalizeHarnessMode } from '@/components/chat/HarnessModeChip';
+import { normalizeHarnessMode, type HarnessAgentMode } from '@/components/chat/HarnessModeChip';
 import { continueWorkstream, listWorkstreams, runRoutine, steer as steerSubagent } from '@/api/subagents';
 import type { ChatSendFn, ChatSendOptions } from './hooks/useChatSend';
 
@@ -345,6 +356,86 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
     resizeTextarea();
   }, [input, resizeTextarea]);
 
+  /* The permission level is the one composer control that decides whether a
+     command or a file edit pauses for the user, so it lives on the footer line
+     where it can be read at a glance — not two levels inside the `+` menu. */
+  const handleGuardModeChange = (mode: WorkbenchGuardMode) => {
+    setWorkbenchMode(mode);
+    localStorage.setItem('august_last_workbench_guard_mode', mode);
+    if (mode === 'full' && workbenchSession) {
+      setWorkbenchSession({
+        ...workbenchSession,
+        plan: null,
+        approved: false,
+        approvedAt: null,
+        guardMode: 'full',
+        agentId: 'build',
+      });
+    }
+    if (workbenchSession?.id) {
+      void setWorkbenchGuardMode(workbenchSession.id, mode)
+        .then((updated) => {
+          if (updated) setWorkbenchSession(updated);
+        })
+        .catch((error) => {
+          console.warn('[ChatThread] Failed to persist guard mode:', error);
+        });
+    }
+  };
+
+  const persistHarnessMode = (next: HarnessAgentMode) => {
+    const apply = (sid: string) => {
+      setWorkbenchSession((prev) => (prev ? { ...prev, agentMode: next } : prev));
+      void setWorkbenchAgentMode(sid, next)
+        .then((updated) => {
+          if (updated) setWorkbenchSession(updated);
+        })
+        .catch((error) => {
+          console.warn('[ChatThread] Failed to persist agent mode:', error);
+        });
+    };
+    if (!workbenchSession?.id) {
+      void ensureWorkbenchSession()
+        .then((session) => {
+          if (session?.id) apply(session.id);
+        })
+        .catch((error) => {
+          console.warn('[ChatThread] Failed to create session for harness mode:', error);
+        });
+      return;
+    }
+    apply(workbenchSession.id);
+  };
+
+  const sandboxMode = normalizeSandboxMode(workbenchSession?.sandboxMode);
+  const handleSandboxChange = (mode: WorkbenchSandboxMode) => {
+    localStorage.setItem('august_last_sandbox_mode', mode);
+    let network: boolean | undefined;
+    try {
+      if (mode === 'workspace-write' && localStorage.getItem('august_sandbox_network_default') === '1') {
+        network = true;
+      }
+    } catch {
+      /* ignore */
+    }
+    if (workbenchSession) {
+      setWorkbenchSession({
+        ...workbenchSession,
+        sandboxMode: mode,
+        sandboxNetwork: mode === 'danger-full-access' ? true : network ?? workbenchSession.sandboxNetwork,
+      });
+    }
+    if (workbenchSession?.id) {
+      void setWorkbenchSandboxMode(workbenchSession.id, mode, network)
+        .then((updated) => {
+          if (updated) setWorkbenchSession(updated);
+        })
+        .catch((error) => {
+          console.warn('[ChatThread] Failed to persist sandbox mode:', error);
+        });
+    }
+  };
+
   return (
     <div className="august-composer-shell relative pb-3" ref={popovers.composerRootRef}>
       <input
@@ -425,10 +516,6 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
         />
       )}
 
-      <div className="flex justify-center mb-1.5">
-        <TaskProgressPill sessionId={sessionId} />
-      </div>
-
       <FontChooserToast />
 
       <div
@@ -490,11 +577,7 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
           send={sendOrSteer}
           stop={stop}
           sendKind={streaming ? 'steer' : sendKind}
-          ensureWorkbenchSession={ensureWorkbenchSession}
           workbenchSession={workbenchSession}
-          setWorkbenchSession={setWorkbenchSession}
-          workbenchMode={workbenchMode}
-          setWorkbenchMode={setWorkbenchMode}
           sessionUsage={sessionUsage}
           visibleModels={visibleModels}
           selectedModel={selectedModel}
@@ -628,6 +711,17 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
             window width meant it ended mid-word: "…Please doubl…". A truncated
             disclaimer informs no one. Shortened to what fits, with the full
             sentence on hover rather than dropped. */}
+        {/* The permission level sits at the LEFT edge — directly under the `+`
+            that opens the menu it belongs to — because it is the one setting
+            that decides whether the agent pauses for you. */}
+        <WorkbenchModeSelector
+          selectedMode={workbenchMode}
+          onChange={handleGuardModeChange}
+          sandboxMode={sandboxMode}
+          onSandboxChange={handleSandboxChange}
+          harnessMode={normalizeHarnessMode(workbenchSession?.agentMode)}
+          onHarnessChange={persistHarnessMode}
+        />
         <p
           className="composer-foot-note min-w-0 flex-1 truncate"
           title="August is an AI assistant and can make mistakes. Please double-check responses."

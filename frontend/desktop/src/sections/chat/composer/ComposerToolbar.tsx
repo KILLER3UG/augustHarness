@@ -15,19 +15,10 @@
  * `visibleModels` stay because the send gate and the subagent modal still
  * need them. */
 
-import { useState, useEffect, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { ArrowUp, ChevronDown, Mic, Square } from 'lucide-react';
+import { useState, useEffect, type ReactNode } from 'react';
+import { ArrowUp, Mic, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { setWorkbenchGuardMode, setWorkbenchSandboxMode, setWorkbenchAgentMode } from '@/api/workbench';
 import type { WorkbenchSession } from '@/types/workbench';
-import {
-  WorkbenchModeSelector,
-  type WorkbenchGuardMode,
-} from '@/components/chat/WorkbenchModeSelector';
-import {
-  normalizeSandboxMode,
-  type WorkbenchSandboxMode,
-} from '@/components/chat/SandboxModeSelector';
 import type { ModelItem } from '../model-display';
 import type { SessionUsageState } from '../hooks/useChatUsage';
 import { ComposerActionsMenu } from './ComposerActionsMenu';
@@ -35,7 +26,6 @@ import { CameraPopover } from './CameraPopover';
 import { SubagentSpawnModal } from './SubagentSpawnModal';
 import { CostCeilingChip } from './CostCeilingChip';
 import type { AnchorPos } from './useComposerPopovers';
-import { normalizeHarnessMode, type HarnessAgentMode } from '@/components/chat/HarnessModeChip';
 import type { ChatSendFn } from '../hooks/useChatSend';
 
 export function ComposerToolbar({
@@ -47,11 +37,7 @@ export function ComposerToolbar({
   streaming,
   send,
   stop,
-  ensureWorkbenchSession,
   workbenchSession,
-  setWorkbenchSession,
-  workbenchMode,
-  setWorkbenchMode,
   sessionUsage,
   visibleModels,
   selectedModel,
@@ -81,19 +67,7 @@ export function ComposerToolbar({
   streaming: boolean;
   send: ChatSendFn;
   stop: () => void;
-  /** Optional: lets the toolbar append a synthetic handoff-notice card. */
-  /** Creates the backend workbench session on demand — must run BEFORE the
-   *  first send creates the session (session-scoped settings on fresh chats). */
-  ensureWorkbenchSession: () => Promise<WorkbenchSession | null>;
   workbenchSession: WorkbenchSession | null;
-  setWorkbenchSession: (
-    session:
-      | WorkbenchSession
-      | null
-      | ((prev: WorkbenchSession | null) => WorkbenchSession | null),
-  ) => void;
-  workbenchMode: WorkbenchGuardMode;
-  setWorkbenchMode: Dispatch<SetStateAction<WorkbenchGuardMode>>;
   sessionUsage: SessionUsageState;
   visibleModels: ModelItem[];
   selectedModel: ModelItem | null;
@@ -129,93 +103,12 @@ export function ComposerToolbar({
     return () => window.removeEventListener('august:open-spawn', onOpen);
   }, []);
 
-  // The right-hand chevron re-anchors the actions menu to itself, so it
-  // needs a ref of its own to point the menu's trigger at.
-  const chevronRef = useRef<HTMLButtonElement | null>(null);
-
   const canSend =
     !!sessionId &&
     loadedSessionId === sessionId &&
     !!selectedModel &&
     !attachmentsReading &&
     (input.trim().length > 0 || attachmentsCount > 0);
-
-  const handleModeChange = (mode: WorkbenchGuardMode) => {
-    setWorkbenchMode(mode);
-    localStorage.setItem('august_last_workbench_guard_mode', mode);
-    if (mode === 'full' && workbenchSession) {
-      setWorkbenchSession({
-        ...workbenchSession,
-        plan: null,
-        approved: false,
-        approvedAt: null,
-        guardMode: 'full',
-        agentId: 'build',
-      });
-    }
-    if (workbenchSession?.id) {
-      void setWorkbenchGuardMode(workbenchSession.id, mode)
-        .then((updated) => {
-          if (updated) setWorkbenchSession(updated);
-        })
-        .catch((error) => {
-          console.warn('[ChatThread] Failed to persist guard mode:', error);
-        });
-    }
-  };
-
-  const persistHarnessMode = (next: HarnessAgentMode) => {
-    const apply = (sid: string) => {
-      setWorkbenchSession((prev) => (prev ? { ...prev, agentMode: next } : prev));
-      void setWorkbenchAgentMode(sid, next)
-        .then((updated) => {
-          if (updated) setWorkbenchSession(updated);
-        })
-        .catch((error) => {
-          console.warn('[ChatThread] Failed to persist agent mode:', error);
-        });
-    };
-    if (!workbenchSession?.id) {
-      void ensureWorkbenchSession()
-        .then((session) => {
-          if (session?.id) apply(session.id);
-        })
-        .catch((error) => {
-          console.warn('[ChatThread] Failed to create session for harness mode:', error);
-        });
-      return;
-    }
-    apply(workbenchSession.id);
-  };
-
-  const sandboxMode = normalizeSandboxMode(workbenchSession?.sandboxMode);
-  const handleSandboxChange = (mode: WorkbenchSandboxMode) => {
-    localStorage.setItem('august_last_sandbox_mode', mode);
-    let network: boolean | undefined;
-    try {
-      if (mode === 'workspace-write' && localStorage.getItem('august_sandbox_network_default') === '1') {
-        network = true;
-      }
-    } catch {
-      /* ignore */
-    }
-    if (workbenchSession) {
-      setWorkbenchSession({
-        ...workbenchSession,
-        sandboxMode: mode,
-        sandboxNetwork: mode === 'danger-full-access' ? true : network ?? workbenchSession.sandboxNetwork,
-      });
-    }
-    if (workbenchSession?.id) {
-      void setWorkbenchSandboxMode(workbenchSession.id, mode, network)
-        .then((updated) => {
-          if (updated) setWorkbenchSession(updated);
-        })
-        .catch((error) => {
-          console.warn('[ChatThread] Failed to persist sandbox mode:', error);
-        });
-    }
-  };
 
   return (
     <>
@@ -272,14 +165,6 @@ export function ComposerToolbar({
             }
             extras={
               <div className="flex flex-wrap items-center gap-2">
-                <WorkbenchModeSelector
-                  selectedMode={workbenchMode}
-                  onChange={handleModeChange}
-                  sandboxMode={sandboxMode}
-                  onSandboxChange={handleSandboxChange}
-                  harnessMode={normalizeHarnessMode(workbenchSession?.agentMode)}
-                  onHarnessChange={persistHarnessMode}
-                />
                 {sessionUsage && workbenchSession?.id && (
                   <CostCeilingChip
                     sessionId={workbenchSession.id}
@@ -311,18 +196,12 @@ export function ComposerToolbar({
             uses", and the stop button that replaces it while generating is a
             "filled light circle with a dark rounded square inside". */}
         <div className="flex shrink-0 items-center gap-1">
-          {/* The reference's RIGHT-HAND CLUSTER, which August was missing
-              entirely: "at the right a voice glyph and a small chevron"
-              (docs/plans/2026-10-11-ui-reference-capture.md, §Composer), and
-              every captured screenshot shows the two side by side at the far
-              right of the card.
-              The MIC is a real affordance, not decoration: August already has
-              voice input, and it lived TWO levels down inside the `+` menu,
-              so the reference's one-click path did not exist. The CHEVRON is
-              the second entry point to the composer's menu -- the reference
-              shows the `+` on the left AND a chevron on the right -- and it
-              RE-ANCHORS that menu to itself, because the popover's position
-              is measured from its trigger's rect. */}
+          {/* The reference's right-hand cluster is a voice glyph beside the
+              send circle. August had that glyph AND a chevron here, both wired
+              to the SAME `+` menu — two controls advertising two menus, one
+              menu. The mic stays because voice input was otherwise buried two
+              levels down inside that menu; the chevron goes, because a second
+              trigger for one popover is decoration. */}
           <Button
             type="button"
             variant="ghost"
@@ -334,25 +213,6 @@ export function ComposerToolbar({
             className="tool-button"
           >
             <Mic aria-hidden />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            ref={chevronRef}
-            onClick={() => {
-              // The menu is positioned from its trigger's rect, so the
-              // trigger is re-pointed at THIS button before it opens.
-              (actionsTriggerRef as { current: HTMLButtonElement | null }).current =
-                chevronRef.current;
-              onToggleActions();
-            }}
-            title="More options"
-            aria-label="More options"
-            data-testid="composer-more-button"
-            className="tool-button"
-          >
-            <ChevronDown aria-hidden />
           </Button>
           {streaming ? (
             <button
