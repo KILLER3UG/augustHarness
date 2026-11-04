@@ -33,6 +33,14 @@ const tauriBundleDir = resolve(root, 'frontend/desktop/src-tauri/target/release/
 const tauriConfPath = resolve(root, 'frontend/desktop/src-tauri/tauri.conf.json');
 const repository = process.env.GITHUB_REPOSITORY || 'KILLER3UG/augustHarness';
 
+/** What a human reads on the release page. Deliberately NOT tauri.conf.json's
+ *  `productName`: that value names the binary and the installer
+ *  (`AugustHarness_<version>_x64-setup.exe`), and the updater recognises a
+ *  downloaded update by stripping the hardcoded `AugustHarness_` prefix in
+ *  backend.rs — spacing the identifier would leave every installed app unable
+ *  to find its own update. The brand does carry a space; this is where it lives. */
+const PRODUCT_DISPLAY_NAME = 'August Harness';
+
 const rawArgs = process.argv.slice(2);
 const knownFlags = new Set(['--publish', '--tauri', '--dry-run', '--draft']);
 let versionArg = null;
@@ -639,16 +647,13 @@ async function publishRelease(assets) {
     if (releaseExists) {
         run('gh', ['release', 'upload', tag, '--clobber', '--repo', repository, ...assets], { shell: false });
     } else {
-        // The title and body used to hardcode "August", which drifted the moment
-        // the product shipped under a different name: the page read
-        // "August 0.19.0" over AugustHarness_0.19.0_x64-setup.exe. Take the name
-        // from tauri.conf.json — the same file that decides the artifact names and
-        // the updater endpoint — so a release can never disagree with its own
-        // assets again.
-        const conf = JSON.parse(await readFile(tauriConfPath, 'utf8'));
-        const productName = typeof conf.productName === 'string' ? conf.productName : 'August';
-        const title = `${productName} ${version}`;
-        const notes = `${productName} desktop release ${version}`;
+        // The title used to hardcode "August", so the page read "August 0.19.0"
+        // over AugustHarness_0.19.0_x64-setup.exe. It now uses the human brand.
+        // Not tauri.conf.json's productName — see PRODUCT_DISPLAY_NAME: the
+        // identifier has to stay unspaced or installed apps cannot parse their
+        // own downloaded updates.
+        const title = `${PRODUCT_DISPLAY_NAME} ${version}`;
+        const notes = `${PRODUCT_DISPLAY_NAME} desktop release ${version}`;
         run('gh', [
             'release',
             'create',
