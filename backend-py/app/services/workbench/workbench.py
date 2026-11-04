@@ -3031,35 +3031,42 @@ async def _sendWorkbenchMessageStreamImpl(
                 if apiKey:
                     break
         if not apiKey:
-            _noKeyMsg = (
-                f'API key not configured for {resolvedProvider.get("name", "unknown")}. '
-                'Open Settings → Model settings and paste a key for this provider.'
-            )
-            if emit:
-                emit({'type': 'error', 'message': _noKeyMsg})
-            _recordPreLoopExit(
-                session=session,
-                sessionId=sessionId,
-                reason='error',
-                error=_noKeyMsg,
-                emit=emit,
-                model=resolvedModel,
-                provider=as_str(
-                    resolvedProvider.get('name') or resolvedProvider.get('id'), ''
-                ),
-                turn_start_ms=_preLoopStartMs,
-                rounds=0,
-            )
-            session.status = 'idle'
-            session.updatedAt = _now()
-            try:
-                saveSessions()
-            except Exception:
-                logger.exception('workbench save_sessions failed after missing API key')
-            _emitSessionStatus(sessionId)
-            if emit:
-                emit({'type': 'done', 'sessionId': sessionId})
-            return
+            # A keyless loopback host (Ollama, LM Studio, a served GGUF)
+            # needs no credential — the same rule that admits it at every
+            # other gate. The empty key reaches the client, which omits the
+            # Authorization header.
+            from app.providers.api_format import is_loopback_base_url
+
+            if not is_loopback_base_url(resolvedProvider.get('baseUrl')):
+                _noKeyMsg = (
+                    f'API key not configured for {resolvedProvider.get("name", "unknown")}. '
+                    'Open Settings → Model settings and paste a key for this provider.'
+                )
+                if emit:
+                    emit({'type': 'error', 'message': _noKeyMsg})
+                _recordPreLoopExit(
+                    session=session,
+                    sessionId=sessionId,
+                    reason='error',
+                    error=_noKeyMsg,
+                    emit=emit,
+                    model=resolvedModel,
+                    provider=as_str(
+                        resolvedProvider.get('name') or resolvedProvider.get('id'), ''
+                    ),
+                    turn_start_ms=_preLoopStartMs,
+                    rounds=0,
+                )
+                session.status = 'idle'
+                session.updatedAt = _now()
+                try:
+                    saveSessions()
+                except Exception:
+                    logger.exception('workbench save_sessions failed after missing API key')
+                _emitSessionStatus(sessionId)
+                if emit:
+                    emit({'type': 'done', 'sessionId': sessionId})
+                return
     if session._failure_feedback_age is not None:
         session._failure_feedback_age += 1
         if session._failure_feedback_age >= 3:

@@ -77,8 +77,39 @@ def _step_1_layout_baseline() -> None:
         (Path(dataDir()) / sub).mkdir(parents=True, exist_ok=True)
 
 
+def _step_2_single_local_provider() -> None:
+    """v2 — serving GGUFs moved to ONE "Local Models" provider.
+
+    Every per-GGUF provider entry the old serve flow minted ("GGUF · …")
+    is disabled: its port belonged to a llama-server process that no longer
+    exists, and leaving them enabled advertised dead endpoints in the model
+    picker. The entries stay (user state is never silently deleted); a
+    person can delete them in Model settings or just leave them parked.
+    """
+    import json
+
+    p = Path(dataDir()) / 'providers.json'
+    if not p.exists():
+        return
+    try:
+        store = json.loads(p.read_text('utf-8'))
+    except Exception:  # noqa: BLE001 — a hand-edited file must not block boot
+        logger.warning('providers.json unreadable during migration v2', exc_info=True)
+        return
+    changed = False
+    for entry in store.get('providers', []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get('name', '')).startswith('GGUF · ') and entry.get('enabled', True):
+            entry['enabled'] = False
+            changed = True
+    if changed:
+        p.write_text(json.dumps(store, indent=2), encoding='utf-8')
+
+
 LADDER: list[tuple[int, str, Callable[[], None]]] = [
     (1, 'layout baseline: marker + runtimes/models/shared/bots dirs', _step_1_layout_baseline),
+    (2, 'disable legacy per-GGUF providers (superseded by Local Models)', _step_2_single_local_provider),
 ]
 
 

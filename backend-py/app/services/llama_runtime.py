@@ -40,6 +40,10 @@ _TEMP_DIR = 'tmp'
 _MARKER_FILE = 'installed.json'
 _SERVERS_FILE = 'servers.json'
 _SERVER_NAME_PREFIX = 'GGUF · '
+# The ONE provider all served GGUFs live under (user-facing name in the
+# picker's provider group).
+_LOCAL_PROVIDER_ID = 'local-models'
+_LOCAL_PROVIDER_NAME = 'Local Models'
 
 # Health-wait for a loading model: big GGUFs can take minutes; /health
 # answers 503 "loading" until the server is ready, and we keep polling
@@ -386,12 +390,16 @@ async def start_gguf_server(
     *,
     ctx_size: int = 8192,
 ) -> dict[str, Any]:
-    """Spawn ``llama-server`` for one GGUF and register it as a provider.
+    """Spawn ``llama-server`` for one GGUF and register it under the ONE
+    "Local Models" provider (id ``local-models``) — never one provider per
+    GGUF file, which littered the roster with unreachable per-port entries.
 
-    Returns immediately with the instance row (status ``starting``); the
-    background task flips it to ``ready`` when /health answers, fetches the
-    model list, and prices the models at 0.0. A second start for a GGUF
-    that is already served returns the existing row.
+    One local model is served at a time: a new serve stops the previous
+    llama-server and repoints the provider. Returns immediately with the
+    instance row (status ``starting``); the background task flips it to
+    ``ready`` when /health answers, fetches the model list, and prices the
+    models at 0.0. A second start for a GGUF that is already served returns
+    the existing row.
     """
     variant = installed_variant()
     if not variant:
@@ -415,14 +423,13 @@ async def start_gguf_server(
         ):
             return existing  # already served
 
-    # A re-serve of the SAME gguf lands on a NEW port, so the previous
-    # serve's provider entry (old baseUrl) would linger as an unreachable
-    # duplicate — retire it when the new provider registers.
-    prior_provider_ids = [
-        str(r.get('providerId'))
-        for r in rows
-        if str(r.get('ggufPath', '')).lower() == str(path).lower() and r.get('providerId')
-    ]
+    # One active local model: serving a different GGUF stops the previous
+    # llama-server (it holds the GPU and the provider points at ONE port).
+    for existing in rows:
+        if await _pid_alive(int(existing.get('pid', 0))):
+            await _kill_pid(int(existing.get('pid', 0)))
+            logger.info('stopped previous llama-server pid %s for the new serve', existing.get('pid'))
+    _save_servers([])
 
     port = _free_port()
     flags = getattr(asyncio.subprocess, 'CREATE_NO_WINDOW', 0) if hasattr(asyncio.subprocess, 'CREATE_NO_WINDOW') else 0
@@ -458,7 +465,7 @@ async def start_gguf_server(
     rows.append(row)
     _save_servers(rows)
 
-    asyncio.create_task(_await_server_ready(row, proc, prior_provider_ids))
+    asyncio.create_task(_await_server_ready(row, proc))
 
     from app.services.realtime_bus import emit_invalidate
 
@@ -473,7 +480,6 @@ class HTTPishError(RuntimeError):
 async def _await_server_ready(
     row: dict[str, Any],
     proc: asyncio.subprocess.Process,
-    prior_provider_ids: list[str] | None = None,
 ) -> None:
     """Poll /health until the model is loaded, then register + price."""
     url = f'http://127.0.0.1:{row["port"]}/health'
@@ -503,36 +509,10 @@ async def _await_server_ready(
 
     row['status'] = 'ready'
     _persist_row(row)
-    provider_id = await _ensure_provider(row)
+    provider_id = await _upsert_local_provider(row)
     row['providerId'] = provider_id
     _persist_row(row)
-    _retire_prior_providers(provider_id, prior_provider_ids or [], str(row.get('name', '')))
     logger.info('GGUF server ready on port %s for %s (provider %s)', row['port'], row['name'], provider_id)
-
-
-def _retire_prior_providers(current_id: str | None, prior_ids: list[str], gguf_name: str) -> None:
-    """Disable provider entries left by earlier serves of the same GGUF — a
-    re-serve lands on a new port, and an old baseUrl is unreachable forever.
-    Matched by id (rows that kept theirs) and by the stable provider name
-    (rows removed by a stop, where the name survives across serves)."""
-    from app.json_narrowing import as_list
-    from app.services import config_service, model_service
-    from app.services.realtime_bus import emit_invalidate
-
-    store = config_service.getProvidersStore()
-    changed = False
-    for entry in as_list(store.get('providers'), []):
-        if not isinstance(entry, dict):
-            continue
-        pid = str(entry.get('id', ''))
-        same_name = str(entry.get('name', '')) == f'{_SERVER_NAME_PREFIX}{gguf_name}'
-        if (pid in prior_ids or same_name) and pid != current_id and entry.get('enabled', True):
-            entry['enabled'] = False
-            changed = True
-    if changed:
-        config_service.saveProvidersStore(store)
-        model_service.invalidate_cache()
-        emit_invalidate('aggregated-models', 'ws-providers', 'provider-availability', 'providers')
 
 
 def _persist_row(row: dict[str, Any]) -> None:
@@ -546,53 +526,61 @@ def _persist_row(row: dict[str, Any]) -> None:
     _save_servers(rows)
 
 
-async def _ensure_provider(row: dict[str, Any]) -> str | None:
-    """Create (or reuse) the provider entry for a served GGUF and fetch its
-    model list, priced at 0.0 — a local host charges nothing, and 0.0 is a
-    price, not an absence."""
-    from app.models.config import ProviderCreate
-    from app.routers.providers import (
-        _discoverProviderModels,
-        createProvider,
-    )
+async def _upsert_local_provider(row: dict[str, Any]) -> str | None:
+    """Upsert the ONE "Local Models" provider against the served GGUF.
+
+    The provider is a fixed record (id ``local-models``): serving updates its
+    baseUrl to the live port, enables it, refreshes the model list, and
+    prices the models at 0.0 — a local host charges nothing, and 0.0 is a
+    price, not an absence. Legacy per-GGUF entries ("GGUF · …") are disabled
+    here and by the data-dir ladder, so a roster that predates this design
+    cleans itself up on the next serve.
+    """
+    from app.json_narrowing import as_list
+    from app.routers.providers import _discoverProviderModels
     from app.services import config_service, model_service
     from app.services.realtime_bus import emit_invalidate
 
     base_url = f'http://127.0.0.1:{row["port"]}/v1'
-
-    # Reuse an existing provider that already points at this base URL.
-    from app.json_narrowing import as_list
-
     store = config_service.getProvidersStore()
-    for entry in as_list(store.get('providers'), []):
-        if isinstance(entry, dict) and str(entry.get('baseUrl', '')).rstrip('/') == base_url.rstrip('/'):
-            provider_id = str(entry.get('id', ''))
-            if provider_id:
-                await _discoverProviderModels(provider_id, persist=True)
-                _price_local_models(provider_id, int(row.get('ctxSize', 8192)))
-                emit_invalidate('aggregated-models', 'ws-providers', 'provider-availability', 'providers')
-                return provider_id
+    providers = [e for e in as_list(store.get('providers'), []) if isinstance(e, dict)]
 
-    created = await createProvider(
-        ProviderCreate(
-            name=f'{_SERVER_NAME_PREFIX}{row["name"]}',
-            base_url=base_url,
-            api_format='openaiChat',
-            api_key='',
-            enabled=True,
-        )
-    )
-    provider_id = str(created.get('id', ''))
-    if not provider_id:
-        return None
-    await _discoverProviderModels(provider_id, persist=True)
-    _price_local_models(provider_id, int(row.get('ctxSize', 8192)))
+    entry = next((e for e in providers if str(e.get('id', '')) == _LOCAL_PROVIDER_ID), None)
+    if entry is None:
+        entry = {
+            'id': _LOCAL_PROVIDER_ID,
+            'name': _LOCAL_PROVIDER_NAME,
+            'baseUrl': base_url,
+            'apiFormat': 'openaiChat',
+            'apiKey': '',
+            'enabled': True,
+            'autoFetch': True,
+            'models': [],
+        }
+        providers.append(entry)
+    else:
+        legacy = str(entry.get('name', ''))
+        if legacy and legacy != _LOCAL_PROVIDER_NAME:
+            entry['name'] = _LOCAL_PROVIDER_NAME
+    entry['baseUrl'] = base_url
+    entry['enabled'] = True
+
+    # Belt alongside the ladder: disable the old per-GGUF entries.
+    for e in providers:
+        if str(e.get('name', '')).startswith(_SERVER_NAME_PREFIX) and str(e.get('id', '')) != _LOCAL_PROVIDER_ID and e.get('enabled', True):
+            e['enabled'] = False
+
+    store['providers'] = providers
+    config_service.saveProvidersStore(store)
     model_service.invalidate_cache()
+
+    await _discoverProviderModels(_LOCAL_PROVIDER_ID, persist=True)
+    _price_local_models(_LOCAL_PROVIDER_ID, int(row.get('ctxSize', 8192)))
     emit_invalidate('aggregated-models', 'ws-providers', 'provider-availability', 'providers')
-    return provider_id
+    return _LOCAL_PROVIDER_ID
 
 
-def _price_local_models(provider_id: str, ctx_size: int) -> None:
+def _price_local_models(provider_id: str, ctx_size: int) -> None:  # noqa: ARG001 — id kept for symmetry
     """Stamp fetched models with price 0.0 and the served context window."""
     from app.json_narrowing import as_list
     from app.services import config_service, model_service
@@ -628,6 +616,20 @@ async def stop_gguf_server(server_id: str) -> dict[str, Any]:
     await _kill_pid(pid)
     remaining = [r for r in rows if r.get('id') != server_id]
     _save_servers(remaining)
+
+    # No local model is serving: the Local Models provider goes unavailable
+    # rather than advertising a dead port.
+    if not remaining:
+        from app.json_narrowing import as_list
+        from app.services import config_service, model_service
+
+        store = config_service.getProvidersStore()
+        for entry in as_list(store.get('providers'), []):
+            if isinstance(entry, dict) and str(entry.get('id', '')) == _LOCAL_PROVIDER_ID and entry.get('enabled', True):
+                entry['enabled'] = False
+                config_service.saveProvidersStore(store)
+                model_service.invalidate_cache()
+                break
 
     from app.services.realtime_bus import emit_invalidate
 
