@@ -81,6 +81,31 @@ def _currentBotAgentId() -> str:
         return ''
 
 
+def _skillHeader(skill: dict[str, object]) -> str:
+    """The preamble `load_skill` prints above a body.
+
+    A Claude-style SKILL.md opens with its own H1 (``# PDF Processing Guide``),
+    so prepending ``# <name>`` gave every ported skill two titles. Keep the
+    generated title only when the body has none. The description always stays —
+    it is the trigger the caller may not have read — and ``license`` is printed
+    here because this is the only surface that shows it.
+    """
+    instructions = as_str(skill.get('instructions'), '')
+    description = as_str(skill.get('description'), '').strip()
+    meta = skill.get('meta')
+    licenseText = (
+        as_str(meta.get('license'), '').strip() if isinstance(meta, dict) else ''
+    )
+    lines: list[str] = []
+    if not re.match(r'^#\s+\S', instructions.lstrip()):
+        lines.extend([f'# {skill["name"]}', ''])
+    if description:
+        lines.extend([description, ''])
+    if licenseText:
+        lines.extend([f'License: {licenseText}', ''])
+    return ('\n'.join(lines) + '\n') if lines else ''
+
+
 async def _loadSkill(name: str, file: str = '') -> str:
     """Load a skill's full instructions, or one bundled file (L2)."""
     from app.services import skill_service
@@ -102,11 +127,7 @@ async def _loadSkill(name: str, file: str = '') -> str:
         trigger_path = as_str(skill.get('path'), '')
         # Trigger-hit telemetry (per-skill usage sidecar).
         skill_service.record_skill_use(trigger_path)
-        body = (
-            f'# {skill["name"]}\n\n'
-            f'{as_str(skill.get("description"), "")}\n\n'
-            f'{as_str(skill.get("instructions"), "")}'
-        )
+        body = _skillHeader(skill) + as_str(skill.get('instructions'), '')
         # A skill may ship sidecar documents next to SKILL.md. Naming them is
         # what makes them usable: the body stays the entry point and the model
         # opens only the one file it needs, instead of the whole directory

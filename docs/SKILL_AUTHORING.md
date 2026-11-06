@@ -49,6 +49,7 @@ metadata:
 | `category` | optional | Grouping label (`harness`, `engineering`, `learning`, `artifacts`, …). |
 | `version` | recommended | Hermes-style; learned skills bump one per approved patch. |
 | `platforms` | optional | Keep the bracketed-list string form (`[linux, macos]`). |
+| `license` | optional | Free-text attribution (`MIT`, `Proprietary — see NOTICE.md`). Survives every patch; `load_skill` prints it. |
 | `metadata.hermes.*` | optional | `tags`, `related_skills`, `requires_tools`, `requires_toolsets`, `fallback_for_tools`, `fallback_for_toolsets`. Unknown frontmatter round-trips through every patch, so the block survives edits. |
 
 ### Gating
@@ -89,6 +90,11 @@ and the index packs whole entries against a byte budget (over-long entries are
 dropped with a named overflow warning, not silently truncated). The marketing
 word denylist (`powerful`, `seamless`, `robust`, `advanced`, `intuitive`, …)
 applies to the description as everywhere else.
+
+The authoring warning checks for a trigger clause, not the literal string
+"use when": `Use when …`, `Use this skill whenever …`, and `Use for …` all
+pass, so a Claude-authored description is not flagged when it is created or
+patched through August.
 
 ## Body
 
@@ -138,6 +144,49 @@ requires a second call with `confirm: true`. Shell, URL and credential text in a
 skill body refuses the install; a memory-instruction phrase is reported as a
 warning. Scripts are copied, never executed. Install targets collide-check
 against existing skills and never overwrite a directory the pack does not own.
+
+## Porting a Claude skill
+
+Claude and August share the folder + `SKILL.md` + frontmatter-at-byte-0
+contract, so a port is mostly a layout pass:
+
+1. **Folder = name.** `pdf/SKILL.md` with `name: pdf`; `check:skills` fails a
+   mismatch because `createSkill` and the usage sidecar key on that name.
+2. **Keep the description's shape** — capability, triggers, exclusions. The
+   1024-char ceiling is the same as Claude's, and the description is the only
+   text a future agent sees before loading the skill.
+3. **Keep `license:` and add `NOTICE.md`** for third-party material, as
+   `independent-review` and `pdf` do.
+4. **Split at ~200 lines.** `SKILL.md` is the entry point; move long recipes
+   into `references/` and list each file with the situation that opens it under
+   `## Reference files`.
+5. **Sibling files are listed automatically.** `load_skill` ends with a bounded
+   listing of the skill directory, and `load_skill(name, file="references/x.md")`
+   reads one file. A `REFERENCE.md` at the skill root still works; a relative
+   path is resolved against the skill directory.
+6. **Run `npm run check:skills`.** It runs the runtime loader, so a file the
+   catalogue would skip fails the gate instead of disappearing silently.
+
+`skills/pdf/` is the worked example: a short entry point, two reference files,
+and a notice.
+
+## Review before create
+
+Creating a skill is the last resort, not the first. Before a `skill_create` is
+filed, August makes a separate call to the session's model with no conversation
+and a snapshot of the whole library — every skill, the stored memory and the
+tool names. The reviewer's verdict is the approval:
+
+- `new` — nothing covers it; the proposal is filed and the normal rails decide.
+- `update` — one existing skill covers it; the call is redirected to
+  `skill_patch`.
+- `merge` — several skills each cover part of it; the call is redirected to
+  `skill_merge`, which writes the survivor and leaves the others enabled.
+- `reject` / unavailable — nothing is filed.
+
+`autoReview` (Settings → Memory) turns this gate off. The distiller follows the
+same rule: its judge sees the catalogue, and a `create_skill` without
+`reviewed_skills` and `why_not_existing` is dropped.
 
 ## How learned skills are produced
 

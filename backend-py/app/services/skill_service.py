@@ -310,12 +310,23 @@ _MAX_SKILL_BODY_CHARS = 100_000
 _SOFT_SKILL_BODY_LINES = 200
 
 
+# A trigger clause, not the literal "use when": Claude-authored skills say
+# "Use this skill whenever …" and curated ones say "Use for …". The old
+# substring check warned on both — the exact porting case this warning is
+# meant to help.
+_TRIGGER_CLAUSE_RE = re.compile(
+    r'\b(?:use|load|apply|invoke|call)\b[^.\n]{0,80}\b(?:when(?:ever)?|for)\b',
+    re.IGNORECASE,
+)
+
+
 def skill_authoring_warnings(description: str, body: str) -> list[str]:
     """Non-blocking authoring warnings for a create/patch (item 5)."""
     out: list[str] = []
-    if 'use when' not in (description or '').lower():
+    if not _TRIGGER_CLAUSE_RE.search(description or ''):
         out.append(
-            'description has no "Use when" trigger — a future agent sees only name + '
+            'description has no trigger clause ("Use when …", "Use this skill '
+            'whenever …", "Use for …") — a future agent sees only name + '
             'description before deciding to load this skill'
         )
     lines = len((body or '').splitlines())
@@ -1771,7 +1782,9 @@ def patchSkill(
             frontmatter.pop('disabled', None)
         else:
             frontmatter['disabled'] = 'true'
-    frontmatter.setdefault('created_by', 'agent')
+    # `created_by` is provenance, not a default. Stamping `agent` on a
+    # copy-on-write of a hand-written skill relabelled it machine-authored,
+    # so the NEXT patch normalized the prose this one promised to preserve.
     # Lifecycle (P2#13): a patch NEVER writes a status it was not asked for.
     # An absent `status:` already means active, so materializing one here
     # would only add a byte-diff to every unrelated toggle. `setStatus` is
@@ -1781,7 +1794,10 @@ def patchSkill(
             f'Skill body exceeds the hard cap ({len(body.strip())} > {_MAX_SKILL_BODY_CHARS} chars); '
             'move long material into references/.'
         )
-    is_learned = frontmatter.get('created_by', 'agent') in ('agent', 'harness-proposal')
+    # The file on disk decides whether this is a machine-authored skill. A
+    # bundled or hand-written skill keeps its prose: the canonical body is a
+    # contract for machine-authored skills, not curated ones.
+    is_learned = as_str(existing.get('created_by'), '') in ('agent', 'harness-proposal')
     if body is None:
         # PATCH didn't change the body — preserve verbatim so a single-field
         # patch (e.g. toggling `disabled`) is a true no-op for prose. This
