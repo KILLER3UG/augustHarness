@@ -147,7 +147,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/brain/stores/facts/{row_id}/history` | Edit history for one fact, projected from the rollback store. |
 | `GET` | `/api/brain/turn-outcomes` | M5 telemetry: per-model/provider error rates plus the per-turn verdict distribution (046) for the Observabili… |
 
-## Skills (12)
+## Skills (13)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -156,6 +156,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/skills/{name}` | Get a single skill by name (project > agent > bundled precedence). |
 | `PATCH` | `/api/skills/{name}` | Patch an existing skill (copy-on-write for bundled skills). |
 | `DELETE` | `/api/skills/{name}` | Delete a skill. Refuses bundled skills. |
+| `POST` | `/api/skills/{name}/adopt-bundled` | Replace a shadowing copy with the bundled version (N3 freshness). |
 | `GET` | `/api/skills/{name}/versions` | Version history for one skill: ``{versions: [{ts, actor, rationale, sha}]}``. |
 | `GET` | `/api/skills/{name}/versions/{ts}/diff` | Unified diff of one version against the CURRENT SKILL.md. |
 | `POST` | `/api/skills/{name}/versions/{ts}/restore` | Undo a skill change: write version ``ts`` back as the live SKILL.md. |
@@ -253,7 +254,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/subagents/workstreams/{name}/episodes` | path: name · query: 1 |
 | `POST` | `/api/subagents/workstreams/{name}/read` | path: name · query: 1 |
 
-## Providers & models (26)
+## Providers & models (25)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -282,7 +283,6 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/providers/quota` | Per-model quota rows: provider-native when observed, local otherwise. |
 | `POST` | `/api/providers/refresh-all` | Refresh stored model lists from every enabled provider's /models endpoint. |
 | `POST` | `/api/providers/simulate` | Provider health simulator: connectivity + tool support + fallback. |
-| `GET` | `/api/providers/templates` | Deprecated: templates removed. Always returns ``[]`` for back-compat. |
 
 ## Configuration (31)
 

@@ -41,14 +41,23 @@ def _managed_shell_tool_definition() -> dict[str, object]:
 
 
 def sanitize_tool_schema(schema: object) -> dict[str, object]:
-    """Sanitize a JSON Schema to ensure it has the expected structure."""
+    """Sanitize a JSON Schema to ensure it has the expected structure.
+
+    E3: the sanitized shape closes the object — ``additionalProperties:
+    false`` — so a strict-mode client cannot smuggle an argument the
+    handler never declared. The proxy surfaces this serves are opt-in
+    (HARNESS_PROXY_*), which is why the strictness lives here and not on
+    the workbench builders.
+    """
     if not isinstance(schema, dict):
-        return {'type': 'object', 'properties': {}}
+        return {'type': 'object', 'properties': {}, 'additionalProperties': False}
     result = dict(schema)
     if 'type' not in result:
         result['type'] = 'object'
     if 'properties' not in result:
         result['properties'] = {}
+    if 'additionalProperties' not in result:
+        result['additionalProperties'] = False
     return result
 
 

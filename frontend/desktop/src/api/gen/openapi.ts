@@ -4858,26 +4858,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/providers/templates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Listtemplates
-         * @description Deprecated: templates removed. Always returns ``[]`` for back-compat.
-         */
-        get: operations["listTemplates_api_providers_templates_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/providers/{providerId}": {
         parameters: {
             query?: never;
@@ -5691,6 +5671,30 @@ export interface paths {
          *     override.
          */
         patch: operations["patchSkill_api_skills__name__patch"];
+        trace?: never;
+    };
+    "/api/skills/{name}/adopt-bundled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adoptbundled
+         * @description Replace a shadowing copy with the bundled version (N3 freshness).
+         *
+         *     The shadowing file is version-snapshotted first, so the adopt is an
+         *     Undo; the copy keeps its scope and precedence — only content catches
+         *     up to what shipped with the app.
+         */
+        post: operations["adoptBundled_api_skills__name__adopt_bundled_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/skills/{name}/versions": {
@@ -18152,26 +18156,6 @@ export interface operations {
             };
         };
     };
-    listTemplates_api_providers_templates_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
     getProvider_api_providers__providerId__get: {
         parameters: {
             query?: never;
@@ -19750,6 +19734,39 @@ export interface operations {
                 "application/json": components["schemas"]["SkillPatch"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adoptBundled_api_skills__name__adopt_bundled_post: {
+        parameters: {
+            query?: {
+                workspace?: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

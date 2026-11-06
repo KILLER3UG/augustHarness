@@ -1,7 +1,7 @@
 # August UI styleguide
 
 Roles and rules for the desktop UI. Token values live in
-[frontend/desktop/src/styles/tokens.css](../frontend/desktop/src/styles/tokens.css) (canonical) and
+`frontend/desktop/src/styles/tokens.css` (canonical) and
 the Tailwind theme; this file documents what each role is *for*. Enforcement
 that is mechanical lives in `check:design` (`scripts/check-design.mjs`) — the
 ratchet stops new drift; this page tells you what to reach for instead.
@@ -59,7 +59,7 @@ Reach for the shared primitives under `frontend/desktop/src/components/ui/`
 `<button>` outside `components/ui/` fails `raw-button`. Tooltips name
 controls only — anything the user must read while acting belongs inline.
 Shortcut chips render from
-[lib/shortcuts.ts](../frontend/desktop/src/lib/shortcuts.ts) (the one
+`frontend/desktop/src/lib/shortcuts.ts` (the one
 registry + ShortcutsModal); keys baked into label strings fail
 `copy-baked-keys`.
 

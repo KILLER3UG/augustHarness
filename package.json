@@ -19,6 +19,7 @@
     "check:docs": "node scripts/check-docs-sync.mjs",
     "check:loop-imports": "node scripts/check-loop-imports.mjs",
     "check:render-ratchet": "node scripts/check-render-ratchet.mjs",
+    "check:tool-schemas": "node scripts/run-python.mjs check_tool_schemas.py",
     "check:minisign": "node scripts/check-minisign.mjs",
     "check:naming": "node scripts/check-naming.mjs",
     "check:skills": "node scripts/run-python.mjs check_skills.py",
