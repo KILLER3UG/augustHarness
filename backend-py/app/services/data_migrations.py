@@ -107,9 +107,41 @@ def _step_2_single_local_provider() -> None:
         p.write_text(json.dumps(store, indent=2), encoding='utf-8')
 
 
+def _step_3_local_provider_label() -> None:
+    """v3 — the dropdown group for local models is "LocalModels", one word.
+
+    The label is what the model picker shows as the group heading, so it is a
+    product string, not an identifier: the provider keeps its id
+    ``local-models`` and every code path that matches on it is untouched.
+    Without this step an install would keep reading "Local Models" until
+    somebody served a GGUF again, because only the serve path re-writes the
+    name.
+    """
+    import json
+
+    p = Path(dataDir()) / 'providers.json'
+    if not p.exists():
+        return
+    try:
+        store = json.loads(p.read_text('utf-8'))
+    except Exception:  # noqa: BLE001 — a hand-edited file must not block boot
+        logger.warning('providers.json unreadable during migration v3', exc_info=True)
+        return
+    changed = False
+    for entry in store.get('providers', []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get('id', '')) == 'local-models' and entry.get('name') != 'LocalModels':
+            entry['name'] = 'LocalModels'
+            changed = True
+    if changed:
+        p.write_text(json.dumps(store, indent=2), encoding='utf-8')
+
+
 LADDER: list[tuple[int, str, Callable[[], None]]] = [
     (1, 'layout baseline: marker + runtimes/models/shared/bots dirs', _step_1_layout_baseline),
     (2, 'disable legacy per-GGUF providers (superseded by Local Models)', _step_2_single_local_provider),
+    (3, 'rename the local provider label to LocalModels', _step_3_local_provider_label),
 ]
 
 

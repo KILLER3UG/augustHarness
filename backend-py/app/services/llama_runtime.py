@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from app.lib.paths import dataDir
+from app.services import http_env
 from app.services import llama_runtime_manifest as manifest
 
 logger = logging.getLogger(__name__)
@@ -41,9 +42,10 @@ _MARKER_FILE = 'installed.json'
 _SERVERS_FILE = 'servers.json'
 _SERVER_NAME_PREFIX = 'GGUF · '
 # The ONE provider all served GGUFs live under (user-facing name in the
-# picker's provider group).
+# picker's provider group). The name is one word by owner choice; migration v3
+# renames an existing entry so an install does not have to serve again first.
 _LOCAL_PROVIDER_ID = 'local-models'
-_LOCAL_PROVIDER_NAME = 'Local Models'
+_LOCAL_PROVIDER_NAME = 'LocalModels'
 
 # Health-wait for a loading model: big GGUFs can take minutes; /health
 # answers 503 "loading" until the server is ready, and we keep polling
@@ -117,12 +119,28 @@ async def detect_gpu() -> dict[str, Any]:
     """
     exe = shutil.which('nvidia-smi')
     if not exe:
-        return {'nvidia': False, 'cudaVersion': None, 'gpuName': None}
+        return {
+            'nvidia': False,
+            'cudaVersion': None,
+            'gpuName': None,
+            'vramTotalMb': None,
+            'vramFreeMb': None,
+        }
     flags = getattr(asyncio.subprocess, 'CREATE_NO_WINDOW', 0) if hasattr(asyncio.subprocess, 'CREATE_NO_WINDOW') else 0
+    vram_total_mb: int | None = None
+    vram_free_mb: int | None = None
+
+    # "8188 MiB" → int. Absent or unparseable stays None rather than 0: a zero
+    # would read as "no VRAM" to the offload badge and refuse a model this
+    # machine can run.
+    def _mib(raw: str | None) -> int | None:
+        digits = ''.join(ch for ch in (raw or '') if ch.isdigit())
+        return int(digits) if digits else None
+
     try:
         proc = await asyncio.create_subprocess_exec(
             exe,
-            '--query-gpu=name,driver_version',
+            '--query-gpu=name,driver_version,memory.total,memory.free',
             '--format=csv,noheader',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -132,13 +150,34 @@ async def detect_gpu() -> dict[str, Any]:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
         except asyncio.TimeoutError:
             proc.kill()
-            return {'nvidia': False, 'cudaVersion': None, 'gpuName': None}
+            return {
+                'nvidia': False,
+                'cudaVersion': None,
+                'gpuName': None,
+                'vramTotalMb': None,
+                'vramFreeMb': None,
+            }
         if proc.returncode != 0:
-            return {'nvidia': False, 'cudaVersion': None, 'gpuName': None}
+            return {
+                'nvidia': False,
+                'cudaVersion': None,
+                'gpuName': None,
+                'vramTotalMb': None,
+                'vramFreeMb': None,
+            }
         first = out.decode('utf-8', 'replace').strip().splitlines()
-        gpu_name = first[0].split(',')[0].strip() if first and first[0].strip() else None
+        cols = [c.strip() for c in (first[0].split(',') if first else [])]
+        gpu_name = cols[0] if cols and cols[0] else None
+        vram_total_mb = _mib(cols[2] if len(cols) > 2 else None)
+        vram_free_mb = _mib(cols[3] if len(cols) > 3 else None)
     except Exception:  # noqa: BLE001 — a broken driver install is "no NVIDIA"
-        return {'nvidia': False, 'cudaVersion': None, 'gpuName': None}
+        return {
+            'nvidia': False,
+            'cudaVersion': None,
+            'gpuName': None,
+            'vramTotalMb': None,
+            'vramFreeMb': None,
+        }
 
     # Plain `nvidia-smi` header for the CUDA level. Two banner generations:
     # "| NVIDIA-SMI ... CUDA Version: 12.9 |" (classic) and
@@ -164,7 +203,13 @@ async def detect_gpu() -> dict[str, Any]:
             cuda_version = match.group(1)
     except Exception:  # noqa: BLE001
         cuda_version = None
-    return {'nvidia': True, 'cudaVersion': cuda_version, 'gpuName': gpu_name}
+    return {
+        'nvidia': True,
+        'cudaVersion': cuda_version,
+        'gpuName': gpu_name,
+        'vramTotalMb': vram_total_mb,
+        'vramFreeMb': vram_free_mb,
+    }
 
 
 async def resolve_variant(override: str | None = None) -> dict[str, Any]:
@@ -294,7 +339,7 @@ async def _download_and_extract(asset: dict[str, object], target: Path) -> None:
     timeout = httpx.Timeout(connect=15, read=60, write=60, pool=15)
     digest = hashlib.sha256()
     done = 0
-    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+    async with http_env.client(follow_redirects=True, timeout=timeout) as client:
         async with client.stream('GET', url) as resp:
             if resp.status_code != 200:
                 raise RuntimeError(f'{asset["name"]}: download returned HTTP {resp.status_code}')
@@ -492,7 +537,7 @@ async def _await_server_ready(
             _persist_row(row)
             return
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with http_env.client(timeout=2.0) as client:
                 resp = await client.get(url)
             if resp.status_code == 200:
                 ready = True
