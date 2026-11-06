@@ -21,6 +21,7 @@
  * fallback covers a node id that itself contains a separator. */
 
 import { useEffect, useRef, useState } from 'react';
+import { $themeMode, resolveSystemTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
 let mermaidSeq = 0;
@@ -73,10 +74,15 @@ export function MermaidDiagram({
     void (async () => {
       try {
         const mermaid = (await import('mermaid')).default;
+        // Follow the app theme, not a hardcoded dark: a light-mode render of
+        // a dark-palette diagram was unreadable (the theme ships default dark,
+        // but system/light modes exist and the docs pane follows them).
+        const mode = $themeMode.get();
+        const theme = mode === 'system' ? resolveSystemTheme() : mode;
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme: 'dark',
+          theme: theme === 'light' ? 'default' : 'dark',
         });
         const id = `aug-docs-diagram-${(mermaidSeq += 1)}`;
         const rendered = await mermaid.render(id, code);

@@ -52,7 +52,7 @@ export const $textSize = {
 
 /* ── Theme mode ──────────────────────────────────────────────────── */
 
-function resolveSystemTheme(): 'light' | 'dark' {
+export function resolveSystemTheme(): 'light' | 'dark' {
   if (typeof window === 'undefined') return 'dark';
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
