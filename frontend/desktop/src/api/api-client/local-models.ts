@@ -63,7 +63,15 @@ export interface LlamaRuntimeStatus {
     variant: string;
     auto: boolean;
     reason: string;
-    gpu: { nvidia: boolean; cudaVersion: string | null; gpuName: string | null };
+    gpu: {
+      nvidia: boolean;
+      cudaVersion: string | null;
+      gpuName: string | null;
+      /** MiB. Null when nvidia-smi could not report it — never 0, because a
+       *  zero would read as "no VRAM" to the offload badge. */
+      vramTotalMb?: number | null;
+      vramFreeMb?: number | null;
+    };
   };
   variants: { name: string; label: string; requires: string; totalBytes: number }[];
 }
@@ -123,15 +131,39 @@ export function scanGgufFolder(path: string): Promise<{
 
 export interface HfModel {
   repoId: string;
+  /** First path segment of the repo id — the Hub has no separate author field. */
+  author: string;
   downloads: number;
   likes: number;
+  /** ISO stamp; the search endpoint only carries it when `expand` asked. */
   lastModified: string;
+  /** '' when the repo has no pipeline tag. */
   pipelineTag: string;
 }
 
 export interface HfFile {
   filename: string;
   size: number;
+  /** Quant token parsed from the filename ('' when the name has none). */
+  quantization: string;
+  sharded: boolean;
+  /** A single-file GGUF August can serve. */
+  serveable: boolean;
+}
+
+export interface HfRepoDetail {
+  repoId: string;
+  lastModified: string;
+  downloads: number;
+  likes: number;
+  gated: boolean;
+  pipelineTag: string;
+  license: string;
+  files: HfFile[];
+  /** The filename August defaults to (single-file Q4_K_M when present). */
+  recommended: string;
+  formats: string[];
+  capabilities: string[];
 }
 
 export interface HfDownload {
@@ -147,17 +179,30 @@ export interface HfDownload {
   startedAt: string | null;
 }
 
-export function hfSearch(q: string, limit = 20, filter = ''): Promise<{ query: string; models: HfModel[] }> {
-  return api.get(`/api/hf/search?q=${encodeURIComponent(q)}&limit=${limit}&filter=${encodeURIComponent(filter)}`);
+export type HfSort = 'recommended' | 'downloads' | 'likes' | 'recent';
+
+export function hfSearch(
+  q: string,
+  limit = 20,
+  filter = '',
+  sort: HfSort = 'recommended',
+): Promise<{ query: string; sort: string; count: number; models: HfModel[] }> {
+  return api.get(
+    `/api/hf/search?q=${encodeURIComponent(q)}&limit=${limit}` +
+      `&filter=${encodeURIComponent(filter)}&sort=${sort}`,
+  );
 }
 
-export function hfRepoFiles(repoId: string): Promise<{
-  repoId: string;
-  lastModified: string;
-  downloads: number;
-  files: HfFile[];
-}> {
+export function hfRepoFiles(repoId: string): Promise<HfRepoDetail> {
   return api.get(`/api/hf/repos/${repoId}`);
+}
+
+export function hfRepoReadme(repoId: string): Promise<{
+  repoId: string;
+  markdown: string;
+  truncated: boolean;
+}> {
+  return api.get(`/api/hf/repos/${encodeURIComponent(repoId)}/readme`);
 }
 
 export function hfListDownloads(): Promise<{ downloads: HfDownload[] }> {

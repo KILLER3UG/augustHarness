@@ -1,63 +1,70 @@
-/* ── Explore — a browsable catalog of downloadable local models ────────
+/* ── Explore — a live Hugging Face browser for local GGUF models ─────────
  *
- * The catalog is a static JSON file bundled with the desktop build (and
- * checked into this repository on GitHub), so browsing works with no network
- * at all. Downloads go through the existing local proxy routes — the renderer
- * never talks to GitHub or Hugging Face directly, which keeps the Tauri CSP,
- * the per-install token and the error shapes in one place.
+ * Search hits the Hub through the local proxy (`/api/hf/*`), so the renderer
+ * never talks to huggingface.co directly and the Tauri CSP, the per-install
+ * token and the error shapes stay in one place. Selecting a repo reads its
+ * real file list with exact sizes and its model card; a download is a
+ * `/api/hf/downloads` job with progress, cancel and resume.
  *
- * Search is client-side and debounced; every download is a real
- * `/api/hf/downloads` job with progress, cancel and error states. */
+ * The screen ends where the product actually ends: a downloaded file is
+ * useless until it is served, so the primary action walks the real chain —
+ * Download → runtime → Serve → Use in New Chat — and each label states the
+ * step it performs. A "Downloaded" tick that led nowhere was the old
+ * behaviour, and it is why a finished download looked like a failure.
+ */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   AlertCircle,
   Check,
+  Cpu,
   Download,
   ExternalLink,
-  Github,
-  HardDrive,
   Loader2,
+  MessageSquarePlus,
   RefreshCw,
   Search,
+  Star,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
+import { Markdown } from '@/sections/chat/ChatMarkdown';
+import { cn, timeAgo } from '@/lib/utils';
 import { t } from '@/lib/motion';
+import { useModels } from '@/hooks/useModels';
+import { getOrCreateEmptySession, updateSessionModel } from '@/store/sessions';
 import {
+  getLlamaRuntime,
   hfCancelDownload,
   hfListDownloads,
   hfRepoFiles,
+  hfRepoReadme,
+  hfSearch,
   hfStartDownload,
+  installLlamaRuntime,
+  listLlamaServers,
+  serveGguf,
   type HfDownload,
+  type HfFile,
+  type HfSort,
 } from '@/api/api-client/local-models';
-import CATALOG from './model-catalog.json';
 
-type CatalogModel = (typeof CATALOG.models)[number];
+const SORTS: { value: HfSort; label: string }[] = [
+  { value: 'recommended', label: 'Recommended' },
+  { value: 'downloads', label: 'Most downloaded' },
+  { value: 'likes', label: 'Most liked' },
+  { value: 'recent', label: 'Recently updated' },
+];
 
-/** Searchable text for one entry. Kept here so the filter cannot drift from
- *  what the row actually shows. */
-function searchable(model: CatalogModel): string {
-  return [
-    model.name,
-    model.family,
-    model.parameters,
-    model.quantization,
-    model.sizeLabel,
-    model.sizeBucket,
-    model.repoId,
-    model.description,
-    ...model.tags,
-  ]
-    .join(' ')
-    .toLowerCase();
-}
+/** The context window a served GGUF starts with. One number in one place: it
+ *  is what the VRAM margin below budgets the cache against, so it must not
+ *  drift from the value actually passed to the backend. */
+const SERVE_CTX_SIZE = 8192;
 
 function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0 B';
@@ -71,34 +78,67 @@ function formatBytes(n: number): string {
   return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
-/** A catalog entry names a repo + a preferred quant, not a guaranteed
- *  filename — repos rename files. Ask the backend for the real file list and
- *  pick the closest single-file GGUF before starting a job. */
-async function resolveFilename(model: CatalogModel): Promise<string> {
-  const { files } = await hfRepoFiles(model.repoId);
-  const single = files.filter(
-    (f) => /\.gguf$/i.test(f.filename) && !/\d+-of-\d+/i.test(f.filename),
-  );
-  const exact = single.find((f) => f.filename === model.filename);
-  const quant = single.find((f) =>
-    f.filename.toUpperCase().includes(model.quantization.toUpperCase()),
-  );
-  const chosen = exact ?? quant ?? single[0];
-  if (!chosen) {
-    throw new Error(`No single-file GGUF found in ${model.repoId}`);
-  }
-  return chosen.filename;
+function formatCount(n: number): string {
+  return new Intl.NumberFormat().format(n || 0);
 }
 
-function findJob(model: CatalogModel, downloads: HfDownload[]): HfDownload | null {
-  const candidates = downloads.filter((d) => d.repoId === model.repoId);
-  return (
-    candidates.find((d) =>
-      d.filename.toUpperCase().includes(model.quantization.toUpperCase()),
-    ) ??
-    candidates.find((d) => d.filename === model.filename) ??
-    null
-  );
+/** The file stem llama.cpp serves under (`--alias path.stem`), which is
+ *  therefore the id the model picker shows once the server is ready. */
+function servedModelId(filename: string): string {
+  const base = filename.split('/').pop() ?? filename;
+  return base.replace(/\.gguf$/i, '');
+}
+
+type OffloadVerdict = {
+  tone: 'ok' | 'partial' | 'unknown';
+  label: string;
+  detail: string;
+};
+
+/** GPU-offload estimate from the two numbers that decide it: the file size and
+ *  the free VRAM this machine reports right now.
+ *
+ *  Deliberately not a claim about layer counts — August has not opened the
+ *  GGUF. The badge prints the figures it used, so a reader can disagree with
+ *  the arithmetic instead of trusting a green tick. */
+function offloadVerdict(
+  sizeBytes: number,
+  gpu: { nvidia: boolean; gpuName?: string | null; vramFreeMb?: number | null },
+): OffloadVerdict {
+  if (!gpu.nvidia) {
+    return {
+      tone: 'unknown',
+      label: 'No NVIDIA GPU detected',
+      detail: 'Runs on the CPU unless a Vulkan runtime is installed.',
+    };
+  }
+  const free = gpu.vramFreeMb ?? null;
+  if (!free || free <= 0 || sizeBytes <= 0) {
+    return {
+      tone: 'unknown',
+      label: 'GPU offload unknown',
+      detail: `${gpu.gpuName ?? 'NVIDIA GPU'} — free memory not reported.`,
+    };
+  }
+  // Keep 1 GB of the free pool for the KV cache at SERVE_CTX_SIZE plus the
+  // desktop itself. A model needing more than what is left is a partial
+  // offload, and calling it "full" would be a promise about a server August
+  // has not started.
+  const kvMarginMb = 1024;
+  if (sizeBytes / 1e6 <= free - kvMarginMb) {
+    return {
+      tone: 'ok',
+      label: 'Full GPU offload possible',
+      detail: `${formatBytes(sizeBytes)} model · ${formatCount(Math.round(free))} MiB free on ${
+        gpu.gpuName ?? 'NVIDIA GPU'
+      }`,
+    };
+  }
+  return {
+    tone: 'partial',
+    label: 'Partial GPU offload',
+    detail: `${formatBytes(sizeBytes)} model · ${formatCount(Math.round(free))} MiB free — some layers stay on the CPU`,
+  };
 }
 
 function ProgressBar({ value, total }: { value: number; total: number }) {
@@ -123,325 +163,657 @@ function ProgressBar({ value, total }: { value: number; total: number }) {
   );
 }
 
-interface ModelRowProps {
-  model: CatalogModel;
-  job: HfDownload | null;
-  resolving: boolean;
-  actionError: string | null;
-  onDownload: () => void;
-  onCancel: () => void;
-}
-
 function ModelRow({
-  model,
+  repoId,
+  author,
+  downloads,
+  likes,
+  lastModified,
+  selected,
   job,
-  resolving,
-  actionError,
-  onDownload,
-  onCancel,
-}: ModelRowProps) {
-  const downloading = job?.status === 'downloading';
+  onSelect,
+}: {
+  repoId: string;
+  author: string;
+  downloads: number;
+  likes: number;
+  lastModified: string;
+  selected: boolean;
+  job: HfDownload | null;
+  onSelect: () => void;
+}) {
+  const name = repoId.split('/').slice(1).join('/') || repoId;
+  const busy = job?.status === 'downloading';
   const done = job?.status === 'done';
-  const failed = job?.status === 'failed' || job?.status === 'interrupted' || !!actionError;
-  const errorText = actionError ?? job?.error ?? null;
-
   return (
-    <div className="rounded-xl border border-border/60 bg-card/50 p-4">
-      <div className="flex min-w-0 items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <span className="block min-w-0 truncate text-sm font-semibold text-foreground">
-              {model.name}
-            </span>
-            <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
-              {model.quantization}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">{model.description}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
-            <span className="rounded bg-muted/60 px-1.5 py-0.5">{model.family}</span>
-            <span className="rounded bg-muted/60 px-1.5 py-0.5">{model.parameters}</span>
-            <span className="rounded bg-muted/60 px-1.5 py-0.5">{model.sizeLabel}</span>
-            {model.tags.slice(0, 3).map((tag) => (
-              <span key={tag} className="rounded bg-muted/60 px-1.5 py-0.5">
-                {tag}
-              </span>
-            ))}
-          </div>
-          <div className="mt-2 flex min-w-0 items-center gap-2 text-2xs text-muted-foreground">
-            <Github className="size-3 shrink-0" aria-hidden />
-            <span className="block min-w-0 truncate">{model.repoId}</span>
-            <a
-              href={model.sourceUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex shrink-0 items-center gap-0.5 text-primary hover:underline"
-              aria-label={`Open the upstream project for ${model.name}`}
-            >
-              Source <ExternalLink className="size-3" aria-hidden />
-            </a>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
-          {downloading && job ? (
-            <Button type="button" size="sm" variant="outline" onClick={onCancel}>
-              <X className="size-3" aria-hidden />
-              Cancel
-            </Button>
-          ) : done ? (
-            <span className="inline-flex items-center gap-1 text-xs text-success-fg">
-              <Check className="size-3" aria-hidden /> Downloaded
-            </span>
-          ) : (
-            <Button
-              type="button"
-              size="sm"
-              disabled={resolving}
-              onClick={onDownload}
-            >
-              {resolving || failed ? (
-                <RefreshCw className={cn('size-3', resolving && 'animate-spin')} aria-hidden />
-              ) : (
-                <Download className="size-3" aria-hidden />
-              )}
-              {resolving ? 'Resolving…' : failed ? 'Retry' : 'Download'}
-            </Button>
+    <Button
+      type="button"
+      variant="bare"
+      onClick={onSelect}
+      aria-current={selected ? 'true' : undefined}
+      className={cn(
+        'w-full gap-3 rounded-lg px-3 py-2.5 text-left',
+        selected ? 'bg-primary text-primary-foreground' : 'hover:bg-muted/50',
+      )}
+      data-testid={`explore-row-${repoId}`}
+    >
+      <span aria-hidden className="shrink-0 text-lg leading-6">
+        🤗
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
+          className={cn(
+            'block truncate text-sm font-medium',
+            selected ? 'text-primary-foreground' : 'text-foreground',
           )}
-          <span className="text-2xs text-muted-foreground">{model.license}</span>
-        </div>
-      </div>
-
-      {downloading && job ? (
-        <div className="mt-3 space-y-1">
-          <div className="flex items-center justify-between text-2xs text-muted-foreground">
-            <span>{job.filename.split('/').pop()}</span>
-            <span>
-              {formatBytes(job.bytesDone)} / {formatBytes(job.size)}
-              {job.speedBps ? ` · ${formatBytes(job.speedBps)}/s` : ''}
-            </span>
-          </div>
-          <ProgressBar value={job.bytesDone} total={job.size} />
-        </div>
-      ) : null}
-
-      {failed && errorText ? (
-        <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-danger/40 bg-danger/5 px-2.5 py-2 text-2xs text-danger-fg">
-          <span className="block min-w-0 truncate">{errorText}</span>
-          <Button type="button" size="sm" variant="ghost" onClick={onDownload}>
-            Retry
-          </Button>
-        </div>
-      ) : null}
-    </div>
+        >
+          {name}
+        </span>
+        <span
+          className={cn(
+            'block truncate text-2xs',
+            selected ? 'text-primary-foreground/80' : 'text-muted-foreground',
+          )}
+        >
+          {author}
+        </span>
+      </span>
+      <span
+        className={cn(
+          'flex shrink-0 flex-col items-end gap-0.5 text-2xs tabular-nums',
+          selected ? 'text-primary-foreground/85' : 'text-muted-foreground',
+        )}
+      >
+        <span className="inline-flex items-center gap-1">
+          <Star className="size-3" aria-hidden />
+          {formatCount(likes)}
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <Download className="size-3" aria-hidden />
+          {formatCount(downloads)}
+        </span>
+        <span className="inline-flex items-center gap-1">
+          {busy ? <Loader2 className="size-3 animate-spin" aria-hidden /> : null}
+          {done && !busy ? <Check className="size-3" aria-hidden /> : null}
+          {lastModified ? timeAgo(lastModified) : '—'}
+        </span>
+      </span>
+    </Button>
   );
 }
 
 export function ExploreSection() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [resolvingId, setResolvingId] = useState<string | null>(null);
-  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [debounced, setDebounced] = useState('');
+  const [sort, setSort] = useState<HfSort>('recommended');
+  const [selectedRepo, setSelectedRepo] = useState('');
+  const [fileChoice, setFileChoice] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [serving, setServing] = useState(false);
 
-  // One debounce, one owner. Clearing the timer on every keystroke means a
-  // fast typer issues exactly one filter pass, and there is no second fetch
-  // path that can race it.
   useEffect(() => {
-    const id = setTimeout(() => setDebouncedQuery(query.trim().toLowerCase()), 200);
+    const id = setTimeout(() => setDebounced(query.trim()), 300);
     return () => clearTimeout(id);
   }, [query]);
 
-  const filtered = useMemo(() => {
-    const tokens = debouncedQuery.split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) return CATALOG.models;
-    return CATALOG.models.filter((model) => {
-      const haystack = searchable(model);
-      return tokens.every((token) => haystack.includes(token));
-    });
-  }, [debouncedQuery]);
-
-  const downloadsQ = useQuery({
-    queryKey: ['explore-downloads'],
-    queryFn: hfListDownloads,
-    refetchInterval: (q) =>
-      (q.state.data?.downloads ?? []).some((d) => d.status === 'downloading')
-        ? 1000
-        : 5000,
+  const searchQ = useQuery({
+    queryKey: ['hf-search', debounced, sort],
+    queryFn: () => hfSearch(debounced, 40, 'gguf', sort),
+    placeholderData: (prev) => prev,
+    staleTime: 60_000,
     retry: 1,
   });
 
-  const downloads = downloadsQ.data?.downloads ?? [];
+  const detailQ = useQuery({
+    queryKey: ['hf-repo', selectedRepo],
+    queryFn: () => hfRepoFiles(selectedRepo),
+    enabled: !!selectedRepo,
+    staleTime: 60_000,
+    retry: 1,
+  });
 
-  async function handleDownload(model: CatalogModel) {
-    setActionErrors((prev) => ({ ...prev, [model.id]: '' }));
-    setResolvingId(model.id);
+  const readmeQ = useQuery({
+    queryKey: ['hf-readme', selectedRepo],
+    queryFn: () => hfRepoReadme(selectedRepo),
+    enabled: !!selectedRepo,
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+
+  // ONE key, shared with Local Models and with the backend's own push
+  // (`emit_invalidate("hf-downloads")`). This screen used to subscribe
+  // `explore-downloads`, so a job that finished anywhere else never reached it
+  // except by polling.
+  const downloadsQ = useQuery({
+    queryKey: ['hf-downloads'],
+    queryFn: hfListDownloads,
+    refetchInterval: (q) =>
+      (q.state.data?.downloads ?? []).some((d) => d.status === 'downloading') ? 1000 : 10_000,
+    retry: 1,
+  });
+
+  const serversQ = useQuery({
+    queryKey: ['llama-servers'],
+    queryFn: listLlamaServers,
+    refetchInterval: (q) =>
+      (q.state.data?.servers ?? []).some((s) => s.status === 'starting') ? 1500 : 8000,
+  });
+
+  const runtimeQ = useQuery({
+    queryKey: ['llama-runtime'],
+    queryFn: getLlamaRuntime,
+    staleTime: 30_000,
+  });
+
+  const { models, refreshCatalog } = useModels();
+
+  const results = useMemo(() => searchQ.data?.models ?? [], [searchQ.data?.models]);
+  const downloads = useMemo(() => downloadsQ.data?.downloads ?? [], [downloadsQ.data?.downloads]);
+  const servers = useMemo(() => serversQ.data?.servers ?? [], [serversQ.data?.servers]);
+  const serveable: HfFile[] = useMemo(
+    () => (detailQ.data?.files ?? []).filter((f) => f.serveable),
+    [detailQ.data?.files],
+  );
+
+  // The file this repo is about: the caller's pick, else the repo's
+  // recommended single-file quant.
+  const chosenFile = useMemo(() => {
+    if (!selectedRepo) return null;
+    const name = fileChoice || detailQ.data?.recommended || '';
+    return serveable.find((f) => f.filename === name) ?? serveable[0] ?? null;
+  }, [selectedRepo, fileChoice, detailQ.data?.recommended, serveable]);
+
+  const jobFor = useMemo(() => {
+    if (!selectedRepo) return null;
+    const rows = downloads.filter((d) => d.repoId === selectedRepo);
+    if (!rows.length) return null;
+    return rows.find((d) => d.filename === chosenFile?.filename) ?? rows[0] ?? null;
+  }, [downloads, selectedRepo, chosenFile?.filename]);
+
+  const offload = offloadVerdict(
+    chosenFile?.size ?? jobFor?.size ?? 0,
+    runtimeQ.data?.suggestion?.gpu ?? { nvidia: false },
+  );
+
+  const servedRow = servers.find(
+    (s) => s.ggufPath && jobFor && s.ggufPath.replace(/\\/g, '/').endsWith(jobFor.filename),
+  );
+  const servedReady = servedRow?.status === 'ready';
+  const runtimeInstalled = !!runtimeQ.data?.installed;
+
+  const chatModel = useMemo(() => {
+    const want = servedModelId(chosenFile?.filename ?? jobFor?.filename ?? '');
+    const local = models.filter((m) => (m.provider || '').toLowerCase() === 'localmodels');
+    return local.find((m) => m.id === want) ?? local[0] ?? null;
+  }, [models, chosenFile?.filename, jobFor?.filename]);
+
+  async function startDownload() {
+    if (!selectedRepo || !chosenFile) return;
+    setActionError(null);
     try {
-      const filename = await resolveFilename(model);
-      await hfStartDownload(model.repoId, filename);
-      toast.success(`Downloading ${model.name} · ${model.quantization}`);
+      await hfStartDownload(selectedRepo, chosenFile.filename);
+      toast.success(
+        `Downloading ${chosenFile.filename.split('/').pop()} · ${formatBytes(chosenFile.size)}`,
+      );
       await downloadsQ.refetch();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Download failed';
-      setActionErrors((prev) => ({ ...prev, [model.id]: message }));
+      setActionError(message);
       toast.error(message);
-    } finally {
-      setResolvingId(null);
     }
   }
 
-  async function handleCancel(jobId: string) {
+  async function cancelDownload() {
+    if (!jobFor) return;
     try {
-      await hfCancelDownload(jobId);
+      await hfCancelDownload(jobFor.jobId);
       await downloadsQ.refetch();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not cancel download');
     }
   }
 
+  async function installRuntime() {
+    setActionError(null);
+    try {
+      await installLlamaRuntime();
+      toast.success('Downloading the llama.cpp runtime — a one-time install.');
+      await runtimeQ.refetch();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Runtime install failed';
+      setActionError(message);
+      toast.error(message);
+    }
+  }
+
+  async function serve() {
+    if (!jobFor?.destPath) return;
+    setServing(true);
+    setActionError(null);
+    try {
+      await serveGguf(jobFor.destPath, SERVE_CTX_SIZE);
+      toast.success(`Loading ${servedModelId(jobFor.filename)}…`);
+      await serversQ.refetch();
+      await refreshCatalog();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not start the local server';
+      setActionError(message);
+      toast.error(message);
+    } finally {
+      setServing(false);
+    }
+  }
+
+  function startChatWithModel() {
+    if (!chatModel) {
+      toast.error('The model is not in the catalog yet — it appears once the server is ready.');
+      return;
+    }
+    const sess = getOrCreateEmptySession();
+    updateSessionModel(sess.id, chatModel.id, chatModel.provider);
+    void qc.invalidateQueries({ queryKey: ['aggregated-models'] });
+    void navigate(`/c/${sess.id}`);
+  }
+
+  function selectRepo(repoId: string) {
+    setSelectedRepo(repoId);
+    setFileChoice('');
+    setActionError(null);
+  }
+
+  /** One primary action that states the step it performs. The order is the
+   *  real dependency chain: a file must be on disk before it can be served,
+   *  and a runtime must exist before anything can be served. */
+  const primary = (() => {
+    if (!selectedRepo) return null;
+    if (jobFor?.status === 'downloading') {
+      return { kind: 'cancel' as const, label: 'Cancel', disabled: false };
+    }
+    if (jobFor?.status !== 'done') {
+      return {
+        kind: 'download' as const,
+        label: chosenFile ? `Download ${formatBytes(chosenFile.size)}` : 'Download',
+        disabled: !chosenFile || detailQ.isPending,
+      };
+    }
+    if (!runtimeInstalled) {
+      return { kind: 'runtime' as const, label: 'Install llama.cpp runtime', disabled: false };
+    }
+    if (servedReady) {
+      return { kind: 'chat' as const, label: 'Use in New Chat', disabled: !chatModel };
+    }
+    if (servedRow?.status === 'starting') {
+      return { kind: 'wait' as const, label: 'Loading model…', disabled: true };
+    }
+    if (servedRow?.status === 'failed') {
+      return { kind: 'serve' as const, label: 'Serve again', disabled: serving };
+    }
+    return { kind: 'serve' as const, label: 'Serve locally', disabled: serving };
+  })();
+
+  const runPrimary = () => {
+    if (!primary) return;
+    if (primary.kind === 'download') void startDownload();
+    else if (primary.kind === 'cancel') void cancelDownload();
+    else if (primary.kind === 'runtime') void installRuntime();
+    else if (primary.kind === 'serve') void serve();
+    else if (primary.kind === 'chat') startChatWithModel();
+  };
+
+  const summaryOf = (field: 'downloads' | 'likes') =>
+    detailQ.data?.[field] ?? results.find((r) => r.repoId === selectedRepo)?.[field] ?? 0;
+
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-start justify-between gap-4 px-6 py-5">
-        <div className="min-w-0">
-          <h2 className="text-xl font-semibold tracking-tight text-foreground">
-            Explore models
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Pick a GGUF model to download and run locally. Search by name,
-            family, size, quantization or tag.
-          </p>
-          <p className="mt-1 text-2xs text-muted-foreground">
-            Catalog v{CATALOG.version} · bundled with August, so browsing works
-            offline. Downloads need a connection.
-          </p>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={downloadsQ.isFetching}
-          onClick={() => void downloadsQ.refetch()}
-        >
-          <RefreshCw
-            className={cn('size-3', downloadsQ.isFetching && 'animate-spin')}
-            aria-hidden
-          />
-          Refresh
-        </Button>
-      </header>
-
-      <div className="shrink-0 px-6 pb-3">
-        <div className="relative">
-          <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            type="text"
-            inputMode="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search models — qwen, 7B, Q4_K_M, small, coding…"
-            aria-label="Search downloadable models"
-            className="h-9 pl-8 pr-8 text-xs"
-          />
-          {query ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              onClick={() => setQuery('')}
-              className="absolute right-1 top-1/2 -translate-y-1/2"
-              aria-label="Clear search"
-            >
-              <X className="size-3" aria-hidden />
-            </Button>
-          ) : null}
-        </div>
-        <div className="mt-2 flex items-center justify-between text-2xs text-muted-foreground">
-          <span>
-            {filtered.length} of {CATALOG.models.length} models
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <HardDrive className="size-3" aria-hidden />
-            Files are saved to your data folder and kept on update
-          </span>
-        </div>
-      </div>
-
-      {/* Network-dependent state: the catalog itself never needs the
-          network, but the download list does. Give it an honest loading,
-          error + retry, and empty surface. */}
-      {downloadsQ.isPending ? (
-        <div className="mx-6 mb-3 flex items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          <Loader2 className="size-3 animate-spin" aria-hidden />
-          Checking local downloads…
-        </div>
-      ) : null}
-      {downloadsQ.isError ? (
-        <div className="mx-6 mb-3 flex items-center justify-between gap-2 rounded-lg border border-danger/40 bg-danger/5 px-3 py-2 text-xs text-danger-fg">
-          <span className="inline-flex items-center gap-2">
-            <AlertCircle className="size-3 shrink-0" aria-hidden />
-            Could not reach the local download service. The catalog is still
-            browsable offline.
-          </span>
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="shrink-0 px-6 pb-3 pt-5">
+        <h2 className="text-xl font-semibold tracking-tight text-foreground">Explore</h2>
+        <div className="mt-3 flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              type="text"
+              inputMode="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search Hugging Face — qwen, gemma, 4B, coding…"
+              aria-label="Search Hugging Face models"
+              className="h-9 pl-8 pr-8 text-xs"
+              data-testid="explore-search"
+            />
+            {query ? (
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                onClick={() => setQuery('')}
+                className="absolute right-1 top-1/2 -translate-y-1/2"
+                aria-label="Clear search"
+              >
+                <X className="size-3" aria-hidden />
+              </Button>
+            ) : null}
+          </div>
           <Button
             type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void downloadsQ.refetch()}
+            size="icon-sm"
+            variant="ghost"
+            disabled={searchQ.isFetching}
+            onClick={() => void searchQ.refetch()}
+            aria-label="Refresh results"
           >
+            <RefreshCw
+              className={cn('size-3.5', searchQ.isFetching && 'animate-spin')}
+              aria-hidden
+            />
+          </Button>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-3 text-2xs text-muted-foreground">
+          <span>
+            {searchQ.isPending
+              ? 'Searching Hugging Face…'
+              : `${formatCount(results.length)} Hugging Face result${results.length === 1 ? '' : 's'}`}
+            <span className="ml-1 opacity-70">(GGUF only — what August can serve)</span>
+          </span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as HfSort)}
+            aria-label="Sort results"
+            className="h-7 rounded-md border border-border/60 bg-background px-2 text-2xs text-foreground"
+            data-testid="explore-sort"
+          >
+            {SORTS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </header>
+
+      {searchQ.isError ? (
+        <div className="mx-6 mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/40 bg-danger/5 px-3 py-2 text-xs text-danger-fg">
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <AlertCircle className="size-3 shrink-0" aria-hidden />
+            Hugging Face search failed — the Hub may be unreachable or rate-limiting.
+          </span>
+          <Button type="button" size="sm" variant="outline" onClick={() => void searchQ.refetch()}>
             Retry
           </Button>
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 pb-6">
-        {filtered.length === 0 ? (
-          <div className="py-10 text-center text-sm text-muted-foreground">
-            <p>No models match &ldquo;{debouncedQuery}&rdquo;.</p>
-            <Button
-              type="button"
-              size="sm"
-              variant="link"
-              className="mt-2"
-              onClick={() => setQuery('')}
-            >
-              Clear search
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {filtered.map((model) => (
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-[22rem] shrink-0 flex-col border-r border-border/60">
+          <div className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 pb-4">
+            {results.map((m) => (
               <ModelRow
-                key={model.id}
-                model={model}
-                job={findJob(model, downloads)}
-                resolving={resolvingId === model.id}
-                actionError={actionErrors[model.id] || null}
-                onDownload={() => void handleDownload(model)}
-                onCancel={() => {
-                  const job = findJob(model, downloads);
-                  if (job) void handleCancel(job.jobId);
-                }}
+                key={m.repoId}
+                repoId={m.repoId}
+                author={m.author}
+                downloads={m.downloads}
+                likes={m.likes}
+                lastModified={m.lastModified}
+                selected={m.repoId === selectedRepo}
+                job={downloads.find((d) => d.repoId === m.repoId) ?? null}
+                onSelect={() => selectRepo(m.repoId)}
               />
             ))}
+            {!searchQ.isPending && results.length === 0 ? (
+              <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                No GGUF repositories match “{debounced}”.
+              </p>
+            ) : null}
           </div>
-        )}
+        </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-2xs text-muted-foreground">
-          <span>
-            Adding a running server, installing the llama.cpp runtime, or
-            serving a GGUF you already have? Those live in Local Models.
-          </span>
-          <Button
-            type="button"
-            size="sm"
-            variant="link"
-            onClick={() => void navigate('/settings/model-local')}
-          >
-            Open Local Models
-          </Button>
+        <div className="min-w-0 flex-1 overflow-auto px-6 pb-8">
+          {!selectedRepo ? (
+            <div className="mt-16 text-center text-sm text-muted-foreground">
+              Pick a model to see its files, sizes, capabilities and model card.
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <div className="flex items-start gap-4">
+                <span aria-hidden className="text-3xl leading-9">
+                  🤗
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-lg font-semibold text-foreground">
+                    {(detailQ.data?.repoId ?? selectedRepo).split('/').slice(1).join('/') ||
+                      selectedRepo}
+                  </h3>
+                  <p className="truncate text-xs text-muted-foreground">{selectedRepo}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-3 text-2xs tabular-nums text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      <Download className="size-3" aria-hidden />
+                      {formatCount(summaryOf('downloads'))}
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Star className="size-3" aria-hidden />
+                      {formatCount(summaryOf('likes'))}
+                    </span>
+                    {detailQ.data?.lastModified ? (
+                      <span>Updated {timeAgo(detailQ.data.lastModified)}</span>
+                    ) : null}
+                  </div>
+                </div>
+                <a
+                  href={`https://huggingface.co/${selectedRepo}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1.5 text-2xs text-foreground hover:bg-accent"
+                >
+                  Open on Web <ExternalLink className="size-3" aria-hidden />
+                </a>
+              </div>
+
+              <section>
+                <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  Download options
+                </h4>
+                {detailQ.isPending ? (
+                  <p className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" aria-hidden /> Reading the file list…
+                  </p>
+                ) : detailQ.isError ? (
+                  <p className="mt-2 inline-flex items-center gap-2 text-xs text-danger-fg">
+                    <AlertCircle className="size-3" aria-hidden />
+                    {detailQ.error instanceof Error
+                      ? detailQ.error.message
+                      : 'Could not read the file list.'}
+                  </p>
+                ) : serveable.length === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    No single-file GGUF here. Sharded files and safetensors are listed on Hugging
+                    Face instead — August serves one file at a time.
+                  </p>
+                ) : (
+                  <>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-1 font-mono text-2xs text-muted-foreground">
+                        GGUF
+                      </span>
+                      <select
+                        value={chosenFile?.filename ?? ''}
+                        onChange={(e) => setFileChoice(e.target.value)}
+                        aria-label="Which GGUF file to download"
+                        className="h-8 min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 text-xs text-foreground"
+                        data-testid="explore-file-select"
+                      >
+                        {serveable.map((f) => (
+                          <option key={f.filename} value={f.filename}>
+                            {f.filename} · {f.quantization || 'quant not in name'} ·{' '}
+                            {formatBytes(f.size)}
+                            {f.filename === detailQ.data?.recommended ? ' (recommended)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {chosenFile && chosenFile.filename === detailQ.data?.recommended ? (
+                        <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-1 text-2xs text-muted-foreground">
+                          Recommended
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-2xs',
+                          offload.tone === 'ok'
+                            ? 'bg-success/15 text-success-fg'
+                            : offload.tone === 'partial'
+                              ? 'bg-warning/15 text-warning-fg'
+                              : 'bg-muted/60 text-muted-foreground',
+                        )}
+                      >
+                        <Cpu className="size-3" aria-hidden />
+                        {offload.label}
+                      </span>
+                      <span className="text-2xs text-muted-foreground">{offload.detail}</span>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={primary?.disabled ?? true}
+                        onClick={runPrimary}
+                        data-testid="explore-primary-action"
+                      >
+                        {primary?.kind === 'download' ? (
+                          <Download className="size-3" aria-hidden />
+                        ) : null}
+                        {primary?.kind === 'chat' ? (
+                          <MessageSquarePlus className="size-3" aria-hidden />
+                        ) : null}
+                        {primary?.kind === 'serve' && serving ? (
+                          <Loader2 className="size-3 animate-spin" aria-hidden />
+                        ) : null}
+                        {primary?.kind === 'wait' ? (
+                          <Loader2 className="size-3 animate-spin" aria-hidden />
+                        ) : null}
+                        {primary?.label ?? 'Select a file'}
+                      </Button>
+                      {jobFor?.status === 'done' ? (
+                        <span className="inline-flex items-center gap-1 text-2xs text-success-fg">
+                          <Check className="size-3" aria-hidden /> Downloaded
+                        </span>
+                      ) : null}
+                      {servedReady ? (
+                        <span className="text-2xs text-muted-foreground">
+                          Serving on port {servedRow?.port} as provider LocalModels
+                        </span>
+                      ) : null}
+                      {runtimeQ.data?.install?.running ? (
+                        <span className="text-2xs text-muted-foreground">
+                          Runtime install: {formatBytes(runtimeQ.data.install.bytesDone)} /{' '}
+                          {formatBytes(runtimeQ.data.install.totalBytes)}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    {jobFor?.status === 'downloading' ? (
+                      <div className="mt-3 space-y-1">
+                        <div className="flex items-center justify-between text-2xs text-muted-foreground">
+                          <span>{jobFor.filename.split('/').pop()}</span>
+                          <span>
+                            {formatBytes(jobFor.bytesDone)} / {formatBytes(jobFor.size)}
+                            {jobFor.speedBps ? ` · ${formatBytes(jobFor.speedBps)}/s` : ''}
+                          </span>
+                        </div>
+                        <ProgressBar value={jobFor.bytesDone} total={jobFor.size} />
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </section>
+
+              {actionError || jobFor?.error ? (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-danger/40 bg-danger/5 px-2.5 py-2 text-2xs text-danger-fg">
+                  <span className="block min-w-0 truncate">{actionError ?? jobFor?.error}</span>
+                  <Button type="button" size="sm" variant="ghost" onClick={runPrimary}>
+                    Retry
+                  </Button>
+                </div>
+              ) : null}
+
+              <section>
+                <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  Details
+                </h4>
+                <dl className="mt-2 space-y-1 text-xs">
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 text-muted-foreground">Formats</dt>
+                    <dd className="min-w-0 text-foreground">
+                      {(detailQ.data?.formats ?? []).join(', ') || '—'}
+                    </dd>
+                  </div>
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 text-muted-foreground">Capabilities</dt>
+                    <dd className="min-w-0 text-foreground">
+                      {(detailQ.data?.capabilities ?? []).length
+                        ? (detailQ.data?.capabilities ?? []).join(', ')
+                        : 'Text'}
+                    </dd>
+                  </div>
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 text-muted-foreground">License</dt>
+                    <dd className="min-w-0 text-foreground">{detailQ.data?.license || '—'}</dd>
+                  </div>
+                  <div className="flex gap-3">
+                    <dt className="w-28 shrink-0 text-muted-foreground">Saved to</dt>
+                    <dd className="min-w-0 truncate text-foreground" title={jobFor?.destPath}>
+                      {jobFor?.destPath ?? 'This device — your August data folder'}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section>
+                <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  README
+                </h4>
+                {readmeQ.isPending ? (
+                  <p className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="size-3 animate-spin" aria-hidden /> Loading the model card…
+                  </p>
+                ) : readmeQ.isError ? (
+                  <p className="mt-2 text-xs text-muted-foreground">Model card unavailable.</p>
+                ) : (readmeQ.data?.markdown ?? '').trim() ? (
+                  <div className="mt-2 rounded-lg border border-border/60 bg-card/40 p-4">
+                    <Markdown content={readmeQ.data?.markdown ?? ''} demoteHeadings />
+                    {readmeQ.data?.truncated ? (
+                      <p className="mt-2 text-2xs text-muted-foreground">
+                        Model card truncated — open it on Hugging Face to read the rest.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-xs text-muted-foreground">This repo has no README.</p>
+                )}
+              </section>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/30 px-4 py-3 text-2xs text-muted-foreground">
+                <span>
+                  Adding a running server (Ollama, LM Studio, llama.cpp) or serving a GGUF you
+                  already have? Those live in Local Models.
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="link"
+                  onClick={() => void navigate('/settings/model-local')}
+                >
+                  Open Local Models
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
