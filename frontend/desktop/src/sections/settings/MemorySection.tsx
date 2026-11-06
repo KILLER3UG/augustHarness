@@ -81,7 +81,7 @@ interface StorePage {
 
 interface BrainConfigResponse {
   source?: string;
-  config?: { memoryEnabled?: boolean; modelMemoryRead?: boolean; memoryAutoInject?: boolean; memoryReview?: boolean; modelMemoryWrites?: boolean; memorySensitiveTopics?: boolean } & Record<string, unknown>;
+  config?: { memoryEnabled?: boolean; modelMemoryRead?: boolean; memoryAutoInject?: boolean; memoryReview?: boolean; autoReview?: boolean; modelMemoryWrites?: boolean; memorySensitiveTopics?: boolean } & Record<string, unknown>;
   defaults?: Record<string, unknown>;
 }
 
@@ -1606,6 +1606,14 @@ export function MemorySection({ active }: { active: { id: string } }) {
           label="Model can save memories"
           disabled={configQ.isLoading || configMut.isPending || cfg?.memoryEnabled === false}
           data-testid="memory-model-writes-toggle"
+        />
+        <SettingsToggle
+          checked={Boolean(cfg?.autoReview ?? true)}
+          onCheckedChange={(next) => configMut.mutate({ autoReview: next })}
+          label="Auto-review new memories and skills"
+          description="A fresh model call compares each new write with every skill, memory and tool before it is saved. If something already covers it, the write is redirected to an update or merge."
+          disabled={configQ.isLoading || configMut.isPending}
+          data-testid="memory-auto-review-toggle"
         />
         {/* `memoryReview` and `memorySensitiveTopics` live in the strip at the
             top of the page now — one setting, one surface. */}

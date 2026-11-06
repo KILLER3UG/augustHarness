@@ -13,7 +13,9 @@ is the TRIGGER — it names the capability, the situations, and when NOT to fire
 because a future agent sees only name + description before loading. Bundled
 (hand-written) skills pass through the normalizer untouched. The frontmatter
 parser also reads the nested Hermes `metadata.hermes` block, and unknown keys
-round-trip through every patch.
+round-trip through every patch. The optional `license` field is preserved and
+printed by `load_skill`; third-party ports keep a `NOTICE.md` next to
+`SKILL.md`.
 
 Discovery walks five roots — bot → project → agent → external → bundled,
 earlier wins — through one shared walker (`_iterSkillMd`) that is depth- and
@@ -50,6 +52,39 @@ would skip at discovery, a frontmatter `name` that disagrees with its
 directory, or two bundled skills sharing a name fails the gate; without it,
 the runtime skip is the only symptom and the skill simply disappears from the
 catalogue.
+
+## Review before create
+
+A new skill is not filed until a fresh-context reviewer has compared it with the
+library. `harness_propose(skill_create)` runs one extra call to the session's
+model with no conversation and a snapshot of every skill, the stored memory and
+the tool names (`autoReview`, default on). The verdict is the approval: `new`
+files the proposal and the proposal rails still decide; `update` returns the
+existing skill so the model files `skill_patch`; `merge` returns the targets for
+`skill_merge`; `reject` files nothing; an unavailable reviewer files nothing
+either, because an outage is not an approval. Targets are validated against the
+real library, so a hallucinated skill name cannot redirect a write. No
+similarity threshold is consulted — lexical ranking only orders which bodies the
+reviewer sees.
+
+The applier refuses a create whose name already exists. It used to write the
+file anyway: either overwriting an agent skill or shadowing a bundled one with
+an agent-root copy. A patch now resolves a learned/project/bot skill in the
+scope it actually lives in, so "update the existing skill" works instead of
+creating a second copy. A bundled skill stays human-owned: a model proposal
+that targets one is refused and redirected to the user.
+
+`skill_merge` (human-gated) writes the survivor and records `merged_from`; it
+never disables or deletes the absorbed skills, and neither does `supersedes`.
+`merged_from` is surfaced by both skill endpoints through `_lineage_fields` and
+read by the Skills pane's "Merged from" row — a lineage field only the applier
+reads would be a fact nobody can check. Retiring a skill is the user's action
+only. The distiller enforces the same
+rule: its judge sees the whole catalogue, a `create_skill` without
+`reviewed_skills` and `why_not_existing` is dropped, and `amend_body` /
+`amend_trigger` are the preferred actions. That judge has no workspace, so its
+catalogue is agent + bundled; a project or Bot skill is in the model-facing
+gate's snapshot, which resolves the session's own roots.
 
 ## Mutation and undo
 

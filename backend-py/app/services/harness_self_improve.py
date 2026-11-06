@@ -49,7 +49,15 @@ from app.services.review_gate import resolve_independent_reviewer
 # restore route (`POST /api/skills/restore/{trashId}`) rather than a second
 # applier. Same rule as `retire`: human approval only, never automatic.
 APPROVABLE_KINDS = frozenset(
-    {'brain_config', 'skill_create', 'skill_patch', 'skill_delete', 'retire', 'archive'}
+    {
+        'brain_config',
+        'skill_create',
+        'skill_patch',
+        'skill_merge',
+        'skill_delete',
+        'retire',
+        'archive',
+    }
 )
 # Analysis-only kinds — always safe to store, never auto-applied.
 OBSERVATION_KINDS = frozenset({'tool_bucket', 'tool_description', 'flow_map', 'observation'})
@@ -529,6 +537,7 @@ def _skill_frontmatter(
     status: str = 'active',
     keywords: list[str] | None = None,
     disabled: bool = False,
+    merged_from: list[str] | None = None,
 ) -> str:
     """Learned-skill frontmatter with Part 16 Phase D provenance:
     origin (human|distilled|amended), learned_from (episode ids), version,
@@ -558,6 +567,8 @@ def _skill_frontmatter(
         lines.append('disabled: true')
     if supersedes:
         lines.append(f'supersedes: {supersedes}')
+    if merged_from:
+        lines.append(f'merged_from: {",".join(merged_from)}')
     rendered_keywords = render_keywords(keywords or [])
     if rendered_keywords:
         lines.append(f'keywords: {rendered_keywords}')
@@ -616,8 +627,13 @@ def _apply_brain_config(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
-    """``skill_create`` / ``skill_patch`` — one handler, because the two
-    differ only in whether an existing file must be there first."""
+    """``skill_create`` / ``skill_patch`` / ``skill_merge``.
+
+    A create must not shadow an existing skill. A patch resolves the skill in
+    the scope it actually lives in (bundled skills copy-on-write). A merge
+    writes the survivor and leaves the absorbed skills ENABLED — retirement is
+    the user's decision, never a model's.
+    """
     kind = as_str(row.get('kind'), '')
     payload = as_dict(row.get('payload'))
     name = as_str(payload.get('name'), '').strip()
@@ -627,13 +643,25 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
     supersedes = as_str(payload.get('supersedes'), '').strip()
     origin = as_str(payload.get('origin'), '') or 'human'
     learnedFrom = payload.get('episodeIds') or payload.get('learned_from') or []
+    rawMerge = payload.get('merge')
+    mergeNames = (
+        [str(x).strip() for x in rawMerge if str(x).strip()]
+        if isinstance(rawMerge, list)
+        else []
+    )
     if not name:
         return {'ok': False, 'error': 'skill proposals need payload.name'}
-    if kind == 'skill_patch' and not body.strip():
-        # A body-less patch would render _ensure_canonical_body's
+    if kind in ('skill_patch', 'skill_merge') and not body.strip():
+        # A body-less write would render _ensure_canonical_body's
         # all-placeholder text over the real SKILL.md on approval. Refuse.
-        return {'ok': False, 'error': 'skill_patch proposals need payload.body'}
+        return {'ok': False, 'error': f'{kind} proposals need payload.body'}
+    if kind == 'skill_merge' and not mergeNames:
+        return {
+            'ok': False,
+            'error': 'skill_merge needs at least one absorbed skill in payload.merge',
+        }
     try:
+        from app.services import skill_service as _skills
         from app.services.skill_service import (
             _MAX_SKILL_BODY_CHARS,
             _agentSkillsDir,
@@ -651,18 +679,57 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
             }
 
         _validateName(name)
-        root = _agentSkillsDir()
-        skill_dir = root / name
-        md = skill_dir / 'SKILL.md'
-        if kind == 'skill_patch' and not md.exists():
+        workspace = as_str(payload.get('workspace'), '').strip()
+        existing = None
+        try:
+            existing = _skills.get(name, workspace or None)
+        except Exception:
+            existing = None
+        if kind == 'skill_create' and existing:
+            # The old applier wrote the file anyway: a create over an existing
+            # name either overwrote an agent skill or shadowed a bundled one.
+            return {
+                'ok': False,
+                'error': (
+                    f'skill {name!r} already exists — use skill_patch instead of '
+                    'creating a second copy'
+                ),
+            }
+        if kind == 'skill_patch' and not existing:
             return {'ok': False, 'error': f'skill {name!r} does not exist; use skill_create'}
+        if existing:
+            if as_str(existing.get('scope'), '') == 'bundled':
+                # Bundled skills stay human-owned (AGENTS.md): a model proposal
+                # must not freeze an agent-root override of one. The redirect
+                # from auto-review already names the skill; a person edits it.
+                return {
+                    'ok': False,
+                    'error': (
+                        f'skill {name!r} is bundled — only a person edits the bundled '
+                        'catalogue. Extend a different learned skill or ask the user.'
+                    ),
+                }
+            md = Path(as_str(existing.get('path'), ''))
+            skill_dir = md.parent
+        else:
+            skill_dir = _agentSkillsDir() / name
+            md = skill_dir / 'SKILL.md'
+        for source in mergeNames:
+            if source == name:
+                continue
+            try:
+                found = _skills.get(source, workspace or None)
+            except Exception:
+                found = None
+            if not found:
+                return {'ok': False, 'error': f'skill_merge source {source!r} does not exist'}
         # Part 16 Phase D step 2: learned-skill provenance. version bumps
         # per approved patch; status starts active (stale/retired via
         # later proposals); supersedes stamps the lineage.
         version = 1
         prior: dict[str, str] = {}
         priorUnknownLines: list[str] = []
-        if kind == 'skill_patch' and md.exists():
+        if kind in ('skill_patch', 'skill_merge') and md.exists():
             # Read the frontmatter this write replaces. The version bump
             # needs it, and so does carrying over the fields the proposal
             # itself is silent about.
@@ -683,7 +750,7 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
                 _restated = {
                     'name', 'description', 'trigger', 'category', 'created_by',
                     'origin', 'learned_from', 'version', 'status', 'keywords',
-                    'disabled', 'supersedes',
+                    'disabled', 'supersedes', 'merged_from',
                 }
                 inUnknown = False
                 for ln in priorText[3:].split('---', 1)[0].split('\n'):
@@ -768,6 +835,7 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
             status=status,
             keywords=keywords,
             disabled=disabled,
+            merged_from=mergeNames,
         )
         content = frontmatter + normalized
         if priorUnknownLines:
@@ -790,14 +858,11 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
         # Part 16 Phase D step 2 supersession: an approved v2 disables
         # the v1 it supersedes in the SAME write — no double injection.
         supersededResult = ''
+        # A supersedes link records lineage, not a retirement. Only the user
+        # disables or deletes a skill; an approved write never does it on the
+        # model's behalf.
         if supersedes and supersedes != name:
-            try:
-                from app.services.skill_service import setEnabled
-
-                setEnabled(supersedes, enabled=False)
-                supersededResult = f'; disabled {supersedes!r}'
-            except Exception as exc:
-                supersededResult = f'; failed to disable {supersedes!r}: {exc}'
+            supersededResult = f'; lineage recorded, {supersedes!r} left enabled'
         try:
             from app.services.skill_service import _bust_prompt_skills_cache
 
@@ -1002,6 +1067,7 @@ def _apply_promote(row: dict[str, Any]) -> dict[str, Any]:
 _APPROVERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     'brain_config': _apply_brain_config,
     'skill_create': _apply_skill_write,
+    'skill_merge': _apply_skill_write,
     'skill_patch': _apply_skill_write,
     'skill_delete': _apply_skill_delete,
     'retire': _apply_skill_retire,
@@ -1042,6 +1108,9 @@ def review_proposal(
     if row is None:
         raise ValueError(f'proposal {pid} not found')
 
+    # A truthy sentinel ('auto-review') means the fresh-context auto-review
+    # already approved this row; no second model call is made. It is not a
+    # client and is never invoked — the rails below are the only gate left.
     if reviewer_client is None:
         return {
             'ok': False,
@@ -1361,32 +1430,47 @@ def run_reviewer_pass(limit: int = 5, dry_run: bool = False) -> dict[str, Any]:
                 pass  # a refusal is not a verdict — retry once a reviewer exists
             else:
                 continue  # already reviewed — never burn a second call
-        producer_model = as_str(as_dict(row.get('payload')).get('producedBy'), '')
-        client, refusal = resolve_independent_reviewer(producer_model, _reviewModelHint())
-        if client is None:
-            _write_review(
-                row,
-                {
-                    'verdict': 'unavailable',
-                    'reason': refusal or 'no independent reviewer',
-                    'model': '',
-                    'advisory': True,
-                },
-            )
-            unavailable += 1
-            reviewed += 1
-            if dry_run:
+        autoReview = as_dict(as_dict(row.get('payload')).get('autoReview'))
+        autoDecision = as_str(autoReview.get('decision'), '')
+        client: Any
+        if autoDecision == 'new':
+            # The fresh-context auto-review is the approver. It already saw the
+            # whole library and its targets were validated against it; asking a
+            # second reviewer would let an unavailable one erase a real verdict.
+            # The rails below still stand between this verdict and any write.
+            client = 'auto-review'
+            verdict = 'KEEP'
+            reason = 'auto-review: ' + (as_str(autoReview.get('reason'), '') or 'new')
+            reviewModel = as_str(autoReview.get('model'), '')
+        else:
+            producer_model = as_str(as_dict(row.get('payload')).get('producedBy'), '')
+            client, refusal = resolve_independent_reviewer(producer_model, _reviewModelHint())
+            if client is None:
+                _write_review(
+                    row,
+                    {
+                        'verdict': 'unavailable',
+                        'reason': refusal or 'no independent reviewer',
+                        'model': '',
+                        'advisory': True,
+                    },
+                )
+                unavailable += 1
+                reviewed += 1
+                if dry_run:
+                    continue
                 continue
-            continue
-        if dry_run:
-            reviewed += 1
-            continue
-        verdict, reason = _ask_reviewer_blocking(client, row, producer_model)
+            if dry_run:
+                reviewed += 1
+                continue
+            verdict, reason = _ask_reviewer_blocking(client, row, producer_model)
+            reviewModel = _reviewModelHint()
         review = {
             'verdict': verdict,
             'reason': reason,
-            'model': _reviewModelHint(),
+            'model': reviewModel,
             'advisory': True,
+            'source': 'auto-review' if client == 'auto-review' else 'reviewer',
         }
         # The switch is read here, not left to the rails, so that autonomy OFF
         # means the pass NEVER calls decide_proposal — its shipped advisory

@@ -60,9 +60,15 @@ interface SkillSummary {
   usageCount?: number;
   lastUsed?: string;
   /** The skill this one replaced, when an approved learning proposal
-   *  superseded an older behaviour. The applier disables the older skill in
-   *  the same write, so this is the pair that says "v2 of what I learned". */
+   *  superseded an older behaviour. The older skill stays exactly as the user
+   *  left it — an approved write only records the lineage, it never disables
+   *  or deletes (retirement is a user action). The Lineage row says which
+   *  state the older skill is actually in. */
   supersedes?: string;
+  /** Skills whose content an approved `skill_merge` folded into this one.
+   *  They stay enabled and stay in the catalogue; this is the record of the
+   *  merge, not an instruction to hide them. */
+  mergedFrom?: string[];
   /** Who wrote the current version: human | distilled | amended. Only
    *  proposal-approved skills carry it, so its absence means hand-authored. */
   origin?: string;
@@ -219,6 +225,15 @@ export function SkillsSection({ host = 'settings' }: { host?: LearningHost } = {
     if (!older || older === selected?.name) return null;
     return { name: older, row: skills.find((s) => s.name === older) ?? null };
   }, [skills, selected?.supersedes, selected?.name]);
+  // The skills an approved merge took content from. They are NOT retired —
+  // a merge that silently disabled them would delete behaviour the user
+  // never approved — so each row is looked up to say what state it is in.
+  const merged = useMemo(() => {
+    const names = (selected?.mergedFrom ?? []).map((n) => n.trim()).filter(Boolean);
+    return names
+      .filter((n) => n !== selected?.name)
+      .map((name) => ({ name, row: skills.find((s) => s.name === name) ?? null }));
+  }, [skills, selected?.mergedFrom, selected?.name]);
   // Only fetched when a detail pane is open — the list never shows these.
   const suggestionsQuery = useQuery({
     queryKey: ['skill-suggestions', '30d'],
@@ -908,9 +923,33 @@ export function SkillsSection({ host = 'settings' }: { host?: LearningHost } = {
                     )}{' '}
                     {superseded.row
                       ? superseded.row.enabled === false
-                        ? '— retired from injection when this version was approved.'
+                        ? '— you disabled it, so it no longer reaches the model.'
                         : '— still enabled, so both versions reach the model.'
                       : '— no longer in the catalogue.'}
+                  </SkillFact>
+                )}
+                {merged.length > 0 && (
+                  <SkillFact label="Merged from">
+                    {merged.map((m, i) => (
+                      <span key={m.name}>
+                        {i > 0 && ', '}
+                        {m.row ? (
+                          <Button
+                            variant="bare"
+                            type="button"
+                            onClick={() => openDetail(m.name)}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {m.name}
+                          </Button>
+                        ) : (
+                          <span className="font-medium text-foreground/85">{m.name}</span>
+                        )}
+                        {m.row && m.row.enabled === false ? ' (disabled)' : ''}
+                      </span>
+                    ))}{' '}
+                    — their content was folded into this skill; August left each one
+                    enabled, and retiring one is your decision.
                   </SkillFact>
                 )}
                 {openProposals.length > 0 && (

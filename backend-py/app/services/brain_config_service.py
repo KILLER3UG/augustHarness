@@ -56,6 +56,7 @@ boolKeys: tuple[str, ...] = (
     'modelMemoryRead',
     'memoryAutoInject',
     'memoryReview',
+    'autoReview',
     'modelMemoryWrites',
     'memorySensitiveTopics',
     'subagentWorktreeIsolation',
@@ -311,6 +312,13 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # to the store; skill verdicts go through the reviewer + rails, which apply
     # low-risk creates/patches without a human and hold only the rest.
     ('memoryReview', 'memory_review', True, 'bool'),
+    # The fresh-context gate in front of NEW skill and memory writes. It is a
+    # separate call to the session's model (same model, different context)
+    # with the whole library — every skill, the stored memory and the tool
+    # names — and its verdict is the approval. On by default because the
+    # duplication it prevents is invisible until the catalogue has already
+    # filled; off restores the direct write doors.
+    ('autoReview', 'auto_review', True, 'bool'),
     # Second context-relief route (rotate onto a fresh handoff note instead of
     # stacking another summary). Off: it re-anchors what the provider cache sees
     # mid-chat, so it is armed deliberately, per install.

@@ -455,6 +455,98 @@ def _memoryPreflightRefusal(ws: str) -> str:
     )
 
 
+async def _autoReviewRefusal(
+    text: str, description: str, workspace: str, scope: str
+) -> str:
+    """The fresh-context reviewer's gate for a NEW memory write.
+
+    Returns a JSON refusal string, or '' when the write may proceed. An update
+    (the key already exists) never reaches here — the gate is about additions.
+    The reviewer decides against the whole library; no similarity threshold is
+    consulted, and a result it could not produce fails closed.
+    """
+    import json as _json
+
+    from app.services import auto_review
+
+    try:
+        review = await auto_review.reviewLibraryWrite(
+            kind='memory',
+            fact=text,
+            description=description,
+            workspace=workspace,
+            scope=scope,
+        )
+    except Exception as exc:  # noqa: BLE001 — an outage is not an approval
+        review = {
+            'decision': 'unavailable',
+            'reason': f'{type(exc).__name__}: {str(exc)[:150]}',
+            'targets': [],
+        }
+    decision = str(review.get('decision') or '')
+    if decision in ('new', 'skipped'):
+        return ''
+    reason = str(review.get('reason') or '')
+    targets = review.get('targets')
+    named = auto_review.formatTargets(targets)
+    if decision == 'unavailable':
+        return _json.dumps(
+            {
+                'ok': False,
+                'policy': f'refused: auto-review unavailable ({reason or "no reviewer"}) — '
+                'no memory was written. Retry, or turn off auto-review in '
+                'Settings → Memory.',
+            }
+        )
+    first = targets[0] if isinstance(targets, list) and targets else {}
+    targetKind = str(first.get('kind') or '') if isinstance(first, dict) else ''
+    targetName = str(first.get('name') or '') if isinstance(first, dict) else ''
+    if decision == 'update':
+        if targetKind == 'skill':
+            policy = (
+                f'refused: this is already covered by skill {targetName!r}. Update that '
+                'skill instead of writing a duplicate memory.'
+            )
+        elif targetKind == 'tool':
+            policy = (
+                f'refused: the {targetName!r} tool already documents this. Do not '
+                'store it again as memory.'
+            )
+        else:
+            policy = (
+                f'refused: this is already stored as {targetName!r}. Update that entry '
+                f'(call remember again with key="{targetName}") instead of creating a '
+                'second copy.'
+            )
+        payload = {'ok': False, 'policy': policy}
+        if targetKind == 'memory' and targetName:
+            payload['existingKey'] = targetName
+        elif targetKind == 'skill' and targetName:
+            payload['existingSkill'] = targetName
+        elif targetKind == 'tool' and targetName:
+            payload['existingTool'] = targetName
+        return _json.dumps(payload)
+    if decision == 'merge':
+        return _json.dumps(
+            {
+                'ok': False,
+                'policy': f'refused: this overlaps {named or "several existing items"}. '
+                'Read them, then merge the content into one of them; nothing was written '
+                'and no skill was retired.',
+                'existingTargets': targets,
+            }
+        )
+    if decision == 'reject':
+        return _json.dumps(
+            {
+                'ok': False,
+                'policy': f'refused: auto-review rejected this memory — '
+                f'{reason or "not durable"}. Do not retry the same text.',
+            }
+        )
+    return ''
+
+
 async def _remember(
     fact: str,
     key: str = '',
@@ -663,6 +755,10 @@ async def _remember(
                     'kind': getattr(existing[0], 'kind', ''),
                     'perFact': True,
                 }
+            if not before:
+                _reviewRefusal = await _autoReviewRefusal(text, fmDesc, ws, '')
+                if _reviewRefusal:
+                    return _reviewRefusal
             body = f'{text}\n\n{detailsText}' if detailsText else text
             # A version token against the project store is checked against the
             # entry's own `updated` stamp — the same compare the facts door does
@@ -764,6 +860,10 @@ async def _remember(
                 'existingKey': _twin,
             }
         )
+    if not before:
+        _reviewRefusal = await _autoReviewRefusal(text, factDesc, ws, factScope)
+        if _reviewRefusal:
+            return _reviewRefusal
     try:
         memory_store.save_fact(
             factKey, value, category=cat, source='model', confidence=0.7,

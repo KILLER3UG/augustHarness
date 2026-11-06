@@ -97,6 +97,8 @@ _JUDGE_SYSTEM = (
     ' "reference_files": [{"file": "<path under the skill dir>", "when": "<situation that opens it>"}],'
     ' "pitfalls": [{"seen": "<failure that happened here>", "instead": "<what worked>"}],'
     ' "verification": ["<what proves it worked>"],'
+    ' "reviewed_skills": ["<existing skill names you compared>"],'
+    ' "why_not_existing": "<why none of them covers this procedure>",'
     ' "body_markdown": "<whole body, only if you must override the structure>",'
     ' "skill": "<existing skill name>", "patch_markdown": "<amended section>"}]}'
     '\n'
@@ -109,6 +111,15 @@ _JUDGE_SYSTEM = (
     ' showed. If you cannot, the episode taught a rule — file `action: memory`.'
     ' Never pad: a skill whose steps you invented will be followed, and a wrong'
     ' step is worse than no step.\n'
+    '\n'
+    'REVIEW THE EXISTING SKILLS ABOVE BEFORE create_skill. If one skill already'
+    ' covers the procedure, choose amend_body (or amend_trigger when only the'
+    ' firing condition is wrong) and name it in `skill`. If several each cover'
+    ' part of it, amend the closest one with the combined procedure — never'
+    ' create a second copy. create_skill must carry `reviewed_skills` (the exact'
+    ' names you compared) and `why_not_existing`; without both the draft is'
+    ' dropped. Never retire, disable or delete an existing skill: that is the'
+    ' user\'s decision, not the distiller\'s.\n'
     '\n'
     'AUTHORING STANDARDS for create_skill:\n'
     '- name: lowercase letters, digits and hyphens, max 64 chars.\n'
@@ -258,6 +269,8 @@ class _CreateSkillVerdict(_VerdictBase):
     pitfalls: Any = None
     verification: Any = None
     keywords: Any = None
+    reviewed_skills: Any = None
+    why_not_existing: str = ''
 
 
 class _AmendTriggerVerdict(_VerdictBase):
@@ -639,9 +652,14 @@ def _episodeWindow(ep: dict[str, Any]) -> str:
 
 
 def _skillIndexLines() -> str:
-    """The catalogue line both judge passes send — one format, two callers."""
+    """The catalogue line both judge passes send — one format, two callers.
+
+    No name cap: "review the existing skills" is only true if every name is on
+    the page. Descriptions stay at 160 chars so a large catalogue cannot crowd
+    out the episode window.
+    """
     return '\n'.join(
-        f"- {s['name']}: {s['description'][:160]}" for s in _skillIndex()[:40]
+        f"- {s['name']}: {s['description'][:160]}" for s in _skillIndex()
     ) or '(no skills yet)'
 
 
@@ -1300,6 +1318,28 @@ def _apply_verdict_body(
             return 'rejected-name'
         if _draftExists(fingerprint, action, target):
             return 'duplicate-draft'
+        if action == 'create_skill':
+            # "Review before create" is a requirement, not advice. A judge that
+            # never compared the catalogue cannot know the procedure is new;
+            # its draft is dropped rather than filed as a second copy.
+            reviewed = verdict.get('reviewed_skills')
+            named = (
+                [str(r).strip() for r in reviewed if str(r).strip()]
+                if isinstance(reviewed, list)
+                else []
+            )
+            why = str(verdict.get('why_not_existing', '') or '').strip()
+            try:
+                from app.services.skill_service import list_all
+
+                hasCatalogue = bool(list_all())
+            except Exception:
+                hasCatalogue = True  # fail closed: an unreadable catalogue is not "empty"
+            if hasCatalogue and (not named or not why):
+                logger.info(
+                    'distiller create dropped: the existing skills were not reviewed'
+                )
+                return 'dropped-no-review'
         description, descProblem = _fitDescription(description or name)
         if descProblem:
             logger.info('distiller draft is a rule, not a skill: %s', descProblem)

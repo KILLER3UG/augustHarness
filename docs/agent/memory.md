@@ -83,8 +83,9 @@ plan's numbers are the outcome's numbers. Fuzzy merges (paraphrases that miss th
 similarity bar) stay with the AI-arrange door, which spends one model call to
 decide add/update/delete.
 
-The import is the only bulk door, so it is the only one with a pre-write judge.
-What is already stored gets its model read from the standing review pass
+The import is the only bulk door, and its judge batches lines per call; a single
+`remember` write gets the fresh-context auto-review above instead. What is
+already stored gets its model read from the standing review pass
 (`memoryReview`, daily): one call across the durable corpus flags duplicates,
 stale entries and retirements — those land as proposals, and a retirement is the
 one memory action that still waits for a human, because it removes rather than
@@ -105,6 +106,17 @@ and never when `modelMemoryRead` is off, since a gate the model cannot satisfy
 would make memory unwritable. A sentence already stored under a different key is
 refused with that key in the result (`existingKey`), because "update, don't
 duplicate" was advice, not a mechanism.
+
+**Before a NEW memory is written, a fresh-context reviewer approves it.** With
+`autoReview` on (default), `remember` — both scopes — launches one extra call to
+the session's model with no conversation and a snapshot of the library: every
+skill, the stored memory and the tool names. The reviewer answers `new`,
+`update`, `merge` or `reject`. An update names the existing entry (returned as
+`existingKey`); a skill or tool target is named instead of stored again; a
+merge names the items to combine; an unavailable reviewer refuses the write
+rather than approving it. Update writes (the key already exists) skip the gate.
+There is no similarity threshold: the decision is the reviewer's, and the
+targets it names are validated against the real library.
 
 On the read side `list_facts` takes `offset` and reports `total`/`hasMore` — it
 used to be hard capped at the 50 newest rows, so a store the model could write

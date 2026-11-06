@@ -37,16 +37,68 @@ async def _propose(**kwargs: object) -> str:
     from app.services.harness_self_improve import save_proposal
     from app.services.workbench.context import currentSessionId
 
+    kind = as_str(kwargs.get('kind'), 'observation')
     payload = kwargs.get('payload')
+    payloadDict = as_dict(payload) if isinstance(payload, dict) else {}
+    if kind == 'skill_create':
+        # The create door is the one that used to shadow an existing skill with
+        # no check at all. A fresh-context reviewer compares it with every
+        # skill, memory and tool BEFORE anything is filed; its verdict is the
+        # approval, and the proposal rails still decide whether it lands.
+        from app.services import auto_review
+
+        review = await auto_review.reviewLibraryWrite(
+            kind='skill',
+            name=as_str(payloadDict.get('name'), ''),
+            description=as_str(payloadDict.get('description'), ''),
+            body=as_str(payloadDict.get('body'), ''),
+        )
+        decision = as_str(review.get('decision'), '')
+        targets = auto_review.formatTargets(review.get('targets'))
+        if decision == 'update':
+            return (
+                f'Not filed. {targets or "An existing item"} already covers this — update '
+                "it instead of creating a second copy. For a skill use "
+                "harness_propose(kind='skill_patch', payload={name: '<target>', body: ...}); "
+                'for a memory call remember with the existing key.'
+            )
+        if decision == 'merge':
+            return (
+                f'Not filed. Merge into one of {targets or "the named skills"} instead of '
+                "creating a new skill. Use harness_propose(kind='skill_merge', "
+                "payload={name: '<survivor>', merge: ['<other>'], body: ...}). Absorbed "
+                'skills stay enabled — August never retires a skill without the user.'
+            )
+        if decision == 'reject':
+            return (
+                'Not filed. Auto-review rejected the write: '
+                f'{as_str(review.get("reason"), "not durable")}.'
+            )
+        if decision == 'unavailable':
+            return (
+                'Not filed. Auto-review is unavailable '
+                f'({as_str(review.get("reason"), "no reviewer")}) — the write needs the '
+                "reviewer's approval. Retry, or turn off auto-review in Settings → Memory."
+            )
+        payloadDict['autoReview'] = review
+        if as_str(review.get('model'), ''):
+            payloadDict.setdefault('producedBy', as_str(review.get('model'), ''))
+    if kind in ('skill_create', 'skill_patch', 'skill_merge') and 'workspace' not in payloadDict:
+        # The applier resolves the skill in the same scope the proposing turn
+        # sees; without this a project skill is invisible and a create shadows
+        # it in the global agent root.
+        from app.services.tool_registrations.skill_tools import _currentWorkspacePath
+
+        payloadDict['workspace'] = _currentWorkspacePath()
     try:
         row = save_proposal(
             problem=as_str(kwargs.get('problem'), ''),
             evidence=as_str(kwargs.get('evidence'), ''),
             proposal=as_str(kwargs.get('proposal'), ''),
             rollback=as_str(kwargs.get('rollback'), ''),
-            kind=as_str(kwargs.get('kind'), 'observation'),
+            kind=kind,
             expected_metric=as_str(kwargs.get('expectedMetric'), ''),
-            payload=as_dict(payload) if isinstance(payload, dict) else None,
+            payload=payloadDict if payloadDict else None,
             session_id=currentSessionId.get(),
         )
     except ValueError as exc:
@@ -90,8 +142,11 @@ def register() -> None:
     tool_registry.register(
         'harness_propose',
         'File a harness-improvement proposal. Args: problem, evidence, proposal, '
-        'rollback, kind (brain_config|skill_create|skill_patch|skill_delete|tool_bucket|tool_description|'
-        'flow_map|observation|promote), expectedMetric?, payload?. Low-risk skill creates/patches are '
+        'rollback, kind (brain_config|skill_create|skill_patch|skill_merge|skill_delete|tool_bucket|tool_description|'
+        'flow_map|observation|promote), expectedMetric?, payload?. A skill_create is '
+        'reviewed against every existing skill, memory and tool before it is filed; if one '
+        'covers it, update that skill with skill_patch or combine them with skill_merge '
+        'instead. Low-risk skill creates/patches are '
         'applied automatically after an independent review and the safety rails; destructive or config '
         'changes wait for the user. You apply nothing — a deterministic applier runs after review. '
         '(promote proposals are judge-filed by the scheduled cross-project pass; a model-filed promote '

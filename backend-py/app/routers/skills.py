@@ -64,18 +64,29 @@ def _usage_fields(skill_name: str) -> dict[str, object]:
 def _lineage_fields(skill: dict[str, object]) -> dict[str, object]:
     """Provenance an approved learning proposal writes into SKILL.md.
 
-    ``origin`` / ``learned_from`` / ``version`` / ``status`` / ``supersedes``
-    are not parsed fields — they arrive in the parse's unrecognized-key bag,
-    which is why they need naming here. Both the list and the detail row must
-    spread this one helper: each endpoint rebuilds its payload field by field,
-    so a key added to one and not the other silently vanishes on that read."""
+    ``origin`` / ``learned_from`` / ``version`` / ``status`` / ``supersedes`` /
+    ``merged_from`` are not parsed fields — they arrive in the parse's
+    unrecognized-key bag, which is why they need naming here. Both the list and
+    the detail row must spread this one helper: each endpoint rebuilds its
+    payload field by field, so a key added to one and not the other silently
+    vanishes on that read."""
     raw = skill.get('meta')
     meta = raw if isinstance(raw, dict) else {}
     # SKILL.md values are always strings, and ``as_int`` rejects a string on
     # purpose — running it through here read every learned skill as version 1.
     digits = str(meta.get('version') or '').strip()
+    # `merged_from` is written by skill_merge, which folds other skills' content
+    # into this one WITHOUT retiring them (retirement is the user's call). The
+    # reader has to be here: a lineage field no surface shows is a fact the
+    # approval wrote and nobody can ever check.
+    mergedFrom = [
+        part.strip()
+        for part in str(meta.get('merged_from') or '').replace(';', ',').split(',')
+        if part.strip()
+    ]
     return {
         'supersedes': str(meta.get('supersedes') or '').strip(),
+        'mergedFrom': mergedFrom,
         'origin': str(meta.get('origin') or '').strip(),
         # Lifecycle (P2#13). The parse already normalizes an absent value to
         # 'active' — a skill written before the field existed is not a draft —

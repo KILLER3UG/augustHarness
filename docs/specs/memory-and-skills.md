@@ -53,6 +53,13 @@ and in the bare-tool allow list.
   check; `modelMemoryRead` off disables that gate.
 - A sentence already stored under a different key is refused with the existing
   key named (`existingKey`).
+- A NEW memory (no existing key) is approved by a fresh-context reviewer
+  (`autoReview`, default on): a separate call to the session's model with the
+  whole library — every skill, the stored memory and the tool names. It returns
+  `new` / `update` / `merge` / `reject`; update names the existing key, a skill
+  or tool target is named instead of restated, and an unavailable reviewer
+  refuses the write. Update writes skip the gate. No similarity threshold is
+  consulted; the named targets are validated against the library.
 - A stale `if_version` returns `{ok: false, conflict: 'version', current}`.
 - `source` is stamped by the code path, never by the writer's claim. A stored
   `tag` (`stated` / `observed` / `inferred`) is server-derived; a model-claimed
@@ -62,9 +69,14 @@ and in the bare-tool allow list.
 
 **Skill tools.** `load_skill(name)` (L1 body + file list + absolute directory),
 `load_skill(name, file=…)` (L2, containment-checked: traversal and symlinks
-refused), `list_skills`, `skill_create`, `skill_patch`, `deleteSkill`, restore,
-and pack install/import. The skills index is budgeted per context window; an
-alias pre-read adds a hint-only line when the user's message names a skill.
+refused), `list_skills`, `skill_create`, `skill_patch`, `skill_merge`,
+`deleteSkill`, restore, and pack install/import. A `skill_create` is reviewed
+against the whole library before it is filed: `update` redirects to
+`skill_patch`, `merge` redirects to `skill_merge`, and `reject`/unavailable
+files nothing. The applier refuses a create whose name exists and never retires
+a skill on `supersedes` or on a merge — only the user disables or deletes one.
+The skills index is budgeted per context window; an alias pre-read adds a
+hint-only line when the user's message names a skill.
 
 ## 3. Record shape
 

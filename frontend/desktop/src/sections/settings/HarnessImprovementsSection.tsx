@@ -114,6 +114,12 @@ const APPROVABLE = new Set([
   'brain_config',
   'skill_create',
   'skill_patch',
+  // A merge is approvable by a human and never auto-applied: it writes the
+  // survivor's body but leaves every absorbed skill enabled, so there is no
+  // destructive half for the rails to skip. Missing here it would have shown
+  // a disabled Approve button with a "human-only" badge — the same drift
+  // `retire`/`promote` were added to fix.
+  'skill_merge',
   'skill_delete',
   'retire',
   'archive',
@@ -316,7 +322,12 @@ export function HarnessImprovementsSection({
    * JSON in a 10rem box, so the one person who can say no to a learned skill
    * was approving a body they could not read. */
   const draftedBody = typeof selected?.payload?.body === 'string' ? selected.payload.body : '';
-  const draftedLabel = selected?.kind === 'skill_patch' ? 'Body this patch writes' : 'Drafted skill';
+  const draftedLabel =
+    selected?.kind === 'skill_patch'
+      ? 'Body this patch writes'
+      : selected?.kind === 'skill_merge'
+        ? 'Merged body — the survivor keeps everything'
+        : 'Drafted skill';
   // Same key the disclosure and the chat chip use, so this is one request, not
   // three — react-query dedupes by key.
   const autoQ = useQuery({
