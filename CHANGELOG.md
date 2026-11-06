@@ -1,6 +1,32 @@
 # August Proxy — Changelog
 
-## Unreleased (2026-10-20 — the deep review round)
+## 2026-11-07 — hygiene round (retention, dead code, the loop gate)
+
+- The four diagnostics ledgers (`subagent_runs`, `routing_evidence`,
+  `decision_ledger`, `harness_jobs`) are now wipeable and swept: "erase my
+  memory" reaches sub-agent goals/results (they are conversation-derived),
+  "clear activity logs" reaches the diagnostics ledgers, and the
+  consolidation pass prunes them past `diagnosticsRetentionDays` (30 d
+  default) instead of letting them grow forever.
+- Removed three past-window back-compat shims, one release or more after
+  their replacement shipped: `scheduled_introspection_loop` and
+  `consolidation_loop` (learning_scheduler owns both cadences) and
+  `GET /api/providers/templates` (always `[]`). Callers were grepped first;
+  the generated API client is regenerated in the same change.
+- Deleted `_stub_tool_definitions` and its seven unpack sites in the proxy
+  tool-def adapters — eight sites of noise for a function that could never
+  return anything. Behavior is identical: those surfaces were already
+  empty.
+- New `check:loop-imports` gate (backend group): nothing under
+  `services/workbench/loop/` may import the `workbench` module. The
+  one-way rule previously leaned on a rationale that cited the deleted
+  test suite; the rule now has a gate and a true rationale.
+- CHANGELOG headings are dated (they were five `## Unreleased` blocks, so
+  What's New titled everything "Unreleased"); the stale deleted-tests
+  rationale in `loop/surface.py` and the retired-pollers paragraph in
+  `learning_scheduler.py` are rewritten to say what is true now.
+
+## 2026-10-20 — the deep review round (shipped in 0.22.0)
 
 **The update is one click, not a wizard.** A Windows update used to run the
 OLD uninstaller: the user saw an uninstall wizard and then an install wizard.
@@ -81,7 +107,7 @@ imports the real app, runs its lifespan and asks its basic doors a question,
 against a throwaway data directory. Three foreign files from another product
 were removed from the tree, one of which was a skill that appeared in every
 agent session's catalogue.
-## Unreleased — the decision ledger and the fact scope (e6369c10)
+## 2026-10-17 — the decision ledger and the fact scope (e6369c10)
 
 **A fact lives in one place, and a scope is a column rather than a spelling.**
 The facts table held three different answers to "where does a fact live", and a
@@ -109,7 +135,7 @@ it: off by default, because arming it changes what a provider sees.
 `turn_outcomes`, and the stuck-request ladder and the lesson-promotion path now
 read that row instead of re-deriving what happened from the transcript.
 
-## Unreleased — the 2026-10-17 push to master (6328872b)
+## 2026-10-17 — the push to master (6328872b)
 
 **The test suite is gone, at the owner's request.** 627 deletions:
 `backend-py/tests/` (1,690 files), the 235 frontend `*.test.ts(x)` files with
@@ -175,7 +201,7 @@ entries (every removed entry pointed at a deleted file, verified; 914 baselined
 now) and the lint budget tightened 296 → 166, which is exactly where the tree
 sits.
 
-## Unreleased (working tree)
+## 2026-10-17 — the four exits and the decision ledger (working tree)
 
 **The decision ledger, and the four exits that never wrote a row.**
 Migration 053 adds `decision_ledger` (one row per decision — thesis, rejected
@@ -220,7 +246,7 @@ turn resolves `outcome=1.0`; an unverifiable observable resolves `unscorable`
 with `reason=unsupported-observable`). Full write-up:
 `docs/HARNESS_AND_MEMORY_DEEP_DIVE_2026-10-17.md`.
 
-## Unreleased (working tree) — previous
+## 2026-09-11 — P3 loop-split slice 1 (working tree) — previous
 
 **P3 loop-split slice 1 — turn_close.py.** First seam cut into
 `_sendWorkbenchMessageStreamImpl` (2,780 lines): the POST-loop bookkeeping —

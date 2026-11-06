@@ -204,6 +204,53 @@ def _sweep_usage() -> int:
         return 0
 
 
+# Diagnostics ledgers that carry conversation-derived rows (run goals, routing
+# outcomes, decision counterfactuals, harness waves) but are evidence about the
+# system, not memory. They get a shorter window than usage analytics: their
+# readers (runs page, ledger digest, routing stats) only look at recent rows.
+_DIAGNOSTIC_LEDGER_TABLES = ('subagent_runs', 'routing_evidence', 'decision_ledger', 'harness_jobs')
+
+
+def _sweep_privacy_ledgers() -> dict[str, int]:
+    """Delete diagnostics-ledger rows past the retention window.
+
+    These four tables were counted by the privacy center but swept by nothing,
+    so a long-lived install kept every goal and decision forever. The
+    consolidation pass is the same single maintenance window the other
+    retention sweeps ride.
+    """
+    days = 30
+    try:
+        from app.services.brain_config_service import getRuntimeConfig
+
+        raw_days = getRuntimeConfig().get('diagnosticsRetentionDays', 30)
+        days = int(float(str(raw_days)))
+    except (TypeError, ValueError):
+        pass
+    days = max(7, min(365, days))
+    swept: dict[str, int] = {}
+    conn = _conn()
+    for table in _DIAGNOSTIC_LEDGER_TABLES:
+        # decision_ledger stamps `ts`; the others default `created_at`. Both
+        # are UTC via datetime('now'), and julianday guards NULL/legacy rows.
+        col = 'ts' if table == 'decision_ledger' else 'created_at'
+        try:
+            cur = conn.execute(
+                f"DELETE FROM {table} "
+                f"WHERE julianday({col}) IS NOT NULL "
+                f"AND julianday({col}) < julianday('now', ?)",
+                (f'-{days} days',),
+            )
+            swept[table] = max(0, cur.rowcount or 0)
+        except Exception:
+            # A table a fresh DB has not created yet. Maintenance stays
+            # best-effort per table and never blocks other consolidation work.
+            logger.debug('privacy ledger sweep failed for %s', table, exc_info=True)
+            swept[table] = 0
+    brain_commit(conn)
+    return swept
+
+
 # Which kinds the retirement scan may propose, and which config key holds the
 # silence each must show first.
 #
@@ -1852,6 +1899,10 @@ def run_consolidation(modelSummarize: bool | None = None) -> dict[str, object]:
         except Exception:
             logger.debug('skill archive pass failed', exc_info=True)
         summary['outcomesSwept'] = sweep_old_outcomes()
+        try:
+            summary['privacyLedgersSwept'] = _sweep_privacy_ledgers()
+        except Exception:
+            logger.debug('privacy ledger sweep failed', exc_info=True)
         # M-4: episodic_timeline retention sweep (table was unbounded).
         try:
             summary['episodicSwept'] = _sweep_episodic()
@@ -1900,19 +1951,3 @@ def run_consolidation(modelSummarize: bool | None = None) -> dict[str, object]:
     except Exception:
         logger.debug('memory mirror rebuild failed', exc_info=True)
     return summary
-
-
-async def consolidation_loop() -> None:
-    """DEPRECATED shim (P2): consolidation is one job in
-    ``learning_scheduler`` now (cadence key unchanged:
-    ``consolidationIntervalHours``); the scheduler is the only starter.
-    Kept importable for one release; running it runs the unified loop.
-    The pass body is ``run_consolidation``; due-ness/bookkeeping moved to
-    the ``learning_job_run`` ledger.
-    """
-    logger.warning(
-        'consolidation_loop is deprecated — learning_scheduler owns the cadence'
-    )
-    from app.services.learning_scheduler import scheduler_loop
-
-    await scheduler_loop()

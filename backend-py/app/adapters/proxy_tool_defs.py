@@ -40,11 +40,6 @@ def _managed_shell_tool_definition() -> dict[str, object]:
     }
 
 
-def _stub_tool_definitions() -> list[dict[str, object]]:
-    """Placeholder — returns empty list until MCP/Cowork/August tools are implemented."""
-    return []
-
-
 def sanitize_tool_schema(schema: object) -> dict[str, object]:
     """Sanitize a JSON Schema to ensure it has the expected structure."""
     if not isinstance(schema, dict):
@@ -262,8 +257,9 @@ def anthropic_to_openai_tool_definition(tool: dict[str, object]) -> dict[str, ob
 
 
 def get_canonical_cowork_anthropic_tools() -> list[dict[str, object]]:
-    """Return Cowork tools in Anthropic format."""
-    return [openai_to_anthropic_tool_definition(t) for t in _stub_tool_definitions()]
+    """Return Cowork tools in Anthropic format. The Cowork surface is not
+    implemented — always empty."""
+    return []
 
 
 def get_canonical_managed_openai_web_tools() -> list[dict[str, object]]:
@@ -342,9 +338,6 @@ def get_canonical_managed_anthropic_openai_web_tools() -> list[dict[str, object]
 def get_proxy_openai_tool_definitions() -> list[dict[str, object]]:
     """Return all proxy tool definitions in OpenAI format."""
     tools = [
-        *_stub_tool_definitions(),
-        *_stub_tool_definitions(),
-        *_stub_tool_definitions(),
         *get_canonical_managed_openai_web_tools(),
     ]
     try:
@@ -379,9 +372,6 @@ def get_proxy_openai_tool_definitions() -> list[dict[str, object]]:
 def get_proxy_openai_tool_definitions_for_anthropic() -> list[dict[str, object]]:
     """Return all proxy tool definitions in Anthropic format."""
     return [
-        *_stub_tool_definitions(),
-        *_stub_tool_definitions(),
-        *_stub_tool_definitions(),
         *get_canonical_managed_anthropic_openai_web_tools(),
     ]
 

@@ -157,6 +157,9 @@ scripts/_tmp_*.py
 # Third-party tool marker (holds a generated project id)
 .freebuff/
 
+# ZCode workspace config (session-local plans/config; never source)
+.zcode/
+
 # Agent scratch UI-review output: .ui-review/ is the ad-hoc capture script
 # (.ui-review/capture.mjs) plus its PNG set, written by a review pass. It is a
 # working artifact, not source — and docs/ tracks no PNGs, so these never

@@ -6,17 +6,15 @@ text) with its TTL memo, the tool-result cap resolver, the tool-definition
 name extractor, and the real MCP-server tool tails in both wire formats.
 
 Two things deliberately did NOT move, even though only the tool surface
-reads them: the fallback window ``DEFAULT_CONTEXT_WINDOW`` and
-``_resolveModelContextWindow``. The first is the single ``128000`` in
-workbench.py and tests/test_compaction_threshold_authority.py scans THIS
-file's source text for it; the second is monkeypatched ON the workbench
-module by tests/test_part26_wave2.py and tests/test_workbench_tool_loop.py.
-For the same monkeypatch reason the two BUILDER functions
-(``toolDefinitions`` / ``openaiToolDefinitions``) stay in workbench.py too
-and call into this module for everything else. Every name here is
-re-exported under its original name.
+reads them: the fallback window ``DEFAULT_CONTEXT_WINDOW`` (the single
+``128000`` in workbench.py) and ``_resolveModelContextWindow``. The two
+BUILDER functions (``toolDefinitions`` / ``openaiToolDefinitions``) also
+stay in workbench.py for now — they are the workbench's public tool
+surface, and moving them belongs to the canonical-tool-spec change, not
+this module. Every name here is re-exported under its original name.
 
-One-way import rule: nothing under loop/ imports workbench.py.
+One-way import rule: nothing under loop/ imports workbench.py
+(enforced by scripts/check-loop-imports.mjs).
 """
 
 from __future__ import annotations
