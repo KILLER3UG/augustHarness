@@ -15,8 +15,8 @@
  * `visibleModels` stay because the send gate and the subagent modal still
  * need them. */
 
-import { useState, useEffect, type ReactNode } from 'react';
-import { ArrowUp, Mic, Square } from 'lucide-react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { ArrowUp, ListEnd, Mic, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { WorkbenchSession } from '@/types/workbench';
 import type { ModelItem } from '../model-display';
@@ -27,6 +27,11 @@ import { SubagentSpawnModal } from './SubagentSpawnModal';
 import { CostCeilingChip } from './CostCeilingChip';
 import type { AnchorPos } from './useComposerPopovers';
 import type { ChatSendFn } from '../hooks/useChatSend';
+
+/** How long the modifier must be held ALONE before the primary control
+ *  previews the chord action. Short enough to feel immediate, long enough
+ *  that a normal ⌘/Ctrl+key chord never flashes it. */
+const CHORD_PREVIEW_HOLD_MS = 150;
 
 export function ComposerToolbar({
   sessionId,
@@ -103,6 +108,37 @@ export function ComposerToolbar({
     return () => window.removeEventListener('august:open-spawn', onOpen);
   }, []);
 
+  // ⌘/Ctrl hold preview: while a turn streams and the modifier is held
+  // ALONE for ~150ms, the primary control previews the chord's action —
+  // the queued draft — instead of Stop. Any other key down cancels it
+  // (that is a chord, not a hold); release clears it. Clicking the
+  // preview performs the previewed action: queue the draft after the turn.
+  //
+  // These are React handlers on the composer row, NOT window listeners:
+  // the chord only means anything while the composer is focused (keydown
+  // bubbles up from the textarea), and a global handler every keystroke
+  // pays for is exactly what check:render-ratchet exists to stop.
+  const [chordPreview, setChordPreview] = useState(false);
+  const chordTimerRef = useRef<number | null>(null);
+  const clearChordPreview = () => {
+    if (chordTimerRef.current != null) {
+      window.clearTimeout(chordTimerRef.current);
+      chordTimerRef.current = null;
+    }
+    setChordPreview(false);
+  };
+  const onComposerKeyDown = (e: React.KeyboardEvent) => {
+    if (!streaming) return;
+    if (e.key === 'Meta' || e.key === 'Control') {
+      if (chordTimerRef.current == null) {
+        chordTimerRef.current = window.setTimeout(() => setChordPreview(true), CHORD_PREVIEW_HOLD_MS);
+      }
+      return;
+    }
+    // A real key with the modifier (or without) — not a hold.
+    clearChordPreview();
+  };
+
   const canSend =
     !!sessionId &&
     loadedSessionId === sessionId &&
@@ -116,7 +152,12 @@ export function ComposerToolbar({
           glyph at the left, the placeholder, the one filled control at the
           right. `items-end` keeps the send circle on the BOTTOM-right as the
           input grows, the way a growing composer card does. */}
-      <div className="composer-tools flex items-end gap-1 px-2 py-1">
+      <div
+        className="composer-tools flex items-end gap-1 px-2 py-1"
+        onKeyDown={onComposerKeyDown}
+        onKeyUp={clearChordPreview}
+        onBlur={clearChordPreview}
+      >
         {/* LEFT — the reference's only left-hand affordance is the `+`; the
             folder chip is August's own and only rides along while the
             folder binding is still open (a fresh chat). */}
@@ -215,15 +256,37 @@ export function ComposerToolbar({
             <Mic aria-hidden />
           </Button>
           {streaming ? (
-            <button
-              type="button"
-              onClick={stop}
-              title="Stop"
-              aria-label="Stop"
-              className="send-button stop size-8 shrink-0"
-            >
-              <Square className="size-3 fill-current" />
-            </button>
+            chordPreview && canSend ? (
+              /* The previewed chord action, morphed over Stop. Clicking it
+                 performs exactly what it says: the draft queues to run
+                 after the turn — nothing is stopped. */
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setChordPreview(false);
+                  void send(undefined, { queueAfterStop: true });
+                }}
+                title="Queue the draft — runs after the current response finishes"
+                aria-label="Queue draft after stop"
+                data-testid="composer-chord-queue"
+                className="h-8 shrink-0 rounded-full px-3"
+              >
+                <ListEnd className="size-3" />
+                <span className="text-2xs font-medium">Queue</span>
+              </Button>
+            ) : (
+              <button
+                type="button"
+                onClick={stop}
+                title="Stop"
+                aria-label="Stop"
+                className="send-button stop size-8 shrink-0"
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            )
           ) : (
             <button
               type="button"

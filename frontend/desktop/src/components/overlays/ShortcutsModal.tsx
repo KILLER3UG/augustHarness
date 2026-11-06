@@ -13,7 +13,7 @@ import { X } from 'lucide-react';
 import { Backdrop } from './Backdrop';
 import { useShortcutsModalStore, closeShortcutsModal } from '@/store/shortcuts-modal';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
-import { SHORTCUT_GROUPS, comboFor, findByCombo } from '@/lib/shortcuts';
+import { SHORTCUT_GROUPS, comboFor, findByCombo, findShortcutConflicts, platformKeys } from '@/lib/shortcuts';
 
 function KeyCap({ children }: { children: string }) {
   return (
@@ -61,6 +61,9 @@ export function ShortcutsModal() {
   }, [open]);
 
   const hit = hitCombo ? findByCombo(hitCombo) : undefined;
+  // Registry self-check: same combo twice where two bindings can fire
+  // together. Empty in a healthy registry; visible instead of silent.
+  const conflicts = findShortcutConflicts();
   const needle = query.trim().toLowerCase();
   const groups = SHORTCUT_GROUPS.map((g) => ({
     ...g,
@@ -102,8 +105,14 @@ export function ShortcutsModal() {
           />
           {hit && (
             <p className="mt-2 text-2xs text-muted-foreground" data-testid="shortcuts-hit">
-              <KeyCap>{hit.keys.join(' + ')}</KeyCap>{' '}
+              <KeyCap>{platformKeys(hit.keys).join(' + ')}</KeyCap>{' '}
               <span className="text-foreground/85">{hit.label}</span>
+            </p>
+          )}
+          {conflicts.length > 0 && (
+            <p className="mt-2 text-2xs text-warning" data-testid="shortcuts-conflicts">
+              {conflicts.length} binding conflict{conflicts.length === 1 ? '' : 's'}:{' '}
+              {conflicts.map((c) => c.combo).join(', ')} fire together in one scope.
             </p>
           )}
         </div>
@@ -121,8 +130,8 @@ export function ShortcutsModal() {
                   >
                     <span className="text-foreground/85">{item.label}</span>
                     <span className="flex items-center gap-1">
-                      {item.keys.map((key, i) => (
-                        <span key={key} className="flex items-center gap-1">
+                      {platformKeys(item.keys).map((key, i) => (
+                        <span key={`${key}-${i}`} className="flex items-center gap-1">
                           {i > 0 && (
                             <span className="text-2xs text-muted-foreground/60">+</span>
                           )}

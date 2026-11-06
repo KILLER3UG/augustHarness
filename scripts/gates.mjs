@@ -76,6 +76,7 @@ const GROUPS = {
   frontend: [
     ['npm', ['run', 'check:truncate'], root],
     ['npm', ['run', 'check:design'], root],
+    ['npm', ['run', 'check:render-ratchet'], root],
     ['npm', ['run', 'lint:ratchet'], root],
     ['npm', ['run', 'check', '-w', 'frontend/desktop'], root],
     ['npm', ['run', 'build:web'], root],

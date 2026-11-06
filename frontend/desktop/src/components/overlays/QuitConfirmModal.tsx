@@ -88,7 +88,7 @@ export function QuitConfirmModal() {
         </h2>
         <p className="mt-1.5 text-[0.8125rem] text-muted-foreground leading-relaxed">
           {hasActive
-            ? 'Stopping now will cancel the current task.'
+            ? 'Quitting cancels the running task. You can retry or resume it later from Runs; unsaved turn output is lost.'
             : 'The app will close and stop the local backend.'}
         </p>
 
@@ -109,10 +109,13 @@ export function QuitConfirmModal() {
         ) : null}
 
         <div className="mt-5 flex items-center justify-end gap-2">
+          {/* Cancel is the focused default: losing a running task is
+              irreversible enough that Return must not confirm it. */}
           <button
             type="button"
             onClick={onCancel}
             disabled={quitting}
+            autoFocus
             className={cn(
               'rounded-lg border border-border px-3.5 py-1.5 text-[0.8125rem] font-medium',
               'text-foreground/90 hover:bg-accent transition',

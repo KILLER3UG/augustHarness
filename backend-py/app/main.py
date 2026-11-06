@@ -384,6 +384,26 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception('Learning scheduler failed to start (continuing)')
     yield
+    # Named teardown checkpoints: every shutdown step is timed, and a step
+    # that took ≥250ms is logged by name — a hung quit says WHICH part was
+    # slow (MCP drain, daemon stop, session flush) instead of one opaque
+    # stall between "quitting" and "gone".
+    class _TeardownClock:
+        def __init__(self) -> None:
+            self._t0 = time.monotonic()
+            self._prev = 'shutdown start'
+
+        def mark(self, name: str) -> None:
+            now = time.monotonic()
+            took_ms = (now - self._t0) * 1000
+            if took_ms >= 250:
+                logger.info('teardown: %s took %.0f ms', self._prev, took_ms)
+            else:
+                logger.debug('teardown: %s took %.0f ms', self._prev, took_ms)
+            self._t0 = now
+            self._prev = name
+
+    _tc = _TeardownClock()
     try:
         _ls = getattr(app.state, 'learning_scheduler', None)
         if _ls is not None:
@@ -391,6 +411,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     # Tear down the log-stream hub and root handler on shutdown.
+    _tc.mark('scheduler-cancel')
     try:
         logging.getLogger().removeHandler(wsHandler)
     except Exception:
@@ -399,18 +420,21 @@ async def lifespan(app: FastAPI):
         await log_stream.stopHub()
     except Exception:
         pass
+    _tc.mark('log-hub')
     try:
         from app.services.cognitive_boot import stop_cognitive_services
 
         await stop_cognitive_services()
     except Exception:
         pass
+    _tc.mark('cognitive')
     try:
         from app.services.runtime_services import shutdown_runtime_services
 
         await shutdown_runtime_services()
     except Exception:
         pass
+    _tc.mark('runtime-services')
     # Kill the llama-servers we spawned — children can outlive the backend
     # process on Windows, and a held model file locks the GGUF on disk.
     try:
@@ -419,6 +443,7 @@ async def lifespan(app: FastAPI):
         await shutdown_all()
     except Exception:
         pass
+    _tc.mark('llama-servers')
     # Flush debounced workbench session saves — the daemon timer dies with
     # the process, so edits inside the debounce window would be lost
     # (audit finding).
@@ -428,6 +453,7 @@ async def lifespan(app: FastAPI):
         flush_pending_saves()
     except Exception:
         pass
+    _tc.mark('workbench-flush')
     # Flush debounced telemetry commits (P4.2): turn outcomes / lifecycle /
     # internal_state inside the ≤2s window would otherwise be lost on
     # shutdown. Runs on the loop thread — the deferred conns' owner.
@@ -437,6 +463,7 @@ async def lifespan(app: FastAPI):
         flush_thread_pending()
     except Exception:
         pass
+    _tc.mark('deferred-writes')
     # Drain the async event-log persistence queue — buffered SSE events
     # would otherwise be lost to restart-replay (round-5 hot-path fix).
     try:
@@ -445,29 +472,34 @@ async def lifespan(app: FastAPI):
         event_log.flush(timeout=10.0)
     except Exception:
         pass
+    _tc.mark('event-log')
     if _gateway is not None:
         try:
             await _gateway.stop()
         except Exception:
             pass
+    _tc.mark('gateway')
     try:
         from app.services.browser.session_manager import closeAll as closeBrowsers
 
         await closeBrowsers()
     except Exception:
         pass
+    _tc.mark('browsers')
     try:
         from app.services.daemon_manager import shutdownAll
 
         await shutdownAll()
     except Exception:
         pass
+    _tc.mark('daemons')
     try:
         from app.services.background_commands import shutdownAll as shutdownBackgroundCommands
 
         await shutdownBackgroundCommands()
     except Exception:
         pass
+    _tc.mark('background-commands')
     # Every subprocess we own must be reaped by us, not left to the OS: a
     # graceful stop (dev uvicorn, an in-process lifespan end) used to leave
     # winpty shells and MCP stdio children resident, and the next backend
@@ -479,12 +511,14 @@ async def lifespan(app: FastAPI):
         await closeAllTerminalSessions()
     except Exception:
         logger.debug('terminal session drain failed', exc_info=True)
+    _tc.mark('terminal-sessions')
     try:
         from app.services.tools.mcp_client import shutdownAllServers
 
         await shutdownAllServers()
     except Exception:
         logger.debug('MCP server drain failed', exc_info=True)
+    _tc.mark('mcp-servers')
     # Flush the session debounce before exit: a quit landing inside the
     # 150ms window would otherwise lose the last turn's messages, and the
     # user's chat history must survive every restart.
@@ -494,6 +528,8 @@ async def lifespan(app: FastAPI):
         save_sessions_now()
     except Exception:
         pass
+    _tc.mark('session-save')
+    _tc.mark('shutdown complete')
 
 
 app = FastAPI(
