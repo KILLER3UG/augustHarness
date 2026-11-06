@@ -32,6 +32,8 @@ or it was history; the history was removed on 2026-10-29 and remains in git.
 | [**GAPS_AND_BUGS.md**](GAPS_AND_BUGS.md) | Maintainers | Living ledger: closed fixes and the open/deferred list |
 | [**ROADMAP.md**](ROADMAP.md) | Everyone | What was deliberately not done and why, plus the decisions still open |
 | [**UPDATE_VERIFICATION.md**](UPDATE_VERIFICATION.md) | Maintainers | The manual matrix for the update flow — the one thing no static gate verifies |
+| [**styleguide/README.md**](styleguide/README.md) | UI contributors | Color roles, type scale, elevation, list rows — the design-language layer over `tokens.css` |
+| [**styleguide/ux-rules.md**](styleguide/ux-rules.md) | UI contributors | Copy, in-flight feedback, back-out paths, keyboard, empty/error states |
 
 ## Agent area guides
 

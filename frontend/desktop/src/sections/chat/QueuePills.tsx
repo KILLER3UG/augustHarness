@@ -13,6 +13,7 @@ import {
   type QueuedUserMessage,
 } from './queue-store';
 import { describeSubagentReceipt, parseSubagentReceipt } from './subagent-receipt';
+import { AgentStateDot, agentDotState } from '@/components/chat/AgentStateDot';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
 type Props = {
@@ -148,6 +149,9 @@ export function QueuePills({ sessionId, workbenchSessionId, items }: Props) {
             {q.kind === 'steer' ? 'Direction' : receipt ? 'Receipt' : 'Queued'}
             {items.length > 1 ? ` (${i + 1}/${items.length})` : ''}
           </span>
+          {receipt?.status && agentDotState(receipt.status) && (
+            <AgentStateDot state={agentDotState(receipt.status)!} />
+          )}
           {editingId === q.id ? (
             <div className="flex flex-1 min-w-0 items-center gap-1">
               <input

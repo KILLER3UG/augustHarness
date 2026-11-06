@@ -19,6 +19,8 @@ import {
   setRightDrawerDiff,
 } from './RightDrawerState';
 import { ReviewFindingsPanel } from './ReviewFindingsPanel';
+import { ReviewNotesPanel, type NoteDraft } from './ReviewNotesPanel';
+import { useReviewNotes, unsentNotes, type ReviewNote } from '@/store/review-notes';
 import { useRevertAllChanges } from '@/lib/git-revert';
 
 /** Stable DOM id prefix for a file's review anchors (DiffView scroll targets). */
@@ -67,6 +69,29 @@ export function RightDrawerDiffSection({ sessionId }: { sessionId: string | null
     files.length,
     () => clearRightDrawerDiff(),
   );
+
+  // Review notes: session-scoped line annotations the user sends back to
+  // the agent as one queued message. The composer opens from the "+"
+  // affordance on a diff row; jump reuses the DiffView anchor ids.
+  const allNotes = useReviewNotes((s) => (sessionId ? s.bySession[sessionId] : undefined)) ?? [];
+  const [noteDraft, setNoteDraft] = useState<NoteDraft | null>(null);
+
+  const handleJumpToNote = (note: ReviewNote) => {
+    if (!files.some((f) => f.path === note.filePath)) return;
+    setExpandedFiles((prev) => new Set([...prev, note.filePath]));
+    window.setTimeout(() => {
+      document
+        .getElementById(`${diffAnchorPrefix(note.filePath)}-${note.lineNumber}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+  };
+
+  /** Notes for one file, shaped for DiffView's neutral chips (same line
+   * semantics as anchors: oldLine for removed rows, newLine otherwise). */
+  const fileNotes = (path: string) =>
+    allNotes
+      .filter((n) => n.filePath === path)
+      .map((n) => ({ line: n.lineNumber, preview: n.body.split('\n', 1)[0] || '', sent: !!n.sentAt }));
 
   const refreshDiff = () => {
     void qc.invalidateQueries({ queryKey: ['git', 'diff', sessionId] });
@@ -207,6 +232,20 @@ export function RightDrawerDiffSection({ sessionId }: { sessionId: string | null
         />
       )}
 
+      {sessionId && (
+        <ReviewNotesPanel
+          sessionId={sessionId}
+          notes={allNotes}
+          draft={noteDraft}
+          onDraftConsumed={() => setNoteDraft(null)}
+          onDismissDraft={() => setNoteDraft(null)}
+          onEditNote={(n) =>
+            setNoteDraft({ filePath: n.filePath, lineNumber: n.lineNumber, startLine: n.startLine, editId: n.id })
+          }
+          onJumpToNote={handleJumpToNote}
+        />
+      )}
+
       {!diff && query.isLoading && (
         <div className="rounded-lg border border-border/50 bg-card/60 p-4 text-center text-muted-foreground">
           Loading diff…
@@ -292,6 +331,8 @@ export function RightDrawerDiffSection({ sessionId }: { sessionId: string | null
                           .map((f) => ({ line: f.line, tag: f.tag, title: f.title }))
                       : undefined
                   }
+                  notes={fileNotes(file.path)}
+                  onAddNote={sessionId ? (line) => setNoteDraft({ filePath: file.path, lineNumber: line }) : undefined}
                   idPrefix={diffAnchorPrefix(file.path)}
                 />
               ) : (

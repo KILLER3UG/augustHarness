@@ -97,6 +97,30 @@ const RULES = [
       '  -fg variants for text) — they re-theme light/dark. The raw Tailwind warm palettes\n' +
       '  do not follow the theme and fail contrast on light backgrounds.',
   },
+  {
+    id: 'copy-filler',
+    // Filler words in quoted UI copy ("please", "simply"): they pad length
+    // and talk down to the reader; Orca's styleguide names both as banned
+    // filler. Deliberately single/double quotes only — template literals
+    // and comments carry code and prose that legitimately use these words.
+    re: /(['"])(?:(?!\1).)*\b(?:please|simply)\b(?:(?!\1).)*\1/gi,
+    advice:
+      'Rewrite the copy without the filler (docs/styleguide/ux-rules.md): state the action\n' +
+      '  directly instead of "please retry" or "simply click".',
+  },
+  {
+    id: 'copy-baked-keys',
+    // Keyboard glyphs baked into label strings: the platform prefix (⌘ vs
+    // Ctrl+) must come from the shortcut registry, not a hardcoded string —
+    // a label that says "Ctrl+Enter" lies on macOS and drifts from the real
+    // binding. lib/shortcuts.ts is the mapping authority and is exempt.
+    re: /(['"`])(?:(?!\1).)*[⌘⇧⌥]|(['"])(?:(?!\1).)*\bCtrl\+(?:(?!\1).)*\2/g,
+    exclude: ['frontend/desktop/src/lib/shortcuts.ts'],
+    advice:
+      'Render the binding from lib/shortcuts.ts (KeyCap / ShortcutKeyCombo) or drop the\n' +
+      '  baked keys — a hardcoded ⌘/Ctrl+ in a string is wrong on one platform and drifts\n' +
+      '  when the binding changes.',
+  },
 ];
 
 function walkFiles(dir) {

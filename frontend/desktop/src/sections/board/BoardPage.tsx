@@ -19,6 +19,7 @@ import { useKanbanStore, type KanbanCard } from '@/store/kanban-board';
 import { useSessionsStore } from '@/store/sessions';
 import { api } from '@/api/client';
 import { spawn, terminate } from '@/api/subagents';
+import { AgentStateDot, agentDotState } from '@/components/chat/AgentStateDot';
 import { Button } from '@/components/ui/button';
 import { PageLoader } from '@/components/PageLoader';
 import { QueryErrorState } from '@/components/QueryErrorState';
@@ -255,7 +256,8 @@ export function BoardPage() {
           <ul className="space-y-1.5">
             {active.map((r) => (
               <li key={r.taskId ?? r.id} className="flex items-center gap-2 text-xs py-1">
-                <span className={`text-2xs px-2 py-0.5 rounded-full ${RUN_TONES[r.status ?? ''] ?? 'bg-muted text-muted-foreground'}`}>
+                <span className={`inline-flex items-center gap-1.5 text-2xs px-2 py-0.5 rounded-full ${RUN_TONES[r.status ?? ''] ?? 'bg-muted text-muted-foreground'}`}>
+                  <AgentStateDot state={agentDotState(r.status) ?? 'queued'} />
                   {r.status}
                 </span>
                 <span className="font-medium truncate">{r.goal || r.agentId || 'agent'}</span>

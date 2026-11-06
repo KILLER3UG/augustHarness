@@ -361,6 +361,12 @@ async def turnTelemetry(
             if modelRounds is not None
             else (None if toolRound is None else int(toolRound))
         )
+        # E4 expect receipts: the tally this turn's tool dispatches stamped.
+        # {} when the model used no `_expect` → the row carries NULLs, which
+        # is the not-recorded discipline, never a zero.
+        from app.services.workbench.loop.receipts import pop_turn_receipts
+
+        _receiptTally = pop_turn_receipts()
         _turnRowId = turn_outcomes.record_turn_outcome(
             model=resolvedModel or '',
             provider=_telemetryProvider,
@@ -385,6 +391,8 @@ async def turnTelemetry(
             skills_loaded=_skillsLoaded,
             facts_injected=_factsInjected,
             error_families=errorFamilies,
+            receipts_total=_receiptTally.get('receipts_total'),
+            receipts_failed=_receiptTally.get('receipts_failed'),
         )
         # The join key (053) + one MECHANICAL decision row per turn. No model
         # call and no judgement: `chosen` is the stop reason the loop actually

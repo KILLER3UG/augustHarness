@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { SectionBoundary } from '@/components/SectionBoundary';
 import { cn } from '@/lib/utils';
 import {
   addRightDrawerSection,
@@ -302,7 +303,15 @@ export function RightDrawer({
                         data-parked={parked && !isActive ? 'true' : undefined}
                         data-testid={`drawer-pane-${id}`}
                       >
-                        {renderSection(id, ctx)}
+                        {/* One crashed pane must not take the drawer (or the
+                            four other mounted panes) down with it. */}
+                        <SectionBoundary
+                          name={TAB_META[id].label}
+                          compact
+                          onDismiss={() => closeRightDrawerSection(id)}
+                        >
+                          {renderSection(id, ctx)}
+                        </SectionBoundary>
                       </div>
                     );
                   })}

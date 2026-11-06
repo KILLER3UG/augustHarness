@@ -15,6 +15,7 @@ import { PromptDisclosure } from '@/components/chat/PromptDisclosure';
 import { ActivitySummary } from '@/components/chat/ActivitySummary';
 import { classifyTool } from '@/lib/tool-classify';
 import { getAgentRoleLabel } from '@/lib/tool-labels';
+import { AgentStateDot, agentDotState } from '@/components/chat/AgentStateDot';
 import {
   distillThoughtLines,
   summarizeThoughtHeader,
@@ -222,7 +223,8 @@ function NestedAgentRows({
                     </span>
                   ) : null}
                 </span>
-                <span className="col-start-2 row-start-2 text-[0.75rem] leading-4 text-muted-foreground/70">
+                <span className="col-start-2 row-start-2 flex items-center gap-1.5 text-[0.75rem] leading-4 text-muted-foreground/70">
+                  <AgentStateDot state={agentDotState(agent.status) ?? 'queued'} />
                   {SUBAGENT_STATUS_LABEL[agent.status]}
                 </span>
               </button>

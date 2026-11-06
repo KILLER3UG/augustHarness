@@ -83,6 +83,18 @@ async def _executeTool(
     from app.services.clone_guard import currentUnattended as _cloneUnattended
     from app.services.clone_guard import is_unattended_session as _clone_is_unattended
 
+    # Expect receipts (E4): the model may attach `_expect` to any tool call.
+    # Popped here, before anything else sees the args — handlers, hooks and
+    # guardrails must never meet a key that is none of their business.
+    from app.services.workbench.loop.receipts import (
+        evaluate_expectation,
+        extract_expectation,
+        format_receipt,
+        record_receipt_verdict,
+    )
+
+    args, _expect = extract_expectation(args)
+
     # No reset token: the ContextVar must stay set for the whole tool dispatch,
     # and the turn task ends before any sibling turn could observe the stale
     # value (ContextVars are copied per asyncio task).
@@ -243,6 +255,24 @@ async def _executeTool(
             await capture_after_tool(toolName, result_str)
         except Exception:
             pass
+
+        # Expect receipt (E4): evaluate the model's stated expectation against
+        # the tool's own result and APPEND the verdict. A receipt never gates
+        # the answer — the tool's result reaches the model either way — and
+        # only the normal path produces one: a blocked/timeout call has no
+        # result to measure, so pretending to grade one would be a lie.
+        if _expect is not None:
+            try:
+                receipt = evaluate_expectation(_expect, result)
+                record_receipt_verdict(bool(receipt.get('ok')))
+                receipt_text = format_receipt(receipt)
+                result_str = f'{result_str}\n\n{receipt_text}' if result_str else receipt_text
+                if isinstance(result, dict):
+                    result = {**result, '_receipt': receipt}
+            except Exception:
+                # A receipt bug must never break the tool call it observes.
+                logger.warning('expect receipt evaluation failed for %s', toolName, exc_info=True)
+
         return result if raw_result else result_str
     except Exception as exc:
         import traceback as _tb
