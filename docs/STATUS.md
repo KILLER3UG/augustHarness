@@ -1,12 +1,65 @@
 # Status — the current round
 
-Last updated: 2026-11-04 · App version: **0.22.0**
+Last updated: 2026-11-07 · App version: **0.22.0** + `orca-ui-ux` branch
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the model you picked answers, one plan surface, thought rows
+## This round — the orca round: the review loop, honest glyphs, one tool pipeline
+
+Five commits on `orca-ui-ux` implementing the cross-repo program from
+`C:/Dev/_research/orca-deep-dive-2026-11-07.md` (hygiene → feedback loop →
+structure → tool surface → display slice):
+
+- **The review loop exists.** Diff rows grow a hover "+" (the DiffView anchor
+  system); notes live per-session device-local, one deterministic quote-safe
+  formatter packages every unsent note into ONE queued message, and editing a
+  note clears its sent flag. The drawer diff section carries the notes panel
+  with jump-to-line and Send.
+- **Agent status is epistemic.** `AgentStateDot` maps every existing status
+  vocabulary (tool calls, subagents, runs) onto one glyph set where `stalled`
+  and `partial` render as the dashed missing-evidence ring — never as a check.
+  Adopted on delegate rows, nested workers, board pills, queue receipts.
+- **Mutating tools can carry `_expect`.** The executor measures the tool's own
+  result and appends an `[receipt]` block — evidence, never a gate; the
+  per-turn tally lands in `turn_outcomes` (`receipts_total/failed`, NULL when
+  none ran), which is the model-independent outcome signal learning lacked.
+- **One tool pipeline.** The two wire-format builders mirrored ~90 lines of
+  session logic each; both now delegate to `_sessionToolDefs` (parity 45=45,
+  prompt byte-stable). Dispatch learns `toolSchemaCheck: off|warn|strict`;
+  `check:tool-schemas` starts with an EMPTY schema-less allowlist — all 169
+  tools carry real schemas.
+- **Skills cannot name ghosts.** `check:skills` fails on an unregistered tool
+  named in a skill body (9 initial hits were all prose + the deliberately
+  unregistered `fpga_program`; the glossary documents each) and on an agent
+  guide orphaned from AGENTS.md. Shadowing skill copies flag
+  `bundledUpdateAvailable` and `POST /api/skills/{name}/adopt-bundled` catches
+  them up (snapshotted — the adopt is an Undo).
+- **Structure and lifecycle.** The queue-vs-steer chord (Enter steers,
+  ⌘/Ctrl+Enter queues-after-stop, the control previews while the modifier is
+  held — scoped to the composer row, not window-global); `check:render-ratchet`
+  budgets window keydowns and interval timers shrink-only; drawer panes crash
+  alone (compact SectionBoundary); `/api/health/detailed` finally has a
+  consumer (one sticky degraded toast, on the same poll clock); quit states
+  the real consequence and focuses Cancel; backend teardown logs each step by
+  name; the styleguide family lives in `docs/styleguide/` with two new
+  `check:design` rules (copy-filler, copy-baked-keys); oversized text previews
+  gain Load-all-lines; the circuit drawer shows one display mode at a time
+  with a real PNG export of the on-screen scene; docs diagrams follow the app
+  theme.
+- **Hygiene landed too:** the four diagnostics ledgers are wipeable and swept
+  (`subagent_runs` reaches erase-memory), three past-window shims and the
+  `_expect`-less stub definitions are gone, the `loop/` one-way import rule
+  has a gate, and every CHANGELOG heading is dated (What's New no longer
+  titles five rounds "Unreleased").
+- **Deliberately skipped:** compact tool output (E6) — the spill-file previews
+  + 64 KB transcript cap + BM25 tool-list disclosure already provide it.
+- **Not yet verified in the product:** the human desktop run (annotate→send,
+  chord preview, degraded toast, quit copy, PNG export) is the remaining
+  check; everything above is gates + smoke (20/20) green.
+
+## The round before — the model you picked answers, one plan surface, thought rows
 
 - **The composer's model choice is honoured everywhere.** A chat that attached
   an image used to be handed to the `chat_vision` fleet role without asking
@@ -259,12 +312,17 @@ waiting on the owner, and how to resume.
 4. **Active plans** — the Signal Desk UI port, goal environments, and
    self-modification autonomy (see [`DOCUMENTATION.md`](DOCUMENTATION.md)
    §Active plans).
-5. **DB retention doors (backlog, owner-noted 2026-10-30).** Four live tables
-   have no cleanup path: `subagent_runs` (worst — no TTL and missed by both
-   privacy wipes), `harness_jobs` (no TTL), `routing_evidence` (no cleanup,
-   not in the privacy lists), `decision_ledger` (expired rows are only
-   status-flipped, never deleted). Give each a retention/privacy door; none
-   is scheduled.
+5. **The orca-program remainder** (the deep dive lives outside the repo at
+   `C:/Dev/_research/orca-deep-dive-2026-11-07.md`; rounds 0–4 shipped the
+   feedback loop, structure, tool surface and the circuit mode slice).
+   Still open, in value order: fleet-board acknowledge semantics (N1),
+   browser element-grab into agent prompts (N2 — spike the backend browser
+   service first), automations precheck/grace/refusal-folding + template
+   picker (N4+N10), the display substrate Waves 0–1 full pass (spec.ts,
+   registry census gate, scene extraction from `CircuitBreadboard3D` — the
+   mode switch already ships), palette Files group (N8), settings row deep
+   links (N9), local dictation via faster-whisper (N6). Provider quota bars
+   (N5) stays deferred — each provider is its own integration.
 
 ## Open owner decisions
 
