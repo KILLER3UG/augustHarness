@@ -11316,9 +11316,47 @@
         "summary": "Hf Repo"
       }
     },
+    "/api/hf/repos/{repoId}/readme": {
+      "get": {
+        "description": "The model card as Markdown ('' when the repo has none).",
+        "operationId": "hf_repo_readme_api_hf_repos__repoId__readme_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "repoId",
+            "required": true,
+            "schema": {
+              "title": "Repoid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hf Repo Readme"
+      }
+    },
     "/api/hf/search": {
       "get": {
-        "description": "Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows\nto what August can serve.",
+        "description": "Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows\nto what August can serve. ``sort`` is the picker's label — recommended /\ndownloads / likes / recent.",
         "operationId": "hf_search_api_hf_search_get",
         "parameters": [
           {
@@ -11348,6 +11386,16 @@
             "schema": {
               "default": "",
               "title": "Filter",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "recommended",
+              "title": "Sort",
               "type": "string"
             }
           }

@@ -3448,6 +3448,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/hf/repos/{repoId}/readme": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Hf Repo Readme
+         * @description The model card as Markdown ('' when the repo has none).
+         */
+        get: operations["hf_repo_readme_api_hf_repos__repoId__readme_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/hf/search": {
         parameters: {
             query?: never;
@@ -3458,7 +3478,8 @@ export interface paths {
         /**
          * Hf Search
          * @description Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows
-         *     to what August can serve.
+         *     to what August can serve. ``sort`` is the picker's label — recommended /
+         *     downloads / likes / recent.
          */
         get: operations["hf_search_api_hf_search_get"];
         put?: never;
@@ -15950,12 +15971,44 @@ export interface operations {
             };
         };
     };
+    hf_repo_readme_api_hf_repos__repoId__readme_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repoId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     hf_search_api_hf_search_get: {
         parameters: {
             query?: {
                 q?: string;
                 limit?: number;
                 filter?: string;
+                sort?: string;
             };
             header?: never;
             path?: never;

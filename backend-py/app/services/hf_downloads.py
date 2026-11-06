@@ -21,7 +21,7 @@ from typing import Any
 import httpx
 
 from app.lib.paths import dataDir
-from app.services import hf_hub
+from app.services import hf_hub, http_env
 from app.services.realtime_bus import emit_invalidate
 
 logger = logging.getLogger(__name__)
@@ -233,7 +233,7 @@ async def _run_download(job: dict[str, Any]) -> None:
             done = part.stat().st_size if part.exists() else 0
             job['bytesDone'] = done
             headers = {'Range': f'bytes={done}-'} if done else {}
-            async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT) as client:
+            async with http_env.client(follow_redirects=True, timeout=_TIMEOUT) as client:
                 async with client.stream('GET', url, headers=headers) as resp:
                     if resp.status_code == 416 and attempt == 0:
                         part.unlink(missing_ok=True)

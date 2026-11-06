@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-452 routes across 377 paths,
+453 routes across 378 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -504,7 +504,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (57)
+## Other (58)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -542,7 +542,8 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/hf/downloads` | Hf Start Download |
 | `POST` | `/api/hf/downloads/cancel` | Hf Cancel Download |
 | `GET` | `/api/hf/repos/{repoId}` | Hf Repo |
-| `GET` | `/api/hf/search` | Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows to what August can serve. |
+| `GET` | `/api/hf/repos/{repoId}/readme` | The model card as Markdown ('' when the repo has none). |
+| `GET` | `/api/hf/search` | Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows to what August can serve. ``sort`` is t… |
 | `GET` | `/api/hooks` | Registry stats for every hook plus the user/workspace hook specs. |
 | `POST` | `/api/hooks/reload` | Force an immediate mtime re-check of every hook config. |
 | `POST` | `/api/hooks/revoke-workspace` | Withdraw that approval, and unregister the handlers it armed. |
@@ -571,4 +572,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (452 operations).
+Generated from `docs/api/openapi.json` (453 operations).

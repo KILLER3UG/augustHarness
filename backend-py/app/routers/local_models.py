@@ -265,15 +265,32 @@ async def server_stop(body: ServerStopBody):
 
 
 @hf.get('/search')
-async def hf_search(q: str = '', limit: int = 20, filter: str = ''):
+async def hf_search(q: str = '', limit: int = 20, filter: str = '', sort: str = 'recommended'):
     """Search the Hub. Empty ``filter`` browses ALL models; ``gguf`` narrows
-    to what August can serve."""
+    to what August can serve. ``sort`` is the picker's label — recommended /
+    downloads / likes / recent."""
     from app.services import hf_hub
 
     try:
-        return await hf_hub.search_models(q, limit=limit, model_filter=filter or None)
+        return await hf_hub.search_models(
+            q, limit=limit, model_filter=filter or None, sort=sort
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@hf.get('/repos/{repoId:path}/readme')
+async def hf_repo_readme(repoId: str):
+    """The model card as Markdown ('' when the repo has none)."""
+    from app.services import hf_hub
+
+    try:
+        return await hf_hub.repo_readme(repoId)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        status = 404 if 'not found' in str(exc).lower() else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 @hf.get('/repos/{repoId:path}')
