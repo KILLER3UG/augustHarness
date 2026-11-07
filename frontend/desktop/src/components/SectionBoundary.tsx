@@ -1,3 +1,8 @@
+/* eslint-disable react-refresh/only-export-components --
+ * The rule does not recognise `export class` as a component, so it reads this
+ * file as exporting no components and flags the two internal fallbacks. The
+ * class + its fallbacks are one unit; splitting them would only move code. */
+
 import { Component, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';

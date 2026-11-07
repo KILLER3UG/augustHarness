@@ -32,7 +32,10 @@ const UPDATE = process.argv.includes('--update');
 const RULES = [
   {
     id: 'window-keydowns',
-    re: /addEventListener\(\s*['"]keydown['"]/g,
+    // Global handlers only: explicit window/document/globalThis receivers, or
+    // a bare call (which binds window). An element-level `el.addEventListener`
+    // is scoped to that element and is not what this budget is about.
+    re: /(?:window|document|globalThis)\.addEventListener\(\s*['"]keydown['"]|(?<!\.)\baddEventListener\(\s*['"]keydown['"]/g,
     advice:
       'Every window-level keydown handler runs on each keystroke and is one more place\n' +
       '  shortcuts collide. Route through the registry in lib/shortcuts.ts or scope the\n' +
@@ -61,7 +64,8 @@ function walkFiles(dir) {
 function count() {
   const counts = Object.fromEntries(RULES.map((r) => [r.id, 0]));
   const sites = Object.fromEntries(RULES.map((r) => [r.id, []]));
-  for (const file of walkFiles(SRC)) {
+  const files = walkFiles(SRC);
+  for (const file of files) {
     const rel = relative(REPO, file).replace(/\\/g, '/');
     const lines = readFileSync(file, 'utf8').split('\n');
     for (const line of lines) {
@@ -73,10 +77,22 @@ function count() {
       }
     }
   }
-  return { counts, sites };
+  return { counts, sites, fileCount: files.length };
 }
 
-const { counts, sites } = count();
+const { counts, sites, fileCount } = count();
+
+// Reach control: a scan that found no files, or a rule that matched nothing,
+// means the walk or the regex rotted — not that the app got cleaner. Without
+// this a broken rule reports 0 forever and the gate is always green.
+if (fileCount < 50 || RULES.some((r) => counts[r.id] === 0)) {
+  console.error(
+    `[check-render-ratchet] FAIL — the scan cannot measure: ${fileCount} file(s), ` +
+      RULES.map((r) => `${r.id}=${counts[r.id]}`).join(' ') +
+      '. Check SRC and the rule patterns.',
+  );
+  process.exit(2);
+}
 
 if (UPDATE) {
   writeFileSync(BASELINE, JSON.stringify(counts, null, 2) + '\n');

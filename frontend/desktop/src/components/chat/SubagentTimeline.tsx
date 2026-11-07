@@ -15,7 +15,8 @@ import { PromptDisclosure } from '@/components/chat/PromptDisclosure';
 import { ActivitySummary } from '@/components/chat/ActivitySummary';
 import { classifyTool } from '@/lib/tool-classify';
 import { getAgentRoleLabel } from '@/lib/tool-labels';
-import { AgentStateDot, agentDotState } from '@/components/chat/AgentStateDot';
+import { AgentStateDot } from '@/components/chat/AgentStateDot';
+import { agentDotState } from '@/lib/agent-state';
 import {
   distillThoughtLines,
   summarizeThoughtHeader,
@@ -27,7 +28,7 @@ import {
   type SubagentPromptEntry,
 } from '@/components/chat/subagent-tools';
 
-export function splitSubagentBlocks(blocks: MessageBlock[]): {
+function splitSubagentBlocks(blocks: MessageBlock[]): {
   bodyBlocks: MessageBlock[];
   finalOutput: MessageBlock | null;
 } {

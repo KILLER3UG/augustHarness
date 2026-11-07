@@ -156,8 +156,30 @@ function collect() {
   for (const file of walkFiles(SRC)) {
     const rel = relative(REPO, file).replace(/\\/g, '/');
     const lines = readFileSync(file, 'utf8').split('\n');
+    let inBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      const trimmed = line.trim();
+      /* Comments are prose, not UI copy and not call sites. The copy rules
+       * already say they exempt comments, but a quoted phrase or a ⌘ inside a
+       * `{/* … *\/}` block still matched and burned three baseline slots. A
+       * line is comment-only when it starts a `//` / `/*` / `{/*` / `*` run or
+       * sits inside a block comment left open above; code with a TRAILING
+       * comment is not skipped. */
+      const commentOnly =
+        inBlockComment ||
+        trimmed.startsWith('//') ||
+        trimmed.startsWith('/*') ||
+        trimmed.startsWith('{/*') ||
+        trimmed.startsWith('*');
+      const opens = (line.match(/\/\*/g) ?? []).length;
+      const closes = (line.match(/\*\//g) ?? []).length;
+      if (inBlockComment) {
+        if (closes > 0) inBlockComment = false;
+      } else if (opens > closes) {
+        inBlockComment = true;
+      }
+      if (commentOnly) continue;
       for (const rule of RULES) {
         if (rule.exclude?.some((frag) => rel.includes(frag))) continue;
         // Fresh regex per line: the /g flag is stateful across calls.

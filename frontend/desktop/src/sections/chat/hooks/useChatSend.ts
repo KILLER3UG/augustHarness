@@ -167,7 +167,7 @@ export function useChatSend(opts: UseChatSendOptions) {
   // closure, but `send` is defined after it and is NOT in generateAIResponse's
   // dep array — calling `send` directly would capture a stale callback. Route
   // the retry through a ref that always points at the latest `send`.
-  const sendRef = useRef<ChatSendFn>(async () => 'skipped');
+  const sendRef = useRef<ChatSendFn>(() => Promise.resolve('skipped'));
 
   // (b) Double-Enter latch: the second send in the same frame sees a stale
   // `input`/`streaming` closure and would append a duplicate user bubble

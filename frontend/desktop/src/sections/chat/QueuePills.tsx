@@ -13,7 +13,8 @@ import {
   type QueuedUserMessage,
 } from './queue-store';
 import { describeSubagentReceipt, parseSubagentReceipt } from './subagent-receipt';
-import { AgentStateDot, agentDotState } from '@/components/chat/AgentStateDot';
+import { AgentStateDot } from '@/components/chat/AgentStateDot';
+import { agentDotState } from '@/lib/agent-state';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
 type Props = {
