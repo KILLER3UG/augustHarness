@@ -560,6 +560,11 @@ def _parseSkill(path: Path) -> Optional[dict[str, object]]:
         # stays in `meta` below, so the round-trip write and the router's
         # lineage read both still see it.
         'status': str(meta.get('status') or '').strip(),
+        # The frontmatter's own `version:`, surfaced for the bundled-freshness
+        # compare at the bottom of listSkills(). It stays in `meta` too, so the
+        # round-trip write and the router's lineage read still see it. Without
+        # this key the compare reads None on both sides and flags nothing.
+        'version': str(meta.get('version') or '').strip(),
         # M6 item 3: unrecognized frontmatter keys round-trip instead of
         # being silently dropped on the next patch/setEnabled write.
         'meta': meta,
@@ -682,6 +687,7 @@ def list_all(
             if name in seen:
                 continue
             parsed['scope'] = scope
+            parsed['dir'] = str(md.parent)
             seen.add(name)
             skills.append(parsed)
     for s in skills:
@@ -690,7 +696,101 @@ def list_all(
         idx = scopes.index(as_str(s.get('scope'), '')) if scopes else -1
         if idx >= 0 and idx + 1 < len(scopes):
             s['overrides'] = scopes[idx + 1]
+    # N3 freshness: a non-bundled copy shadowing a bundled skill may lag the
+    # bundled improvement (the installer refreshes the bundled root; a user
+    # or project copy never moves). Flag it when the bundled frontmatter
+    # version is strictly HIGHER — an honest "update available", never a
+    # guess when either side carries no version.
+    try:
+        bundled_root = Path(SKILLS_DIR)
+        if bundled_root.is_dir():
+            for s in skills:
+                if as_str(s.get('scope'), '') == 'bundled':
+                    continue
+                bundled_md = bundled_root / as_str(s['name'], '') / 'SKILL.md'
+                if not bundled_md.is_file():
+                    continue
+                bundled = _parseSkill(bundled_md)
+                if not bundled:
+                    continue
+                bver = _version_key(as_str(bundled.get('version'), ''))
+                cver = _version_key(as_str(s.get('version'), ''))
+                if bver and cver and bver > cver:
+                    s['bundledUpdateAvailable'] = True
+                    s['bundledVersion'] = as_str(bundled.get('version'), '')
+    except Exception:
+        logger.debug('bundled-freshness check failed', exc_info=True)
     return skills
+
+
+def _version_key(version: str) -> tuple[int, ...] | None:
+    """Dotted-version compare key ('1.2.0' → (1, 2, 0)), or None when the
+    frontmatter carries no parseable version — absence is not 0.0.0."""
+    parts = [p for p in re.split(r'[.\-+]', version.strip()) if p.isdigit()]
+    if not parts:
+        return None
+    return tuple(int(p) for p in parts)
+
+
+def adopt_bundled(
+    name: str, workspace: str | Path | None = None, agent_id: str = ''
+) -> dict[str, object]:
+    """Replace a shadowing skill copy with the bundled version (N3).
+
+    The shadowing file is version-snapshotted first (the same Undo path
+    every skill write uses), then overwritten in place — the copy keeps
+    living at its own root (project/agent), so scope and precedence are
+    unchanged; only its content catches up to what shipped with the app.
+    """
+    from app.services.skill_versions import snapshot_before_write
+
+    winning: dict[str, object] | None = None
+    for s in list_all(workspace, agent_id):
+        if as_str(s['name'], '') == name:
+            winning = s
+            break
+    if winning is None:
+        raise SkillValidationError(f"Skill '{name}' not found.")
+    if as_str(winning.get('scope'), '') == 'bundled':
+        raise SkillValidationError(f"Skill '{name}' is already the bundled copy.")
+
+    bundled_md = Path(SKILLS_DIR) / name / 'SKILL.md'
+    if not bundled_md.is_file():
+        raise SkillValidationError(f"Skill '{name}' has no bundled copy.")
+
+    dst_dir = Path(as_str(winning.get('dir'), '') or '')
+    dst_md = dst_dir / 'SKILL.md'
+    if not dst_md.is_file():
+        raise SkillValidationError(f"Skill '{name}' copy is unreadable at {dst_md}.")
+
+    content = bundled_md.read_text('utf-8')
+    bundled_parsed = _parseSkill(bundled_md) or {}
+    bundled_version = as_str(bundled_parsed.get('version'), '')
+    snapshot_before_write(
+        dst_dir,
+        content,
+        actor='user',
+        rationale=f'adopt bundled version {bundled_version}'.strip(),
+    )
+    dst_md.write_text(content, 'utf-8')
+    # Sidecar files (references/, NOTICE.md) ride along when the bundled
+    # copy carries them: the skill body points at them, so a body adopted
+    # without its references would name files the copy does not have.
+    for src_file in (Path(SKILLS_DIR) / name).iterdir():
+        if src_file.name == 'SKILL.md' or src_file.name.startswith('.'):
+            continue
+        if src_file.is_file():
+            (dst_dir / src_file.name).write_bytes(src_file.read_bytes())
+        elif src_file.is_dir():
+            target = dst_dir / src_file.name
+            target.mkdir(parents=True, exist_ok=True)
+            for f in src_file.rglob('*'):
+                if f.is_file():
+                    rel = f.relative_to(src_file)
+                    out = target / rel
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(f.read_bytes())
+    return {'name': name, 'scope': as_str(winning.get('scope'), ''), 'adopted': True}
 
 
 def search(

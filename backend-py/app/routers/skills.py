@@ -263,6 +263,20 @@ async def patchSkill(name: str, body: SkillPatch):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post('/{name}/adopt-bundled')
+async def adoptBundled(name: str, workspace: str = Query('')):
+    """Replace a shadowing copy with the bundled version (N3 freshness).
+
+    The shadowing file is version-snapshotted first, so the adopt is an
+    Undo; the copy keeps its scope and precedence — only content catches
+    up to what shipped with the app.
+    """
+    try:
+        return skill_service.adopt_bundled(name, workspace=workspace or None)
+    except SkillValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post('/restore/{trashId}')
 async def restoreSkill(trashId: str):
     """Undo a delete or an approved archive: restore a trashed skill directory (24h window)."""

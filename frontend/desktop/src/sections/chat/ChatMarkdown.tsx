@@ -396,6 +396,19 @@ function renderLiveBlock(block: string, demote: boolean): { __html: string } {
 }
 
 /**
+ * Close a fence the stream has not closed yet, so the live tail parses into
+ * the same structure the settle pass will produce once the closing line
+ * arrives. Only the TAIL is ever rewritten — complete blocks are immutable
+ * by construction — and live rendering already skips highlight.js, so this
+ * changes structure (a proper <pre><code> with the copy button instead of a
+ * parser-dependent unclosed-fence guess), not paint.
+ */
+function closeLiveTailFence(tail: string, inFence: boolean, fenceMarker: string): string {
+  if (!inFence || !fenceMarker) return tail;
+  return `${tail}\n${fenceMarker}`;
+}
+
+/**
  * Incremental live-block split (A.1 follow-up).
  *
  * The first cut of this cached the PARSE but still re-derived the BLOCKS from
@@ -570,7 +583,7 @@ export function Markdown({
       const { complete, tail, state } = splitLiveBlocksIncremental(stabilized, splitState.current);
       splitState.current = state;
       const parts: { __html: string }[] = complete.map((block) => renderLiveBlock(block, demoteHeadings));
-      if (tail) parts.push(renderLiveBlock(tail, demoteHeadings));
+      if (tail) parts.push(renderLiveBlock(closeLiveTailFence(tail, state.inFence, state.fenceMarker), demoteHeadings));
       return parts;
     }
     // During a live stream, hold back an incomplete trailing table row so the

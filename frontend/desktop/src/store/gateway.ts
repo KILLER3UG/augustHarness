@@ -1,9 +1,10 @@
 import { create } from 'zustand';
+import { toast } from 'sonner';
 import { api } from '@/api/client';
 
 export type GatewayState =
   | { status: 'connecting' }
-  | { status: 'open'; port: number; uptime: number }
+  | { status: 'open'; port: number; uptime: number; degraded?: boolean }
   | { status: 'closed'; reason?: string }
   | { status: 'error'; message: string };
 
@@ -65,5 +66,45 @@ if (typeof window !== 'undefined') {
       });
     }
   })();
-  setInterval(() => { void poll(); }, 5_000);
+  // Degraded watch rides the SAME clock as the plain poll (one interval, not
+  // two — recurring timers are budgeted by check:render-ratchet): every 6th
+  // tick (~30s) the detailed endpoint answers whether the backend is UP AND
+  // WHOLE. One sticky toast per degraded episode; recovery dismisses it.
+  const DEGRADED_TOAST_ID = 'session-degraded';
+  let degradedAnnounced = false;
+  let pollTicks = 0;
+  interface DetailedHealth {
+    status?: string;
+  }
+  async function pollDetailed(): Promise<void> {
+    const gw = useGatewayStore.getState().gateway;
+    if (gw.status !== 'open') return;
+    try {
+      const data = await api.get<DetailedHealth>('/api/health/detailed');
+      const degraded = data.status === 'degraded';
+      useGatewayStore.setState({
+        gateway: { ...gw, degraded },
+      });
+      if (degraded && !degradedAnnounced) {
+        degradedAnnounced = true;
+        toast.error('Session degraded', {
+          id: DEGRADED_TOAST_ID,
+          duration: Infinity,
+          description: 'Some background services did not start. Changes may not save until the app restarts.',
+          action: { label: 'Reload', onClick: () => window.location.reload() },
+        });
+      } else if (!degraded && degradedAnnounced) {
+        degradedAnnounced = false;
+        toast.dismiss(DEGRADED_TOAST_ID);
+      }
+    } catch {
+      // The plain poll above owns offline reporting; a detailed-probe
+      // failure adds nothing the user needs to act on.
+    }
+  }
+  setInterval(() => {
+    void poll();
+    pollTicks += 1;
+    if (pollTicks % 6 === 0) void pollDetailed();
+  }, 5_000);
 }

@@ -80,9 +80,9 @@ export function UpdateRelaunchOverlay() {
           : 'apply it';
 
   const assistantLine = downloading
-    ? `Downloading ${vLabel}. The latest desktop build is coming down — you can keep working while it finishes.`
+    ? `Downloading ${vLabel}. The latest desktop build is coming down — you can keep working while it finishes, and your sessions won't be interrupted.`
     : ready
-      ? `${vLabel} is downloaded and ready. Restart whenever you like to apply it.`
+      ? `${vLabel} is downloaded and ready. Restart whenever you like to apply it — sessions aren't interrupted until you click.`
       : restarting
         ? `Installing ${vLabel}. The app is closing so the update can apply — the installer will reopen it shortly.`
         : 'Preparing the installer…';

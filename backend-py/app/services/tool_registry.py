@@ -622,6 +622,53 @@ def schema_param_hint(tool: dict[str, object]) -> str:
 ARG_SHAPE_EXCEPTIONS = (TypeError, AttributeError, KeyError, IndexError)
 
 
+def validate_tool_args(name: str, args: dict[str, object]) -> tuple[list[str], list[str]]:
+    """Top-level unknown-key check against the tool's registered schema.
+
+    Returns ``(warnings, unknown)``. Warnings carry a did-you-mean hint so
+    a typo like ``operaton`` self-corrects in one round. A tool whose schema
+    declares no ``properties`` at all is not checked here — ``check:tool-schemas``
+    keeps those in an allowlist, and guessing their shape would invent a
+    contract the handler does not have. A tool with an EMPTY ``properties``
+    object IS checked: that is the complete schema of a no-argument tool, so
+    every supplied key is unknown. ``_expect`` (the receipt argument,
+    loop/receipts.py) is reserved and never counts as unknown.
+    """
+    tool = _registry.get(name)
+    if not tool:
+        return [], []
+    schema = tool.get('parameters')
+    properties = schema.get('properties') if isinstance(schema, dict) else None
+    if not isinstance(properties, dict):
+        return [], []
+    reserved = {'_expect'}
+    unknown = [k for k in args if k not in properties and k not in reserved]
+    if not unknown:
+        return [], []
+    from difflib import get_close_matches
+
+    warnings = []
+    for k in unknown:
+        near = get_close_matches(k, sorted(properties), n=1, cutoff=0.6)
+        hint = f'; did you mean `{near[0]}`?' if near else ''
+        warnings.append(f'unknown key `{k}`{hint}')
+    return warnings, unknown
+
+
+def _tool_schema_check_mode() -> str:
+    """off | warn | strict, from brain-config (``toolSchemaCheck``, default off).
+
+    off = today's behavior; warn = the result carries ``[param_warnings]``;
+    strict = the call refuses BEFORE the handler runs.
+    """
+    try:
+        from app.services.brain_config_service import getRuntimeConfig
+
+        return str(getRuntimeConfig().get('toolSchemaCheck', 'off') or 'off').lower()
+    except Exception:
+        return 'off'
+
+
 async def dispatch(name: str, args: dict[str, object]) -> str:
     """Dispatch a tool call by name and arguments.
 
@@ -666,6 +713,21 @@ async def dispatch(name: str, args: dict[str, object]) -> str:
         handler = tool['handler']
         if not callable(handler):
             return f'Error: Tool "{name}" handler is not callable.'
+        # E3 typed schemas: off | warn | strict. strict refuses before the
+        # handler runs — a mutating tool must not fire on a typo'd argument.
+        check_mode = _tool_schema_check_mode()
+        param_warning = ''
+        if check_mode != 'off':
+            warnings, unknown = validate_tool_args(name, args)
+            if unknown and check_mode == 'strict':
+                hint = schema_param_hint(tool)
+                suffix = f' Expected parameters: {hint}.' if hint else ''
+                return (
+                    f'Error: {name} refused — unknown argument(s): {", ".join(unknown)}. '
+                    f'{"; ".join(warnings)}.{suffix}'
+                )
+            if warnings:
+                param_warning = '[param_warnings] ' + '; '.join(warnings)
         result = await handler(**args)
         # Safety net: the tool-result pipeline (SSE, history, model context)
         # requires a string. A handler that returns dict/list (the camera
@@ -677,6 +739,8 @@ async def dispatch(name: str, args: dict[str, object]) -> str:
                 result = json.dumps(result, ensure_ascii=False, default=str)
             except (TypeError, ValueError):
                 result = str(result)
+        if param_warning:
+            result = f'{result}\n{param_warning}' if result else param_warning
         return result
     except ARG_SHAPE_EXCEPTIONS as e:
         # The handler choked on the argument shape — hand the model a

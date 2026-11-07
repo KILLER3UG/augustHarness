@@ -8,6 +8,7 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
 import { FileIcon } from '@/components/ui/FileIcon';
 import type { SchematicGraph } from '@/api/circuit';
 import {
@@ -53,6 +54,12 @@ export function RightDrawerCircuitSection({ sessionId }: { sessionId: string | n
   const stream = useSessionStream(sessionId);
   const streamMessages = stream?.messages;
   const messages = useMemo(() => streamMessages ?? [], [streamMessages]);
+  // Display modes (the unified-display design): ONE representation at a
+  // time. Rendering the 2D editor AND the 3D stage simultaneously halved
+  // neither cost and doubled nothing but scroll — the mode switch picks the
+  // surface the user is working on. The netlist stays reachable via the
+  // artifact list below (and the editor itself keeps the netlist source).
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
   const artifacts = useMemo(() => artifactsForMessages(messages), [messages]);
   // The schematic editor edits ONE netlist at a time — the newest by
   // default, switchable from the picker.
@@ -125,28 +132,56 @@ export function RightDrawerCircuitSection({ sessionId }: { sessionId: string | n
                 ))}
               </select>
             ) : null}
-            <CircuitSchematicEditor
-              sessionId={sessionId}
-              netlistPath={activeNetlist}
-              revision={graphRevision}
-              onGraphChange={setGraph}
-              className="mb-3"
-            />
-            <Suspense
-              fallback={
-                <div
-                  className="mb-3 h-64 animate-pulse rounded-lg border border-border/50 bg-card/40"
-                  aria-label="Loading 3D board"
-                />
-              }
+            <div
+              className="mb-2 flex items-center gap-1"
+              role="tablist"
+              aria-label="Circuit view mode"
             >
-              <CircuitBreadboard3D
-                graph={graph}
-                selectedRef={selectedRef}
-                onSelect={setSelectedRef}
+              {(
+                [
+                  ['2d', 'Schematic'],
+                  ['3d', '3D board'],
+                ] as const
+              ).map(([mode, label]) => (
+                <Button
+                  key={mode}
+                  type="button"
+                  role="tab"
+                  aria-selected={viewMode === mode}
+                  variant={viewMode === mode ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setViewMode(mode)}
+                  data-testid={`circuit-mode-${mode}`}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+            {viewMode === '2d' ? (
+              <CircuitSchematicEditor
+                sessionId={sessionId}
+                netlistPath={activeNetlist}
+                revision={graphRevision}
+                onGraphChange={setGraph}
                 className="mb-3"
               />
-            </Suspense>
+            ) : (
+              <Suspense
+                fallback={
+                  <div
+                    className="mb-3 h-64 animate-pulse rounded-lg border border-border/50 bg-card/40"
+                    aria-label="Loading 3D board"
+                  />
+                }
+              >
+                <CircuitBreadboard3D
+                  graph={graph}
+                  selectedRef={selectedRef}
+                  onSelect={setSelectedRef}
+                  className="mb-3"
+                />
+              </Suspense>
+            )}
           </>
         ) : null}
         <CircuitInstruments messages={messages} />

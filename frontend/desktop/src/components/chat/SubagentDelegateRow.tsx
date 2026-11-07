@@ -14,6 +14,8 @@ import { ChevronRight, Loader2, PanelRightOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getAgentRoleLabel } from '@/lib/tool-labels';
 import { setFocusedSubagent } from '@/components/chat/focused-subagent';
+import { AgentStateDot } from '@/components/chat/AgentStateDot';
+import { agentDotState } from '@/lib/agent-state';
 import { addRightDrawerSection } from '@/components/shell/RightDrawerState';
 import { SubagentTimeline } from '@/components/chat/SubagentTimeline';
 import { Button } from '@/components/ui/button';
@@ -138,7 +140,8 @@ export function SubagentDelegateRow({
       <span className="subagent-task" title={task || undefined}>
         {task || role}
       </span>
-      <span className="subagent-status" data-state={statusWord}>
+      <span className="subagent-status inline-flex items-center gap-1.5" data-state={statusWord}>
+        <AgentStateDot state={agentDotState(status) ?? 'queued'} />
         {statusWord}
       </span>
     </>

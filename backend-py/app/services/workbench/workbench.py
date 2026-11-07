@@ -861,6 +861,9 @@ def buildSystemPrompt(
         '- Lead with the outcome; be concise; never narrate tool use — emit the call.\n'
         '- Read before writing; pass the read sha256 as fileHash on writes/edits.\n'
         '- Batch independent calls; run_command is non-interactive; its exit code is your receipt.\n'
+        '- Verify a mutation by attaching an `_expect` argument to the tool call '
+        '(e.g. "_expect": {"measure": "written", "equals": true}); the result carries a '
+        '[receipt] with what was measured — evidence you read, never a gate.\n'
         '- Track multi-step work with update_state '
         '(research | plan | implement | review | complete); finish on complete. '
         'For checklists the user can see and tick, use submit_todos / update_todos.\n'
@@ -1561,81 +1564,112 @@ def _filterToolsByGoal(session: WorkbenchSession, tools: list[dict[str, object]]
         return tools
 
 
-def toolDefinitions(session: WorkbenchSession) -> list[dict[str, object]]:
-    """Return tool definitions in Anthropic format for a session.
+def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, object]]:
+    """One session-level tool pipeline, two wire formats (E1).
 
-    The tool registry stores definitions in OpenAI format
-    (``{"type":"function","function":{...}}``). Anthropic's API expects a
-    different shape (``{"name","description","input_schema"}``). We
-    canonicalize every registered tool through
-    ``sanitize_anthropic_tool_definition`` (a no-op for already-Anthropic
-    entries, a converter for OpenAI entries) and dedupe by name.
+    ``toolDefinitions`` (Anthropic) and ``openaiToolDefinitions`` (OpenAI)
+    used to MIRROR ~90 lines of session-level logic each — cache key,
+    BM25 progressive disclosure, guard-mode filters, circuit/dm/setup
+    gates, finalize, goal filter. The smoke check pins only the ordered
+    NAME list, so a filter that drifted on one format was invisible until
+    a model saw a tool it should not (the OpenAI circuit gate already
+    reimplemented the Anthropic one with a different name accessor).
 
-    We deliberately do NOT append the proxy-passthrough ``mcp__workspace__*``
-    / ``WebSearch`` / ``WebFetch`` managed tools here: those are only
-    dispatchable inside the proxy passthrough adapter, not in the
-    workbench (whose ``_execute_tool`` consults ``tool_registry`` only).
-    The workbench registers its own ``web_search`` / ``web_fetch`` /
-    ``run_command`` handlers, which cover the same surface and *are*
-    dispatchable here. MCP server tools are added separately (see
-    ``_mcp_tool_definitions_anthropic``).
-
-    Phase 3: If progressive disclosure is active and the tool set exceeds
-    the threshold, BM25 pre-loads the most relevant tools and defers the rest.
-
-    The base registry→Anthropic conversion (+ MCP) is cached; progressive
-    disclosure still runs per session messages.
+    Everything after the base build is shared here, parameterized by
+    ``fmt`` ('anthropic' | 'openai'); the two public builders are thin
+    delegations below. Base construction (registry conversion + MCP tail
+    + the bare-first stable sort) stays per-format because the wire
+    shapes genuinely differ; the PROMPT-CACHE invariant they both carry —
+    a downgrade to the bare surface yields a PREFIX of the full list —
+    is the bare-first sort in each base builder.
     """
     from app.services.workbench import tool_defs_cache
 
     def _build_base() -> list[dict[str, object]]:
-        from app.adapters.proxy_tools import sanitize_anthropic_tool_definition
+        if fmt == 'anthropic':
+            from app.adapters.proxy_tools import sanitize_anthropic_tool_definition
+            from app.services.tool_registry import listTools
+
+            tools: list[dict[str, object]] = []
+            seen: set[str] = set()
+            for raw in listTools():
+                t = sanitize_anthropic_tool_definition(raw)
+                if not t:
+                    continue
+                if t['name'] in seen:
+                    continue
+                seen.add(as_str(t['name']))
+                tools.append(t)
+            tools.extend(_mcpToolDefinitionsAnthropic(seen))
+            tools.sort(
+                key=lambda t: (0 if as_str(t.get('name'), '') in _BARE_TOOL_ALLOW else 1, as_str(t.get('name'), ''))
+            )
+            return tools
+
+        from app.adapters.proxy_tools import anthropic_to_openai_tool_definition
         from app.services.tool_registry import listTools
 
-        tools: list[dict[str, object]] = []
-        seen: set[str] = set()
+        tools = []
+        seen = set()
         for raw in listTools():
-            t = sanitize_anthropic_tool_definition(raw)
-            if not t:
+            if as_str(raw.get('type')) == 'function' and isinstance(raw.get('function'), dict):
+                name = as_str(as_dict(raw.get('function')).get('name', ''))
+                if name and name not in seen:
+                    seen.add(name)
+                    tools.append(raw)
                 continue
-            if t['name'] in seen:
-                continue
-            seen.add(as_str(t['name']))
-            tools.append(t)
-        tools.extend(_mcpToolDefinitionsAnthropic(seen))
-        # Cache-stability + truncation priority (P7/L5): the bare-essential
-        # tools sort FIRST in a stable order, so (a) a self-heal downgrade to
-        # the bare surface yields a PREFIX of the full list — the Anthropic
-        # prompt-cache breakpoint on the tools array stays valid when a
-        # struggling model is downgraded — and (b) maxTools truncation cuts
-        # non-essential tools first instead of by registry position.
+            t = anthropic_to_openai_tool_definition(raw)
+            name = as_str(as_dict(t.get('function', {})).get('name', ''))
+            if name and name not in seen:
+                seen.add(name)
+                tools.append(t)
+        tools.extend(_mcpToolDefinitionsOpenai(seen))
+        # Same bare-first stable ordering as the Anthropic base (P7/L5).
         tools.sort(
-            key=lambda t: (0 if as_str(t.get('name'), '') in _BARE_TOOL_ALLOW else 1, as_str(t.get('name'), ''))
+            key=lambda t: (0 if _toolDefName(t) in _BARE_TOOL_ALLOW else 1, _toolDefName(t))
         )
         return tools
 
-    tools = tool_defs_cache.get_or_build('anthropic', _build_base)
+    tools = tool_defs_cache.get_or_build(fmt, _build_base)
     messages = getattr(session, 'messages', None) or []
     contextMsgs = list(messages) if isinstance(messages, list) else []
     contextWindow = DEFAULT_CONTEXT_WINDOW
     try:
         modelId = as_str(getattr(session, 'model', ''), '')
-        provider = as_dict(getattr(session, 'provider', None), {})
+        providerCfg = as_dict(getattr(session, 'provider', None), {})
         if modelId:
-            contextWindow = _resolveModelContextWindow(modelId, provider or None)
+            contextWindow = _resolveModelContextWindow(modelId, providerCfg or None)
     except Exception:
         logger.debug('tool-defs context window resolve failed', exc_info=True)
-    cacheKey = _sessionToolDefsCacheKey('anthropic', tools, session, contextWindow)
-    cached = tool_defs_cache.get_session_cached(session, 'anthropic', cacheKey)
+    cacheKey = _sessionToolDefsCacheKey(fmt, tools, session, contextWindow)
+    cached = tool_defs_cache.get_session_cached(session, fmt, cacheKey)
     if cached is not None:
         return _filterToolsByGoal(session, cached)
+
+    # BM25-budgeted progressive disclosure against the session model's REAL
+    # window. Ranking reads the Anthropic shape (name/description/
+    # input_schema), so both formats rank through the same shim and map the
+    # selected names back onto their original wire dicts.
     try:
         from app.services.tools.model_tools import assembleToolDefs
 
-        # Budget the tool set against the session model's REAL window — a
-        # 32k model must not be offered the same tool budget as a 200k one.
+        byName: dict[str, dict[str, object]] = {}
+        anthShim: list[dict[str, object]] = []
+        for t in tools:
+            name = _toolDefName(t)
+            if not name or name in byName:
+                continue
+            byName[name] = t
+            fn = as_dict(t.get('function'), {})
+            anthShim.append(
+                {
+                    'name': name,
+                    'description': as_str(t.get('description') or fn.get('description'), ''),
+                    'input_schema': as_dict(t.get('input_schema') or t.get('parameters') or fn.get('parameters'), {}),
+                }
+            )
         result = assembleToolDefs(
-            all_tool_defs=tools,
+            all_tool_defs=anthShim,
             context_messages=contextMsgs,
             contextLength=contextWindow,
             coreToolNames=_coreToolNames(),
@@ -1643,24 +1677,32 @@ def toolDefinitions(session: WorkbenchSession) -> list[dict[str, object]]:
         )
         if result.activated:
             session._tool_assembly = result
-            tools = result.tool_defs
+            tools = [
+                byName[as_str(td.get('name'), '')]
+                for td in result.tool_defs
+                if as_str(td.get('name'), '') in byName
+            ]
     except Exception:
-        pass
+        logger.debug('progressive tool disclosure failed (%s)', fmt, exc_info=True)
+
     # System barrier: Full Access must not expose plan-gating tools.
     mode = normalizeGuardMode(getattr(session, 'guardMode', None) or 'full')
     if mode == 'full':
         blocked = {'submit_plan', 'submitPlan', 'approve_plan', 'reject_plan'}
-        tools = [t for t in tools if as_str(t.get('name')) not in blocked]
+        tools = [t for t in tools if _toolDefName(t) not in blocked]
     if mode == 'plan':
         # Already in plan mode — the mode-switch tool has done its job.
         blocked_in_plan = {'enter_plan_mode', 'request_plan_mode'}
-        tools = [t for t in tools if as_str(t.get('name')) not in blocked_in_plan]
+        tools = [t for t in tools if _toolDefName(t) not in blocked_in_plan]
     # /circuit gate: circuit_* tools only exist while the session's circuit
-    # workbench is active (see tool_registrations.circuit_tools).
+    # workbench is active. One shape-aware rule for both formats — the
+    # OpenAI path used to reimplement this with its own accessor.
     try:
-        from app.services.tool_registrations.circuit_tools import filter_circuit_tools
+        from app.services.tool_registrations.circuit_tools import _is_circuit_gate_tool
+        from app.services.tools.circuit_tools import is_circuit_mode
 
-        tools = filter_circuit_tools(tools, session)
+        if session is None or not is_circuit_mode(session):
+            tools = [t for t in tools if not _is_circuit_gate_tool(_toolDefName(t))]
     except Exception:
         pass
     # Phase C gate: message_agent only in a Bot's canonical chat (the tool
@@ -1679,158 +1721,18 @@ def toolDefinitions(session: WorkbenchSession) -> list[dict[str, object]]:
     except Exception:
         pass
     tools = _finalize_session_tools(session, tools)
-    tool_defs_cache.store_session_cached(session, 'anthropic', cacheKey, tools)
+    tool_defs_cache.store_session_cached(session, fmt, cacheKey, tools)
     return _filterToolsByGoal(session, tools)
 
 
+def toolDefinitions(session: WorkbenchSession) -> list[dict[str, object]]:
+    """Tool definitions in Anthropic format (the E1 canonical pipeline)."""
+    return _sessionToolDefs(session, 'anthropic')
 
 
 def openaiToolDefinitions(session: WorkbenchSession) -> list[dict[str, object]]:
-    """Return tool definitions in OpenAI format for a session.
-
-    Mirrors ``tool_definitions``: registry tools (which may be in mixed
-    OpenAI/Anthropic format) are normalized to OpenAI format and deduped
-    by name, then real MCP server tools are appended.
-
-    Base conversion is cached by registry generation counter + MCP signature.
-    """
-    from app.services.workbench import tool_defs_cache
-
-    def _build_base() -> list[dict[str, object]]:
-        from app.adapters.proxy_tools import anthropic_to_openai_tool_definition
-        from app.services.tool_registry import listTools
-
-        tools: list[dict[str, object]] = []
-        seen: set[str] = set()
-        for raw in listTools():
-            if as_str(raw.get('type')) == 'function' and isinstance(raw.get('function'), dict):
-                name = as_str(as_dict(raw.get('function')).get('name', ''))
-                if name and name not in seen:
-                    seen.add(name)
-                    tools.append(raw)
-                continue
-            t = anthropic_to_openai_tool_definition(raw)
-            name = as_str(as_dict(t.get('function', {})).get('name', ''))
-            if name and name not in seen:
-                seen.add(name)
-                tools.append(t)
-        tools.extend(_mcpToolDefinitionsOpenai(seen))
-        # Same bare-first stable ordering as the Anthropic builder (P7/L5).
-        tools.sort(
-            key=lambda t: (0 if _toolDefName(t) in _BARE_TOOL_ALLOW else 1, _toolDefName(t))
-        )
-        return tools
-
-    tools = tool_defs_cache.get_or_build('openai', _build_base)
-    messages = getattr(session, 'messages', None) or []
-    contextMsgs = list(messages) if isinstance(messages, list) else []
-    contextWindow = DEFAULT_CONTEXT_WINDOW
-    try:
-        modelId = as_str(getattr(session, 'model', ''), '')
-        providerCfg = as_dict(getattr(session, 'provider', None), {})
-        if modelId:
-            contextWindow = _resolveModelContextWindow(modelId, providerCfg or None)
-    except Exception:
-        logger.debug('tool-defs context window resolve failed', exc_info=True)
-    cacheKey = _sessionToolDefsCacheKey('openai', tools, session, contextWindow)
-    cached = tool_defs_cache.get_session_cached(session, 'openai', cacheKey)
-    if cached is not None:
-        return _filterToolsByGoal(session, cached)
-    # Run the same BM25-budgeted progressive disclosure as the
-    # Anthropic builder. The OpenAI path previously shipped the full registry
-    # (~80 KB JSON, ≈20k tokens) to every model without a capability profile —
-    # the dominant trigger of deterministic gateway 500s while a few-KB chat
-    # body from other harnesses succeeds on the same model+provider.
-    try:
-        from app.services.tools.model_tools import assembleToolDefs
-
-        # Budget against the session model's REAL window (same as the
-        # Anthropic builder) — a 32k model must not be offered a 200k budget.
-        # assembleToolDefs ranks by top-level `name` (Anthropic shape) — shim
-        # the OpenAI defs into that shape for ranking, then map the selected
-        # names back onto the original OpenAI-format definitions.
-        byName: dict[str, dict[str, object]] = {}
-        anthShim: list[dict[str, object]] = []
-        for t in tools:
-            name = _toolDefName(t)
-            if not name or name in byName:
-                continue
-            byName[name] = t
-            fn = as_dict(t.get('function'), {})
-            anthShim.append(
-                {
-                    'name': name,
-                    'description': as_str(t.get('description') or fn.get('description'), ''),
-                    'input_schema': as_dict(t.get('parameters') or fn.get('parameters'), {}),
-                }
-            )
-        result = assembleToolDefs(
-            all_tool_defs=anthShim,
-            context_messages=contextMsgs,
-            contextLength=contextWindow,
-            coreToolNames=_coreToolNames(),
-            tool_keywords_by_name=_toolSearchKeywordsByName(),
-        )
-        if result.activated:
-            session._tool_assembly = result
-            tools = [
-                byName[as_str(td.get('name'), '')]
-                for td in result.tool_defs
-                if as_str(td.get('name'), '') in byName
-            ]
-    except Exception:
-        logger.debug('openai progressive tool disclosure failed', exc_info=True)
-    mode = normalizeGuardMode(getattr(session, 'guardMode', None) or 'full')
-    if mode == 'full':
-        blocked = {'submit_plan', 'submitPlan', 'approve_plan', 'reject_plan'}
-
-        def _tool_name(t: dict[str, object]) -> str:
-            fn = as_dict(t.get('function'))
-            return as_str(fn.get('name') or t.get('name'))
-
-        tools = [t for t in tools if _tool_name(t) not in blocked]
-    if mode == 'plan':
-        blocked_in_plan = {'enter_plan_mode', 'request_plan_mode'}
-
-        def _tool_name_plan(t: dict[str, object]) -> str:
-            fn = as_dict(t.get('function'))
-            return as_str(fn.get('name') or t.get('name'))
-
-        tools = [t for t in tools if _tool_name_plan(t) not in blocked_in_plan]
-    # /circuit gate (OpenAI path): same visibility rule as toolDefinitions.
-    try:
-        from app.services.tool_registrations.circuit_tools import (
-            _is_circuit_gate_tool,
-        )
-        from app.services.tools.circuit_tools import is_circuit_mode
-
-        def _circuit_gate_name(t: dict[str, object]) -> str:
-            fn = as_dict(t.get('function'))
-            return as_str(fn.get('name') or t.get('name'))
-
-        if session is None or not is_circuit_mode(session):
-            tools = [t for t in tools if not _is_circuit_gate_tool(_circuit_gate_name(t))]
-    except Exception:
-        pass
-    # Phase C gate (OpenAI path): same visibility rule as toolDefinitions.
-    try:
-        from app.services.bot_mode.dm import filter_dm_tools
-
-        tools = filter_dm_tools(tools, session)
-    except Exception:
-        pass
-    # Guided setup: install_complete rides only with a pending setup.
-    try:
-        from app.services.bot_mode.setup import filter_setup_tools
-
-        tools = filter_setup_tools(tools, session)
-    except Exception:
-        pass
-    tools = _finalize_session_tools(session, tools)
-    tool_defs_cache.store_session_cached(session, 'openai', cacheKey, tools)
-    return _filterToolsByGoal(session, tools)
-
-
+    """Tool definitions in OpenAI format (the E1 canonical pipeline)."""
+    return _sessionToolDefs(session, 'openai')
 
 
 def _formatQueuedMessagesAsUserTurn(entries: list[dict[str, object]]) -> dict[str, object]:

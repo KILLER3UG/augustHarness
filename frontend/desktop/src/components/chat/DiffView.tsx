@@ -13,8 +13,9 @@
 /*   2. an `oldContent` / `newContent` pair (computes the diff inline),  */
 /*   3. a `null` / `undefined` (renders nothing).                        */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 
 export type DiffLineKind = 'context' | 'added' | 'removed' | 'hunk';
 
@@ -143,12 +144,36 @@ export interface DiffViewProps {
   anchors?: DiffAnchor[];
   /** Id prefix for anchor scroll targets (unique per panel). */
   idPrefix?: string;
+  /**
+   * Review notes painted onto their line (same line semantics as anchors).
+   * Neutral chips — a note is not a finding, so it must not borrow the
+   * destructive styling.
+   */
+  notes?: DiffNoteChip[];
+  /** When set, every content row grows a hover "+" affordance at this line. */
+  onAddNote?: (lineNumber: number) => void;
+  /**
+   * A line the caller wants revealed. A target below `maxLines` has no row
+   * in the DOM until the list expands, so expanding and scrolling are one
+   * action here — the panel cannot scroll to a row that does not exist.
+   * `revealNonce` re-runs the jump when the same line is chosen twice.
+   */
+  revealLine?: number;
+  revealNonce?: number;
 }
 
 export interface DiffAnchor {
   line: number;
   tag: string;   // severity chip, e.g. P0..P3
   title: string; // one-line finding title
+}
+
+export interface DiffNoteChip {
+  line: number;
+  /** First line of the note body, truncated by CSS. */
+  preview: string;
+  /** Queued notes are dimmed — they are on their way, not being written. */
+  sent?: boolean;
 }
 
 /** Tally added/removed lines from an already-parsed diff. */
@@ -184,7 +209,7 @@ export function diffStats(
   return countDiffLines(lines);
 }
 
-export function DiffView({ diff, oldContent, newContent, maxLines = 40, className, anchors, idPrefix }: DiffViewProps) {
+export function DiffView({ diff, oldContent, newContent, maxLines = 40, className, anchors, idPrefix, notes, onAddNote, revealLine, revealNonce }: DiffViewProps) {
   const lines = useMemo<DiffLine[]>(() => {
     if (diff) return parseUnifiedDiff(diff);
     if (oldContent !== undefined && newContent !== undefined) {
@@ -204,9 +229,39 @@ export function DiffView({ diff, oldContent, newContent, maxLines = 40, classNam
     return m;
   }, [anchors]);
 
+  const notesByLine = useMemo(() => {
+    const m = new Map<number, DiffNoteChip[]>();
+    for (const n of notes ?? []) {
+      if (!n.line) continue;
+      const list = m.get(n.line) ?? [];
+      list.push(n);
+      m.set(n.line, list);
+    }
+    return m;
+  }, [notes]);
+
   const counts = useMemo(() => countDiffLines(lines), [lines]);
 
   const [expanded, setExpanded] = useState(false);
+
+  // Jump-to-line: reveal the row first, then scroll to it on the frame after
+  // the newly rendered rows commit.
+  useEffect(() => {
+    if (revealLine === undefined || revealNonce === undefined) return;
+    if (revealLine > maxLines) setExpanded(true);
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        document
+          .getElementById(`${idPrefix ?? 'diff-anchor'}-${revealLine}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [revealLine, revealNonce, maxLines, idPrefix]);
 
   if (lines.length === 0) return null;
 
@@ -232,6 +287,12 @@ export function DiffView({ diff, oldContent, newContent, maxLines = 40, classNam
               ? anchorsByLine.get(line.kind === 'removed' ? line.oldLine ?? -1 : line.newLine ?? -1)
               : undefined
           }
+          notes={
+            notesByLine.size
+              ? notesByLine.get(line.kind === 'removed' ? line.oldLine ?? -1 : line.newLine ?? -1)
+              : undefined
+          }
+          onAddNote={onAddNote}
           idPrefix={idPrefix}
         />
       ))}
@@ -257,7 +318,19 @@ export function DiffView({ diff, oldContent, newContent, maxLines = 40, classNam
   );
 }
 
-function DiffLineRow({ line, anchors, idPrefix }: { line: DiffLine; anchors?: DiffAnchor[]; idPrefix?: string }) {
+function DiffLineRow({
+  line,
+  anchors,
+  notes,
+  onAddNote,
+  idPrefix,
+}: {
+  line: DiffLine;
+  anchors?: DiffAnchor[];
+  notes?: DiffNoteChip[];
+  onAddNote?: (lineNumber: number) => void;
+  idPrefix?: string;
+}) {
   const lineNumber = line.kind === 'removed' ? line.oldLine : line.newLine;
   const prefix = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
 
@@ -275,9 +348,9 @@ function DiffLineRow({ line, anchors, idPrefix }: { line: DiffLine; anchors?: Di
 
   return (
     <div
-      className={cn('flex hover:bg-accent/25', anchors?.length && 'bg-primary/[0.06]')}
-      id={anchors?.length && lineNumber ? `${idPrefix ?? 'diff-anchor'}-${lineNumber}` : undefined}
-      {...(anchors?.length ? { 'data-diff-anchor': lineNumber } : {})}
+      className={cn('group flex hover:bg-accent/25', anchors?.length && 'bg-primary/[0.06]')}
+      id={(anchors?.length || notes?.length) && lineNumber ? `${idPrefix ?? 'diff-anchor'}-${lineNumber}` : undefined}
+      {...(anchors?.length || notes?.length ? { 'data-diff-anchor': lineNumber } : {})}
     >
       <span
         className={cn(
@@ -306,6 +379,19 @@ function DiffLineRow({ line, anchors, idPrefix }: { line: DiffLine; anchors?: Di
       >
         <span className="opacity-50 select-none">{prefix}</span> {line.text || ' '}
       </span>
+      {notes?.map((n, i) => (
+        <span
+          key={i}
+          title={n.preview}
+          data-testid="diff-line-note"
+          className={cn(
+            'shrink-0 self-center ml-2 max-w-[14rem] truncate rounded border border-border bg-muted px-1 py-0.5 text-2xs text-tier-2',
+            n.sent && 'opacity-70',
+          )}
+        >
+          {n.sent ? '✓ ' : ''}{n.preview}
+        </span>
+      ))}
       {anchors?.map((a, i) => (
         <span
           key={i}
@@ -316,6 +402,21 @@ function DiffLineRow({ line, anchors, idPrefix }: { line: DiffLine; anchors?: Di
           {a.tag} {a.title}
         </span>
       ))}
+      {onAddNote && lineNumber != null && (
+        <Button
+          variant="bare"
+          type="button"
+          onClick={() => onAddNote(lineNumber)}
+          aria-label={`Add note for the AI on line ${lineNumber}`}
+          title="Add note for the AI"
+          data-testid="diff-add-note"
+          className="shrink-0 self-center mr-2 rounded border border-border/60 px-1 py-0.5 text-2xs text-tier-3
+            opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-primary hover:border-primary/50
+            cursor-pointer transition-opacity"
+        >
+          +
+        </Button>
+      )}
     </div>
   );
 }

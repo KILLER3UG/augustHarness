@@ -33,7 +33,9 @@ const MAX_PREVIEW_LINES = 5000;
 
 function TextPreview({ content }: { content: string }) {
   const allLines = content.split('\n');
-  const lines = allLines.slice(0, MAX_PREVIEW_LINES);
+  const [loadFull, setLoadFull] = useState(false);
+  const limit = loadFull ? allLines.length : MAX_PREVIEW_LINES;
+  const lines = allLines.slice(0, limit);
   const truncated = lines.length < allLines.length;
 
   return (
@@ -45,8 +47,21 @@ function TextPreview({ content }: { content: string }) {
         </div>
       ))}
       {truncated && (
-        <div className="mt-3 border-t border-border/50 px-4 pt-3 text-xs text-muted-foreground">
-          Preview limited to the first {MAX_PREVIEW_LINES.toLocaleString()} lines.
+        <div className="mt-3 flex items-center gap-3 border-t border-border/50 px-4 pt-3 text-xs text-muted-foreground">
+          <span>
+            Preview limited to the first {MAX_PREVIEW_LINES.toLocaleString()} of{' '}
+            {allLines.length.toLocaleString()} lines.
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setLoadFull(true)}
+            data-testid="text-preview-load-anyway"
+            title="Render every line — large documents can make the pane slow"
+          >
+            Load all lines anyway
+          </Button>
         </div>
       )}
     </div>

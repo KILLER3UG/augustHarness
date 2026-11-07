@@ -1,15 +1,9 @@
 """P2 — the unified learning scheduler.
 
-Before this module, the background learning loop rode three independent
-pollers: ``scheduled_introspection_loop`` (fixed 6h, started in main.py),
-``consolidation_loop`` (brain-config cadence, started in cognitive_boot,
-itself carrying the distiller + refine passes), and in-turn ReviewGates
-(which stay in-turn by design — they react to conversation, not the clock).
-Each poller kept its own due/no-op bookkeeping (or none at all), logged its
-own failures, and the UI could not answer "when did the learning brain last
-run, and what did it do?"
-
-This module collapses the *scheduled* pollers into one registry + one loop:
+One registry + one loop for every clock-driven learning pass (the
+pre-P2 design rode three independent pollers, each with its own
+bookkeeping; in-turn ReviewGates stay in-turn by design — they react to
+conversation, not the clock):
 
 * One table — ``learning_job_run`` (migration 041) — is the ledger. Every
   run gets a row with status, duration and a small summary blob.

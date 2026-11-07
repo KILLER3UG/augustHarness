@@ -21,6 +21,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -109,6 +110,69 @@ def main() -> int:
     # that matter are already enforced above: the parser rejects an invalid
     # name, and the duplicate check catches the other reason `list_all` drops
     # an entry.
+
+    # E5: a skill body that names a tool must name a REAL one. A skill is the
+    # model's routing table — a backticked `circuit_simumlate` typo in a body
+    # sends the model calling a tool that does not exist, and the model pays
+    # rounds discovering it. Only snake_case-looking references are checked
+    # (contain an underscore): plain words in backticks are prose, and
+    # file/command shapes carry separators this rule never matches.
+    try:
+        from app.services.tool_registrations import register_all as _register_all
+        from app.services.tool_registry import _registry as _live_registry
+
+        _register_all()
+        known_tools = set(_live_registry.keys())
+    except Exception as exc:  # noqa: BLE001
+        print(f'error: could not load the tool registry for the tool-name check: {exc}')
+        return 2
+    tool_ref_re = re.compile(r'`([a-z][a-z0-9]*_[a-z0-9_]+)`')
+    # Backticked snake_case tokens that are NOT tool references, each with
+    # the reason it is allowed to appear in a skill body. Additions need a
+    # reason written next to them — this is a glossary, not a sponge.
+    _NOT_TOOLS: dict[str, str] = {
+        # capability VALUE passed to spawn_subagents (independent-review)
+        'read_only': 'an enum value for spawn_subagents capability, not a call',
+        # manim kwarg / wheel filename (math-animation code samples + prose)
+        'run_time': 'a manim method kwarg, not a call',
+        'win_amd64': 'part of a wheel filename in a version note',
+        # SSE event + ledger table names (trajectory-review prose)
+        'turn_end': 'the turn_end SSE event, not a tool',
+        'turn_outcomes': 'the turn_outcomes ledger table, not a tool',
+        # a circuit_simulate measure key (circuit-sim expect cards)
+        'vout_max': 'a circuit_simulate measure key, not a call',
+        # Deliberately UNREGISTERED by policy (tool_policy.py): JTAG board
+        # programming stays agent-uncharted, and hdl-fpga/circuit-sim name
+        # it precisely to tell the model NOT to call anything like it.
+        'fpga_program': 'intentionally unregistered (agent-uncharted hardware action)',
+    }
+    for path in files:
+        rel = path.relative_to(root).as_posix()
+        body = path.read_text(encoding='utf-8', errors='replace')
+        for m in tool_ref_re.finditer(body):
+            ref = m.group(1)
+            if ref in _NOT_TOOLS:
+                continue
+            if ref not in known_tools:
+                errors.append(f'{rel}: names tool `{ref}` which is not registered')
+
+    # E5: every agent area guide is reachable from AGENTS.md. The docs index
+    # lists the guides; AGENTS.md is the contract that routes work to them —
+    # an area guide AGENTS.md never names is an orphan the contract cannot
+    # point a session at (SolidCraft's cargo xtask skills check, adapted).
+    agents_md = REPO / 'AGENTS.md'
+    agent_dir = REPO / 'docs' / 'agent'
+    if agents_md.is_file() and agent_dir.is_dir():
+        agents_text = agents_md.read_text(encoding='utf-8', errors='replace')
+        for guide in sorted(agent_dir.glob('*.md')):
+            if guide.name == 'README.md':
+                continue
+            if f'{guide.name}' not in agents_text:
+                errors.append(
+                    f'docs/agent/{guide.name} is not referenced from AGENTS.md — '
+                    'the contract cannot route sessions to an orphan guide'
+                )
+
     if errors:
         for error in errors:
             print(f'error: {error}')
@@ -117,7 +181,8 @@ def main() -> int:
 
     print(
         f'check:skills: {len(files)} SKILL.md file(s), '
-        f'{len(names)} bundled skill(s): {", ".join(sorted(names))}'
+        f'{len(names)} bundled skill(s): {", ".join(sorted(names))}; '
+        f'tool references + area-guide reachability OK'
     )
     return 0
 

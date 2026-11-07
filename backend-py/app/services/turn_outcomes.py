@@ -230,6 +230,11 @@ _NEW_COLUMNS = (
     'skills_loaded',
     'facts_injected',
     'error_families',
+    # E4 expect receipts: how many `_expect` verdicts the turn produced and
+    # how many mismatched. NULL (absent from the insert) = the turn used no
+    # receipts — never conflated with "all receipts passed".
+    'receipts_total',
+    'receipts_failed',
 )
 
 
@@ -268,6 +273,8 @@ def record_turn_outcome(
     skills_loaded: list[str] | None = None,
     facts_injected: list[str] | None = None,
     error_families: list[str] | None = None,
+    receipts_total: int | None = None,
+    receipts_failed: int | None = None,
 ) -> int | None:
     """Append one telemetry row. Best-effort: never raises into the turn.
 
@@ -326,6 +333,8 @@ def record_turn_outcome(
             _nullable_json_list(skills_loaded),
             _nullable_json_list(facts_injected),
             _nullable_json_list(error_families),
+            _nullable_int(receipts_total),
+            _nullable_int(receipts_failed),
         ]
         try:
             cursor = conn.execute(

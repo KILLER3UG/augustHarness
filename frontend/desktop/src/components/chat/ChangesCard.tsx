@@ -8,9 +8,10 @@
 
 import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Loader2, Undo2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, StickyNote, Undo2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FileIcon } from '@/components/ui/FileIcon';
+import { Button } from '@/components/ui/button';
 import { DiffView } from '@/components/chat/DiffView';
 import { DisclosureRow } from '@/components/chat/DisclosureRow';
 import { classifyFileKind, openFileInDrawer } from '@/lib/file-kind';
@@ -19,6 +20,7 @@ import {
   artifactOwnedPaths,
   type ProducedToolEntry,
 } from '@/lib/produced-artifacts';
+import { useReviewNotes, unsentNotes } from '@/store/review-notes';
 import { useRevertAllChanges } from '@/lib/git-revert';
 import { openRightDrawer, setRightDrawerDiff } from '@/components/shell/RightDrawerState';
 import type { GitDiffFile, GitDiffResult } from '@/api/git';
@@ -103,6 +105,11 @@ export function ChangesCard({
       removed: files.reduce((sum, f) => sum + f.removed, 0),
     };
   }, [changedFiles]);
+
+  // The unsent badge drives the feedback loop: notes written on this
+  // session's diffs that have not been queued to the agent yet.
+  const sessionNotes = useReviewNotes((s) => (effectiveSessionId ? s.bySession[effectiveSessionId] : undefined));
+  const unsentCount = unsentNotes(sessionNotes).length;
 
   // Default open state follows the reference: small change sets show their
   // rows immediately, large ones stay collapsed. Only a user toggle sticks.
@@ -211,6 +218,28 @@ export function ChangesCard({
           )}
           Undo
         </button>
+        {unsentCount > 0 && (
+          <Button
+            variant="bare"
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onReview && ownedPaths.length > 0) {
+                onReview(ownedPaths[0]);
+                return;
+              }
+              if (!changedFiles) return;
+              setRightDrawerDiff(changedFiles);
+              openRightDrawer('diff');
+            }}
+            title={`${unsentCount} review note${unsentCount === 1 ? '' : 's'} not sent yet — open the diff to send them`}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2 py-0.5 text-2xs font-medium text-primary transition hover:bg-primary/20"
+            data-testid="changes-unsent-notes"
+          >
+            <StickyNote className="size-3" />
+            {unsentCount} unsent
+          </Button>
+        )}
       </div>
 
       {expanded && (

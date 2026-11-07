@@ -1,0 +1,6 @@
+# Tools whose registered schema declares no `properties` — the only tools
+# dispatch-time validation (toolSchemaCheck: warn|strict) cannot check.
+# One name per line. This list ONLY SHRINKS: converting a tool to a real
+# schema drops its line in the same commit; a NEW schema-less tool fails
+# check:tool-schemas. (Started empty on 2026-11-07 — every registered
+# tool already declares a real schema.)

@@ -15,6 +15,8 @@ import { PromptDisclosure } from '@/components/chat/PromptDisclosure';
 import { ActivitySummary } from '@/components/chat/ActivitySummary';
 import { classifyTool } from '@/lib/tool-classify';
 import { getAgentRoleLabel } from '@/lib/tool-labels';
+import { AgentStateDot } from '@/components/chat/AgentStateDot';
+import { agentDotState } from '@/lib/agent-state';
 import {
   distillThoughtLines,
   summarizeThoughtHeader,
@@ -26,7 +28,7 @@ import {
   type SubagentPromptEntry,
 } from '@/components/chat/subagent-tools';
 
-export function splitSubagentBlocks(blocks: MessageBlock[]): {
+function splitSubagentBlocks(blocks: MessageBlock[]): {
   bodyBlocks: MessageBlock[];
   finalOutput: MessageBlock | null;
 } {
@@ -222,7 +224,8 @@ function NestedAgentRows({
                     </span>
                   ) : null}
                 </span>
-                <span className="col-start-2 row-start-2 text-[0.75rem] leading-4 text-muted-foreground/70">
+                <span className="col-start-2 row-start-2 flex items-center gap-1.5 text-[0.75rem] leading-4 text-muted-foreground/70">
+                  <AgentStateDot state={agentDotState(agent.status) ?? 'queued'} />
                   {SUBAGENT_STATUS_LABEL[agent.status]}
                 </span>
               </button>

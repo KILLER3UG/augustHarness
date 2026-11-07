@@ -13905,23 +13905,6 @@
         "summary": "Simulateprovider"
       }
     },
-    "/api/providers/templates": {
-      "get": {
-        "description": "Deprecated: templates removed. Always returns ``[]`` for back-compat.",
-        "operationId": "listTemplates_api_providers_templates_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Listtemplates"
-      }
-    },
     "/api/providers/{providerId}": {
       "delete": {
         "operationId": "deleteProvider_api_providers__providerId__delete",
@@ -16010,6 +15993,54 @@
           }
         },
         "summary": "Patchskill"
+      }
+    },
+    "/api/skills/{name}/adopt-bundled": {
+      "post": {
+        "description": "Replace a shadowing copy with the bundled version (N3 freshness).\n\nThe shadowing file is version-snapshotted first, so the adopt is an\nUndo; the copy keeps its scope and precedence — only content catches\nup to what shipped with the app.",
+        "operationId": "adoptBundled_api_skills__name__adopt_bundled_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "workspace",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Workspace",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adoptbundled"
       }
     },
     "/api/skills/{name}/versions": {

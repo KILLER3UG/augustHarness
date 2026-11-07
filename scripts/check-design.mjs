@@ -97,6 +97,30 @@ const RULES = [
       '  -fg variants for text) — they re-theme light/dark. The raw Tailwind warm palettes\n' +
       '  do not follow the theme and fail contrast on light backgrounds.',
   },
+  {
+    id: 'copy-filler',
+    // Filler words in quoted UI copy ("please", "simply"): they pad length
+    // and talk down to the reader; Orca's styleguide names both as banned
+    // filler. Deliberately single/double quotes only — template literals
+    // and comments carry code and prose that legitimately use these words.
+    re: /(['"])(?:(?!\1).)*\b(?:please|simply)\b(?:(?!\1).)*\1/gi,
+    advice:
+      'Rewrite the copy without the filler (docs/styleguide/ux-rules.md): state the action\n' +
+      '  directly instead of "please retry" or "simply click".',
+  },
+  {
+    id: 'copy-baked-keys',
+    // Keyboard glyphs baked into label strings: the platform prefix (⌘ vs
+    // Ctrl+) must come from the shortcut registry, not a hardcoded string —
+    // a label that says "Ctrl+Enter" lies on macOS and drifts from the real
+    // binding. lib/shortcuts.ts is the mapping authority and is exempt.
+    re: /(['"`])(?:(?!\1).)*[⌘⇧⌥]|(['"])(?:(?!\1).)*\bCtrl\+(?:(?!\1).)*\2/g,
+    exclude: ['frontend/desktop/src/lib/shortcuts.ts'],
+    advice:
+      'Render the binding from lib/shortcuts.ts (KeyCap / ShortcutKeyCombo) or drop the\n' +
+      '  baked keys — a hardcoded ⌘/Ctrl+ in a string is wrong on one platform and drifts\n' +
+      '  when the binding changes.',
+  },
 ];
 
 function walkFiles(dir) {
@@ -132,8 +156,30 @@ function collect() {
   for (const file of walkFiles(SRC)) {
     const rel = relative(REPO, file).replace(/\\/g, '/');
     const lines = readFileSync(file, 'utf8').split('\n');
+    let inBlockComment = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      const trimmed = line.trim();
+      /* Comments are prose, not UI copy and not call sites. The copy rules
+       * already say they exempt comments, but a quoted phrase or a ⌘ inside a
+       * `{/* … *\/}` block still matched and burned three baseline slots. A
+       * line is comment-only when it starts a `//` / `/*` / `{/*` / `*` run or
+       * sits inside a block comment left open above; code with a TRAILING
+       * comment is not skipped. */
+      const commentOnly =
+        inBlockComment ||
+        trimmed.startsWith('//') ||
+        trimmed.startsWith('/*') ||
+        trimmed.startsWith('{/*') ||
+        trimmed.startsWith('*');
+      const opens = (line.match(/\/\*/g) ?? []).length;
+      const closes = (line.match(/\*\//g) ?? []).length;
+      if (inBlockComment) {
+        if (closes > 0) inBlockComment = false;
+      } else if (opens > closes) {
+        inBlockComment = true;
+      }
+      if (commentOnly) continue;
       for (const rule of RULES) {
         if (rule.exclude?.some((frag) => rel.includes(frag))) continue;
         // Fresh regex per line: the /g flag is stateful across calls.

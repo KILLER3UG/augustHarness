@@ -147,6 +147,7 @@ strKeys: tuple[str, ...] = (
     'skillLearning',
     'skillLearningJudgeModel',
     'autonomyKinds',
+    'toolSchemaCheck',
 )
 allowedKeys: frozenset[str] = frozenset(boolKeys + numKeys + floatKeys + strKeys)
 maxAgentDepthRange = (1, 5)
@@ -408,6 +409,13 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # (empty = fall back to the background-review memory model, then the
     # titler resolver order — keyless gateways keep working).
     ('skillLearningJudgeModel', 'skill_learning_judge_model', '', 'str'),
+    # Dispatch-time argument validation against each tool's registered schema
+    # (tool_registry.dispatch). off = call the handler as-is; warn = append
+    # `[param_warnings]` to the result; strict = refuse BEFORE the handler runs.
+    # It has to be an allowed key or the knob is unreachable: `dispatch` reads
+    # it with a default of 'off', so a key the config layer refuses to store
+    # silently pins every install to off.
+    ('toolSchemaCheck', 'tool_schema_check', 'off', 'str'),
     # Item 14 — the autonomy switch. ON is the shipped default: a learned
     # skill write is the same trust class as a memory write (which has always
     # been direct), and the reference harnesses put no human between the agent
@@ -650,6 +658,11 @@ def validatePatch(patch: object) -> tuple[bool, str]:
                 return (
                     False,
                     f'{key!r} must be off | extract-only | propose | full (got {value!r})',
+                )
+            if key == 'toolSchemaCheck' and value not in ('off', 'warn', 'strict'):
+                return (
+                    False,
+                    f'{key!r} must be off | warn | strict (got {value!r})',
                 )
             if key == 'autonomyKinds':
                 # Validated against the code's ceiling, and unknown names are

@@ -501,9 +501,13 @@ export function useComposerPopovers({
       }
       // ⌘/Ctrl+Enter always sends — the explicit shortcut for a hard send
       // regardless of dropdown focus (plain Enter sends too when idle).
+      // While a turn streams the two keys diverge: Enter steers the running
+      // turn; ⌘/Ctrl+Enter queues the text to run after it (the send button
+      // previews this while the modifier is held).
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
-        void send();
+        if (streaming) void send(undefined, { queueAfterStop: true });
+        else void send();
         return;
       }
       if (e.key === 'Enter' && !e.shiftKey) {

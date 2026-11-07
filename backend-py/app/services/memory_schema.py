@@ -1261,6 +1261,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             ensure_column(
                 conn, 'turn_outcomes', 'tool_args_ready_to_stream_end_ms', 'INTEGER DEFAULT 0'
             )
+            # E4 expect receipts: NULL = the turn used no `_expect` verdicts.
+            ensure_column(conn, 'turn_outcomes', 'receipts_total', 'INTEGER')
+            ensure_column(conn, 'turn_outcomes', 'receipts_failed', 'INTEGER')
             _ensure_messages_fts(conn)
             repair_fts_sync(conn)
             _run_migrations_safe(conn)

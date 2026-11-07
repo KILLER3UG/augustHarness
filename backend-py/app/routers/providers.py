@@ -157,12 +157,6 @@ async def listProviders():
     return [_provider_to_dict(p) for p in providers]
 
 
-@router.get('/templates')
-async def listTemplates():
-    """Deprecated: templates removed. Always returns ``[]`` for back-compat."""
-    return []
-
-
 # Static `/health` must be registered before `/{providerId}` or "health" is captured as an id.
 @router.get('/health')
 async def providersHealth(force: int = 0):

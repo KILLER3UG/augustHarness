@@ -1552,26 +1552,6 @@ def _apply_approved(row: dict[str, Any]) -> dict[str, Any]:
 # of pass functions below.
 
 
-async def scheduled_introspection_loop() -> None:
-    """DEPRECATED shim (P2): the introspection cadence is one job in
-    ``learning_scheduler`` now; the scheduler is the only starter. Kept so
-    external imports keep resolving for one release — running it just runs
-    the unified loop.
-
-    The pass body lives in ``_run_scheduled_pass`` /
-    ``_run_scheduled_promotion_pass`` (file observations + promote
-    proposals, never apply).
-    """
-    import logging
-
-    logging.getLogger(__name__).warning(
-        'scheduled_introspection_loop is deprecated — learning_scheduler owns the cadence'
-    )
-    from app.services.learning_scheduler import scheduler_loop
-
-    await scheduler_loop()
-
-
 def _run_scheduled_pass() -> int:
     """One introspection sweep → 0..N observation proposals. Returns count."""
     data = build_introspection()

@@ -11,7 +11,8 @@ Tables (from app/services/memory_schema.py + migrations):
   memory_store (system KV — memory purge keeps only live agent keys),
   sessions, messages,
   session_topics, usage_events, lifecycle (audit), config_audit,
-  tool_guardrail_log, routing_evidence, subagent_runs
+  tool_guardrail_log, routing_evidence, subagent_runs, decision_ledger,
+  harness_jobs
   (learned_heuristics, brain_events, friction_events, consolidation_audit
   were subtracted 2026-10-30 — dead tables, see migration 060.)
 """
@@ -45,6 +46,8 @@ _COUNT_TABLES = [
     ('config_audit', 'configAudit'),
     ('routing_evidence', 'routingEvidence'),
     ('subagent_runs', 'subagentRuns'),
+    ('decision_ledger', 'decisionLedger'),
+    ('harness_jobs', 'harnessJobs'),
 ]
 
 # Tables cleared by the "erase memory" action (the agent's knowledge of you).
@@ -64,6 +67,10 @@ _MEMORY_TABLES = [
     'episodes',
     'failure_fingerprints',
     'turn_outcomes',
+    # Sub-agent run rows carry the user's task goals and result summaries —
+    # conversation-derived content, so "erase my memory" must reach them.
+    # They were counted here for two releases without being wipeable.
+    'subagent_runs',
     # Refine-store entries are authored from episode digests (which carry
     # user-message excerpts), so they are user-derived knowledge: an
     # "erase memory" that left them standing would keep injecting the
@@ -87,6 +94,12 @@ _LOG_TABLES = [
     'config_audit',
     'tool_guardrail_log',
     'refine_ledger',
+    # Diagnostics ledgers: routing outcomes, decision counterfactuals and
+    # harness job records are evidence about the system, not memory — but
+    # they are conversation-derived and were previously unwipeable.
+    'routing_evidence',
+    'decision_ledger',
+    'harness_jobs',
 ]
 
 

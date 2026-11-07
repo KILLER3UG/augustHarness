@@ -63,6 +63,12 @@ export interface ChatSendOptions {
    * the item until it is explicitly dequeued.
    */
   noRequeue?: boolean;
+  /**
+   * While a turn is streaming, queue the message to run AFTER the turn
+   * (kind 'queue') instead of steering the running turn (kind 'steer').
+   * The ⌘/Ctrl+Enter chord — Enter alone still steers.
+   */
+  queueAfterStop?: boolean;
 }
 
 export type ChatSendOutcome = OfflineSendOutcome;
@@ -161,7 +167,7 @@ export function useChatSend(opts: UseChatSendOptions) {
   // closure, but `send` is defined after it and is NOT in generateAIResponse's
   // dep array — calling `send` directly would capture a stale callback. Route
   // the retry through a ref that always points at the latest `send`.
-  const sendRef = useRef<ChatSendFn>(async () => 'skipped');
+  const sendRef = useRef<ChatSendFn>(() => Promise.resolve('skipped'));
 
   // (b) Double-Enter latch: the second send in the same frame sees a stale
   // `input`/`streaming` closure and would append a duplicate user bubble
@@ -520,8 +526,12 @@ export function useChatSend(opts: UseChatSendOptions) {
       }
 
       // While streaming: mid-run STEER (course correction) — applies at the
-      // next tool/LLM boundary without cancelling the turn (/steer).
+      // next tool/LLM boundary without cancelling the turn (/steer). The
+      // ⌘/Ctrl+Enter chord (queueAfterStop) queues the same text to run
+      // AFTER the turn instead — same pipeline, different kind, different
+      // promise about when it runs.
       if (streaming && sessionId) {
+        const queueAfterStop = !!sendOptions?.queueAfterStop;
         try {
           const wbId = ChatSendService.resolveWorkbenchQueueId(
             workbenchSessionId,
@@ -545,7 +555,7 @@ export function useChatSend(opts: UseChatSendOptions) {
             wbId,
             text,
             savedAttachments,
-            'steer',
+            queueAfterStop ? 'queue' : 'steer',
           );
           // Optimistic local update: the SSE event will also arrive and
           // upsert the same entry (idempotent), but write immediately so
@@ -556,9 +566,13 @@ export function useChatSend(opts: UseChatSendOptions) {
           setShowToolsDropdown(false);
           setShowCommandsDropdown(false);
           clearComposerDraft(sessionId);
-          toast.message('Direction queued', {
-            description: 'Applied after the current tool step.',
-          });
+          if (queueAfterStop) {
+            toast.message('Queued — will send when the current response finishes');
+          } else {
+            toast.message('Direction queued', {
+              description: 'Applied after the current tool step.',
+            });
+          }
           releaseSendLatch();
           return 'queued';
         } catch (err) {

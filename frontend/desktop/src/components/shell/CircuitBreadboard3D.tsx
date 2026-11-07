@@ -61,6 +61,8 @@ import {
   type PartInput,
 } from '@/lib/circuit-3d-parts';
 import { LIFT, TIMING, TWEEN_SPEED_REDUCED, prefersReducedMotion, tweenProgress } from '@/lib/circuit-motion';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
 import type { SchematicGraph } from '@/api/circuit';
 
 interface Props {
@@ -132,6 +134,32 @@ export function CircuitBreadboard3D({ graph, selectedRef, onSelect, className }:
   const [label, setLabel] = useState('');
   const [knobReadout, setKnobReadout] = useState('512 → 128');
   const [empty, setEmpty] = useState(!graph || graph.components.length === 0);
+
+  // savePicture (the Orca/FreeCAD export path): one fresh render, then the
+  // live canvas to a PNG download. The board on disk never looked like the
+  // board on screen — the backend's matplotlib render is a different scene
+  // entirely, so the honest export is THIS canvas.
+  const exportPng = () => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    try {
+      stage.renderer.render(stage.scene, stage.camera);
+      stage.renderer.domElement.toBlob((blob) => {
+        if (!blob) {
+          toast.error('Could not export the board view');
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'circuit-board-3d.png';
+        a.click();
+        URL.revokeObjectURL(url);
+      }, 'image/png');
+    } catch {
+      toast.error('Could not export the board view');
+    }
+  };
 
   /* ── mount: renderer, camera, lights, controls, the frame loop ───────── */
   useEffect(() => {
@@ -721,8 +749,23 @@ export function CircuitBreadboard3D({ graph, selectedRef, onSelect, className }:
             {knobReadout}
           </span>
         </span>
-        <span className="shrink-0 text-2xs text-muted-foreground/70">
-          {empty ? 'waiting for parts' : 'drag the knob · drag to turn · scroll to zoom'}
+        <span className="flex shrink-0 items-center gap-2">
+          <span className="text-2xs text-muted-foreground/70">
+            {empty ? 'waiting for parts' : 'drag the knob · drag to turn · scroll to zoom'}
+          </span>
+          {!empty && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={exportPng}
+              title="Save the board view as a PNG"
+              aria-label="Export board view as PNG"
+              data-testid="circuit-3d-export-png"
+            >
+              PNG
+            </Button>
+          )}
         </span>
       </div>
       <div
