@@ -21,10 +21,15 @@
  * fallback covers a node id that itself contains a separator. */
 
 import { useEffect, useRef, useState } from 'react';
-import { $themeMode, resolveSystemTheme } from '@/lib/theme';
+import { resolveSystemTheme, useThemeStore } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
 let mermaidSeq = 0;
+
+/** Stable defaults: `= {}` in the signature minted a new object every render,
+ *  so the render effect re-ran on any parent update and rebuilt the diagram. */
+const NO_LINKS: Record<string, string> = {};
+const NO_DETAILS: Record<string, string> = {};
 
 interface Props {
   code: string;
@@ -48,13 +53,24 @@ function matchKey(elementId: string, keys: string[]): string | null {
 
 export function MermaidDiagram({
   code,
-  links = {},
-  details = {},
+  links = NO_LINKS,
+  details = NO_DETAILS,
   onNavigate,
   onOpenDetail,
   className,
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
+  // The diagram follows the app theme. 'system' is resolved here rather than
+  // in the store, so an OS light/dark flip repaints the diagram too.
+  const themeMode = useThemeStore((s) => s.mode);
+  const [systemDark, setSystemDark] = useState(() => resolveSystemTheme() === 'dark');
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => setSystemDark(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  const effectiveTheme = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode;
   // Handlers arrive fresh every render; the effect below runs on `code` alone,
   // so it reaches them through a ref rather than closing over a stale pair.
   const handlers = useRef({ onNavigate, onOpenDetail });
@@ -77,12 +93,10 @@ export function MermaidDiagram({
         // Follow the app theme, not a hardcoded dark: a light-mode render of
         // a dark-palette diagram was unreadable (the theme ships default dark,
         // but system/light modes exist and the docs pane follows them).
-        const mode = $themeMode.get();
-        const theme = mode === 'system' ? resolveSystemTheme() : mode;
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme: theme === 'light' ? 'default' : 'dark',
+          theme: effectiveTheme === 'light' ? 'default' : 'dark',
         });
         const id = `aug-docs-diagram-${(mermaidSeq += 1)}`;
         const rendered = await mermaid.render(id, code);
@@ -172,7 +186,7 @@ export function MermaidDiagram({
       cancelled = true;
       if (node) node.innerHTML = '';
     };
-  }, [code, links, details]);
+  }, [code, links, details, effectiveTheme]);
 
   if (error) {
     return (

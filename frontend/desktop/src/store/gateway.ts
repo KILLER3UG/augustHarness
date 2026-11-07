@@ -4,7 +4,7 @@ import { api } from '@/api/client';
 
 export type GatewayState =
   | { status: 'connecting' }
-  | { status: 'open'; port: number; uptime: number; degraded?: boolean; backgroundIssues?: string[] }
+  | { status: 'open'; port: number; uptime: number; degraded?: boolean }
   | { status: 'closed'; reason?: string }
   | { status: 'error'; message: string };
 
@@ -75,7 +75,6 @@ if (typeof window !== 'undefined') {
   let pollTicks = 0;
   interface DetailedHealth {
     status?: string;
-    backgroundIssues?: Record<string, string> | string[];
   }
   async function pollDetailed(): Promise<void> {
     const gw = useGatewayStore.getState().gateway;
@@ -84,7 +83,7 @@ if (typeof window !== 'undefined') {
       const data = await api.get<DetailedHealth>('/api/health/detailed');
       const degraded = data.status === 'degraded';
       useGatewayStore.setState({
-        gateway: { ...gw, degraded, backgroundIssues: degraded ? Object.keys(data.backgroundIssues ?? {}) : undefined },
+        gateway: { ...gw, degraded },
       });
       if (degraded && !degradedAnnounced) {
         degradedAnnounced = true;
