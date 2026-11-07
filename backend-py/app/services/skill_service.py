@@ -560,6 +560,11 @@ def _parseSkill(path: Path) -> Optional[dict[str, object]]:
         # stays in `meta` below, so the round-trip write and the router's
         # lineage read both still see it.
         'status': str(meta.get('status') or '').strip(),
+        # The frontmatter's own `version:`, surfaced for the bundled-freshness
+        # compare at the bottom of listSkills(). It stays in `meta` too, so the
+        # round-trip write and the router's lineage read still see it. Without
+        # this key the compare reads None on both sides and flags nothing.
+        'version': str(meta.get('version') or '').strip(),
         # M6 item 3: unrecognized frontmatter keys round-trip instead of
         # being silently dropped on the next patch/setEnabled write.
         'meta': meta,
