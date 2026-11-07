@@ -631,7 +631,7 @@ gated behind the `/circuit` slash command:
   active upstream), PySpice-org/PySpice (Python↔ngspice bindings — the natural
   future upgrade path beyond raw batch runs), ahkab/ahkab (pure-Python SPICE).
 
-## Older
+## 2026-08-26 — cache accounting round (working tree)
 
 **Avg cache hit rate now works for every provider shape** — the context ring's cache readout was silently reading 0% for most providers:
 
