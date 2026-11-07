@@ -11,6 +11,7 @@ import { useParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Loader2, StickyNote, Undo2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FileIcon } from '@/components/ui/FileIcon';
+import { Button } from '@/components/ui/button';
 import { DiffView } from '@/components/chat/DiffView';
 import { DisclosureRow } from '@/components/chat/DisclosureRow';
 import { classifyFileKind, openFileInDrawer } from '@/lib/file-kind';
@@ -218,7 +219,8 @@ export function ChangesCard({
           Undo
         </button>
         {unsentCount > 0 && (
-          <button
+          <Button
+            variant="bare"
             type="button"
             onClick={(e) => {
               e.stopPropagation();
@@ -236,7 +238,7 @@ export function ChangesCard({
           >
             <StickyNote className="size-3" />
             {unsentCount} unsent
-          </button>
+          </Button>
         )}
       </div>
 

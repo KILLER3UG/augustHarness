@@ -20,8 +20,12 @@ import {
 } from './RightDrawerState';
 import { ReviewFindingsPanel } from './ReviewFindingsPanel';
 import { ReviewNotesPanel, type NoteDraft } from './ReviewNotesPanel';
-import { useReviewNotes, unsentNotes, type ReviewNote } from '@/store/review-notes';
+import { useReviewNotes, type ReviewNote } from '@/store/review-notes';
 import { useRevertAllChanges } from '@/lib/git-revert';
+
+/** Stable empty list: `?? []` minted a new array every render, which made
+ * ReviewNotesPanel's draft effect fire and erase the note being typed. */
+const NO_NOTES: ReviewNote[] = [];
 
 /** Stable DOM id prefix for a file's review anchors (DiffView scroll targets). */
 function diffAnchorPrefix(path: string) {
@@ -73,17 +77,26 @@ export function RightDrawerDiffSection({ sessionId }: { sessionId: string | null
   // Review notes: session-scoped line annotations the user sends back to
   // the agent as one queued message. The composer opens from the "+"
   // affordance on a diff row; jump reuses the DiffView anchor ids.
-  const allNotes = useReviewNotes((s) => (sessionId ? s.bySession[sessionId] : undefined)) ?? [];
+  const allNotes = useReviewNotes((s) => (sessionId ? s.bySession[sessionId] : undefined)) ?? NO_NOTES;
   const [noteDraft, setNoteDraft] = useState<NoteDraft | null>(null);
+
+  // A draft is anchored to a file+line, never to a session. Drop it when the
+  // session changes so a note started on one diff cannot be filed under the
+  // next one.
+  useEffect(() => {
+    setNoteDraft(null);
+  }, [sessionId]);
+
+  // Jump-to-line: expand the file, then let DiffView reveal + scroll — a line
+  // past its truncation cap has no row in the DOM to scroll to.
+  const [reveal, setReveal] = useState<{ filePath: string; line: number; nonce: number } | null>(
+    null,
+  );
 
   const handleJumpToNote = (note: ReviewNote) => {
     if (!files.some((f) => f.path === note.filePath)) return;
     setExpandedFiles((prev) => new Set([...prev, note.filePath]));
-    window.setTimeout(() => {
-      document
-        .getElementById(`${diffAnchorPrefix(note.filePath)}-${note.lineNumber}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 120);
+    setReveal({ filePath: note.filePath, line: note.lineNumber, nonce: Date.now() });
   };
 
   /** Notes for one file, shaped for DiffView's neutral chips (same line
@@ -334,6 +347,8 @@ export function RightDrawerDiffSection({ sessionId }: { sessionId: string | null
                   notes={fileNotes(file.path)}
                   onAddNote={sessionId ? (line) => setNoteDraft({ filePath: file.path, lineNumber: line }) : undefined}
                   idPrefix={diffAnchorPrefix(file.path)}
+                  revealLine={reveal?.filePath === file.path ? reveal.line : undefined}
+                  revealNonce={reveal?.filePath === file.path ? reveal.nonce : undefined}
                 />
               ) : (
                 <div className="p-3 text-center text-muted-foreground/60">No diff content available.</div>

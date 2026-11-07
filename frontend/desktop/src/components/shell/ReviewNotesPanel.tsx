@@ -49,30 +49,38 @@ export function ReviewNotesPanel({
 
   // A "+" click on a diff line opens the composer for that line; an edit
   // click loads the note. Focus the textarea either way so typing starts.
+  // Deliberately not keyed on the `notes` prop: a parent re-render would
+  // change its identity and wipe the body mid-typing. The edit target is
+  // read from the store by id instead.
   useEffect(() => {
     if (!draft) return;
     if (draft.editId) {
-      const note = notes.find((n) => n.id === draft.editId);
+      const note = useReviewNotes
+        .getState()
+        .bySession[sessionId ?? '']
+        ?.find((n) => n.id === draft.editId);
       setBody(note?.body ?? '');
     } else {
       setBody('');
     }
     textareaRef.current?.focus();
-  }, [draft, notes]);
+  }, [draft, sessionId]);
 
   const saveDraft = () => {
     const trimmed = body.trim();
-    if (!draft || !trimmed) return;
+    // A note belongs to a session; without one there is no bucket to write
+    // into (the old `?? ''` filed notes under a phantom key).
+    if (!draft || !trimmed || !sessionId) return;
     if (draft.editId) {
       // Line edits apply; the composer never moves a note between files.
-      updateNote(sessionId ?? '', draft.editId, {
+      updateNote(sessionId, draft.editId, {
         body: trimmed,
         lineNumber: draft.lineNumber,
         startLine: draft.startLine,
       });
       toast.success('Note updated — send it again to hand the new text to the agent');
     } else {
-      addNote(sessionId ?? '', {
+      addNote(sessionId, {
         filePath: draft.filePath,
         lineNumber: draft.lineNumber,
         startLine: draft.startLine,
@@ -135,7 +143,8 @@ export function ReviewNotesPanel({
             <span className="truncate font-mono text-2xs text-muted-foreground" title={draftTarget ?? ''}>
               {draft.editId ? 'Editing note' : 'New note'} · {draftTarget}
             </span>
-            <button
+            <Button
+              variant="bare"
               type="button"
               onClick={() => {
                 setBody('');
@@ -145,7 +154,7 @@ export function ReviewNotesPanel({
               className="rounded p-0.5 text-muted-foreground/60 hover:bg-accent hover:text-foreground"
             >
               <X className="size-3" />
-            </button>
+            </Button>
           </div>
           <textarea
             ref={textareaRef}
@@ -187,7 +196,8 @@ export function ReviewNotesPanel({
               )}
               data-testid="review-note-row"
             >
-              <button
+              <Button
+                variant="bare"
                 type="button"
                 onClick={() => onJumpToNote(n)}
                 className="shrink-0 rounded border border-border/60 px-1 font-mono text-2xs text-tier-3 hover:text-primary"
@@ -196,12 +206,13 @@ export function ReviewNotesPanel({
                 {n.startLine !== undefined && n.startLine !== n.lineNumber
                   ? `${n.startLine}-${n.lineNumber}`
                   : n.lineNumber}
-              </button>
+              </Button>
               <span className="min-w-0 flex-1 truncate text-xs text-foreground/85" title={n.body}>
                 {n.body}
               </span>
               {n.sentAt && <span className="shrink-0 text-2xs text-muted-foreground">queued</span>}
-              <button
+              <Button
+                variant="bare"
                 type="button"
                 onClick={() => onEditNote(n)}
                 aria-label={`Edit note on line ${n.lineNumber}`}
@@ -209,16 +220,19 @@ export function ReviewNotesPanel({
                 data-testid="review-note-edit"
               >
                 <Pencil className="size-3" />
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="bare"
                 type="button"
-                onClick={() => removeNote(sessionId ?? '', n.id)}
+                onClick={() => {
+                  if (sessionId) removeNote(sessionId, n.id);
+                }}
                 aria-label={`Delete note on line ${n.lineNumber}`}
                 className="shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-accent hover:text-danger"
                 data-testid="review-note-delete"
               >
                 <Trash2 className="size-3" />
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

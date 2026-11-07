@@ -98,7 +98,7 @@ function newId(): string {
   return `note_${Date.now().toString(36)}_${nextId.toString(36)}`;
 }
 
-export const useReviewNotes = create<ReviewNotesState>((set, get) => ({
+export const useReviewNotes = create<ReviewNotesState>((set) => ({
   bySession: hydrateAll(),
 
   addNote: (sessionId, note) => {
