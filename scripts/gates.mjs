@@ -61,12 +61,12 @@ const GROUPS = {
     ['npm', ['run', 'check:docs'], root],
     ['npm', ['run', 'check:doc-links'], root],
     ['npm', ['run', 'check:tool-registration'], root],
-    ['npm', ['run', 'check:tool-schemas'], root],
   ],
   backend: [
     ['npm', ['run', 'check:api'], root],
     ['npm', ['run', 'check:brain-config'], root],
     ['npm', ['run', 'check:skills'], root],
+    ['npm', ['run', 'check:tool-schemas'], root],
     ['npm', ['run', 'check:loop-imports'], root],
     ['lint', [], backend],
     ['npm', ['run', 'e2e:smoke'], root],
