@@ -1,9 +1,17 @@
 """check_tool_schemas.py — the typed-schema allowlist that only shrinks.
 
-E3: every tool whose registered schema declares ``properties`` can be
+E3: every tool whose registered schema declares a ``properties`` object can be
 validated at dispatch (``toolSchemaCheck: off|warn|strict``). A tool whose
-schema has none is NOT validated — guessing its shape would invent a
-contract the handler does not have — so it belongs in the allowlist.
+schema declares none is NOT validated — guessing its shape would invent a
+contract the handler does not have — so it belongs in the allowlist. An EMPTY
+``properties`` object is a complete schema (a no-argument tool), not a missing
+one.
+
+``listTools()`` returns OpenAI-shaped entries
+(``{'type': 'function', 'function': {name, description, parameters}}``); the
+parameters live one level down. Reading them off the entry itself finds
+nothing and makes this check report zero forever, which is how a gate stops
+being a gate.
 
 This check reads the live registry and compares the schema-less set
 against ``scripts/tool-schemas-unconverted.txt``. The list may only
@@ -37,12 +45,25 @@ def main() -> int:
 
     register_all()
 
+    tools = listTools()
+    # Reach control: a registry that failed to load would make every set below
+    # empty and the check would pass vacuously. 169 tools ship today; a floor
+    # far below that only trips when the population itself collapsed.
+    if len(tools) < 100:
+        print(
+            f'check-tool-schemas: FAIL — only {len(tools)} tool(s) registered, so this '
+            'check cannot measure the real surface. Did the registry load?'
+        )
+        return 2
+
     schemaless: set[str] = set()
-    for tool in listTools():
-        parameters = tool.get('parameters')
+    for entry in tools:
+        fn = entry.get('function') if isinstance(entry, dict) else None
+        name = fn.get('name') if isinstance(fn, dict) else None
+        parameters = fn.get('parameters') if isinstance(fn, dict) else None
         properties = parameters.get('properties') if isinstance(parameters, dict) else None
-        if not isinstance(properties, dict) or not properties:
-            schemaless.add(str(tool.get('name', '')))
+        if not isinstance(properties, dict):
+            schemaless.add(str(name or ''))
     schemaless.discard('')
 
     listed: set[str] = set()

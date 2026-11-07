@@ -626,19 +626,20 @@ def validate_tool_args(name: str, args: dict[str, object]) -> tuple[list[str], l
     """Top-level unknown-key check against the tool's registered schema.
 
     Returns ``(warnings, unknown)``. Warnings carry a did-you-mean hint so
-    a typo like ``operaton`` self-corrects in one round. A tool whose
-    schema declares no ``properties`` is not checked here at all — those
-    are the schema-less tools in ``tool-schemas-unconverted.txt``, and
-    guessing their shape would invent a contract the handler does not
-    have. ``_expect`` (the receipt argument, loop/receipts.py) is reserved
-    and never counts as unknown.
+    a typo like ``operaton`` self-corrects in one round. A tool whose schema
+    declares no ``properties`` at all is not checked here — ``check:tool-schemas``
+    keeps those in an allowlist, and guessing their shape would invent a
+    contract the handler does not have. A tool with an EMPTY ``properties``
+    object IS checked: that is the complete schema of a no-argument tool, so
+    every supplied key is unknown. ``_expect`` (the receipt argument,
+    loop/receipts.py) is reserved and never counts as unknown.
     """
     tool = _registry.get(name)
     if not tool:
         return [], []
     schema = tool.get('parameters')
     properties = schema.get('properties') if isinstance(schema, dict) else None
-    if not isinstance(properties, dict) or not properties:
+    if not isinstance(properties, dict):
         return [], []
     reserved = {'_expect'}
     unknown = [k for k in args if k not in properties and k not in reserved]
