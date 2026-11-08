@@ -32,6 +32,11 @@ PLANNER_ALLOWED_TOOLS = frozenset(
         'read_blackboard',
         'write_blackboard',
         'brain_query',
+        # The transcript index is the third read the planner needs: past chats
+        # hold the reasoning a plan continues, and the same rationale that put
+        # brain_query here applies — read-only, and the mode that most needs
+        # history could not reach it.
+        'session_search',
         # Planning is where durable decisions get made, and an orchestrator runs
         # the longest turns in the app. Read-only memory meant every "we chose X
         # because Y" evaporated with the session, so the mode that most needs to

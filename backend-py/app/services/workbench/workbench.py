@@ -7590,7 +7590,7 @@ def listProxyCapabilities() -> dict[str, object]:
             group = 'file'
         elif name in ('run_command', 'list_background_tasks', 'read_background_task', 'kill_background_task'):
             group = 'shell'
-        elif name in ('brain_query', 'remember'):
+        elif name in ('brain_query', 'remember', 'session_search'):
             group = 'memory'
         elif name in ('load_skill', 'load_skills', 'list_skills'):
             group = 'skill'

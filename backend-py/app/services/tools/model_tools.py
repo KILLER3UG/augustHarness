@@ -35,6 +35,13 @@ HARNESS_CORE_TOOLS: frozenset[str] = frozenset(
         # all.
         'list_facts',
         'forget',
+        # Past-conversation search. Core for the same reason session_context is
+        # (its neighbour in the same registration group): the transcript index
+        # is the only door to what earlier chats actually said, and a deferred
+        # surface that hides it leaves the model to re-derive history it already
+        # paid for — or to guess. Read-only, so it costs prompt bytes and nothing
+        # else on every turn.
+        'session_search',
         # The goal environment the turn works inside: the read door is core for the same
         # reason remember/list_facts are — a write door whose context cannot be read is a trap.
         'goal_read',

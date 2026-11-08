@@ -158,7 +158,7 @@ def _blocked_tools(session: object = None, depth: int | None = None) -> frozense
     return _SUBAGENT_NEVER_TOOLS | _SPAWN_TOOLS
 
 # Capability tiers for subagents — main model picks per-launch.
-SUBAGENT_CAPABILITY_READ_ONLY = {'read_file', 'read_files', 'list_directory', 'search_files', 'module_context', 'brain_query', 'web_search', 'web_fetch', 'web_fetch_many', 'read_blackboard', 'describe_environment', 'diagnose_proxy', 'list_agents', 'list_skills', 'load_skill', 'load_skills'}
+SUBAGENT_CAPABILITY_READ_ONLY = {'read_file', 'read_files', 'list_directory', 'search_files', 'module_context', 'brain_query', 'session_search', 'web_search', 'web_fetch', 'web_fetch_many', 'read_blackboard', 'describe_environment', 'diagnose_proxy', 'list_agents', 'list_skills', 'load_skill', 'load_skills'}
 SUBAGENT_CAPABILITY_FULL = None  # None means inherit all allowed (no extra filter)
 
 

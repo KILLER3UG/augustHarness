@@ -27,6 +27,9 @@ _PROMPT_READ = frozenset({
     'list_directory', 'list_integrations', 'list_mcp_servers',
     # Read-only context capsule for a past session (title/plan/turn digests).
     'session_context',
+    # Full-text search over past conversation messages (discovery / scroll /
+    # browse) — read-only, and the door a past-chat question actually needs.
+    'session_search',
     'pptx_list_elements',
     # Media analysis — the sanctioned reader for images/video/audio/docs
     # (read_file refuses binary media and redirects here).

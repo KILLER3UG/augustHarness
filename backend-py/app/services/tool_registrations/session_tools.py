@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import sqlite3
 from pathlib import Path
 
 from app.json_narrowing import as_int, as_str
@@ -1469,6 +1471,437 @@ async def _deleteSession(sessionId: str) -> str:
 
 _SESSION_CONTEXT_MAX_CHARS = 6000
 
+# ── session_search (discovery / scroll / browse over the messages FTS index) ──
+# Every bound below is a read bound, not a preference: the messages table is
+# the whole transcript history of an install, so an unbounded browse would hand
+# a model (and a tool-result pipeline with a 64 KB cap) a multi-megabyte blob.
+# The SQL LIMIT is always emitted from an int() of these, never from a model
+# string, and the JSON is assembled with json.dumps — never an f-string over
+# message text, which is how a brace in a transcript escapes into structure.
+_SESSION_SEARCH_MAX_LIMIT = 50
+_SESSION_SEARCH_MAX_SNIPPET = 240
+_SESSION_SEARCH_DEFAULT_LIMIT = 20
+_SESSION_SEARCH_MAX_WINDOW = 200
+# Browse pages the MERGED session list (workbench blobs ∪ sessions-table
+# fallback). The fallback SQL reads the newest ``offset + limit`` rows rather
+# than a same-offset window, because the fallback set is disjoint from the
+# workbench list and a page of the merged list can therefore contain fallback
+# rows from the TOP of their own order (500 workbench rows means global page 11
+# starts at fallback row 1, not row 500).
+_SESSION_SEARCH_MAX_BROWSE_LIMIT = 200
+_SESSION_SEARCH_DEFAULT_BROWSE_LIMIT = 50
+
+
+def _sessionSearchCoerce(args: dict[str, object], names: tuple[str, ...]) -> dict[str, object]:
+    """Narrow the wire arguments a session_search shape touches.
+
+    ``dispatch`` calls ``handler(**args)``, so a model that passes
+    ``sessionId=42`` would otherwise reach ``str.replace`` / ``f-string``
+    interpolation as an int and surface ``'int' object has no attribute
+    'replace'`` — the same leak ``_brainQuery`` closes by coercing before it
+    touches anything. Only the names a shape reads are copied, so an argument
+    belonging to another shape never reaches this one.
+    """
+    from app.json_narrowing import as_int, as_str
+
+    out: dict[str, object] = {}
+    for name in names:
+        if name not in args:
+            continue
+        value = args.get(name)
+        if name in ('limit', 'offset', 'beforeId', 'afterId'):
+            out[name] = as_int(value, 0)
+        else:
+            out[name] = as_str(value)
+    return out
+
+
+def _sessionSearchRows(
+    where: str,
+    params: list[object],
+    limit: int,
+    order: str = 'ASC',
+) -> list[sqlite3.Row]:
+    """One bounded read of the messages FTS join.
+
+    ``messages_fts`` is external content over ``messages``; the MATCH predicate
+    names the real FTS table (a column- or alias-level MATCH is the anti-pattern
+    the hygiene script exists to catch), and the base table supplies the columns
+    so the response carries the same wire shape ``brain_query(store=messages)``
+    returns. The session title is a LEFT JOIN — a message whose session row is
+    gone still has transcript text worth finding, and dropping it would hide the
+    hit entirely.
+    """
+    from app.services.memory_conn import conn as _conn
+
+    sql = (
+        'SELECT m.id, m.session_id, m.role, m.content, m.created_at, '
+        's.title AS session_title '
+        f'FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid '
+        'LEFT JOIN sessions s ON s.id = m.session_id '
+        f'WHERE {where} ORDER BY m.id {order} LIMIT ?'
+    )
+    return _conn().execute(sql, [*params, limit]).fetchall()
+
+
+def _sessionSearchMessage(row: sqlite3.Row, full: bool = True) -> dict[str, object]:
+    """One message as the wire shape, with a bounded content preview.
+
+    The preview is a plain prefix rather than ``snippet()``: the FTS5 snippet
+    helper marks matches with caller-supplied delimiters, and a transcript that
+    already contains those characters would render as malformed markup. A
+    prefix is honest about what it is — the head of the message, not a
+    relevance-centred excerpt.
+
+    ``full=False`` (discovery) drops the body down to the preview: a hit list
+    that carried every matching message in full would be bounded by nothing but
+    the 64 KB tool-result cap, and the model only needs enough of each hit to
+    decide which session to scroll into. ``full=True`` (scroll) is the read.
+    """
+    wire = dict(row)
+    try:
+        content = json.loads(wire.get('content') or '')
+        if isinstance(content, str):
+            wire['content'] = content
+    except (TypeError, ValueError):
+        pass
+    text = str(wire.get('content') or '')
+    wire['preview'] = ' '.join(text.split())[:_SESSION_SEARCH_MAX_SNIPPET]
+    # snake→camel, the same rule every other brain read applies (wire._row_as_wire),
+    # so the model sees one naming convention across brain_query, list_facts and
+    # this tool instead of a per-tool exception.
+    wire['sessionId'] = str(wire.pop('session_id', '') or '')
+    wire['sessionTitle'] = str(wire.pop('session_title', '') or '')
+    wire['createdAt'] = str(wire.pop('created_at', '') or '')
+    if not full:
+        wire.pop('content', None)
+    return wire
+
+
+def _sessionSearchPreview(
+    rows: list[sqlite3.Row], full: bool = True
+) -> list[dict[str, object]]:
+    return [_sessionSearchMessage(r, full=full) for r in rows]
+
+
+async def _sessionSearch(mode: str = '', **args: object) -> str:
+    """Search past conversation messages; move inside one session; list chats.
+
+    Three shapes on ONE door, so the model never has to guess which tool holds
+    the transcript index:
+
+    * discovery — ``mode='search'`` with a ``query``: FTS5 matches over the
+      ``messages`` table, each hit carrying its ``sessionId``. Returns matching
+      MESSAGES, not one row per session, because a session that matched on one
+      line is not a session that matched everywhere and the scroll shape is how
+      the model widens the window.
+    * scroll — ``mode='scroll'`` with ``sessionId`` and optional ``beforeId`` /
+      ``afterId``: moves backwards or forwards through ONE session by message
+      id. ``beforeId`` walks back (older), ``afterId`` walks forward (newer);
+      both is a contradiction and is refused rather than silently resolved.
+    * browse — ``mode='browse'``: one page of the session list itself, newest
+      first (``limit``/``offset``, ``hasMore``/``total``).
+
+    Read-only by construction: every path is a SELECT over the one brain
+    database, and nothing here writes, spawns or indexes. A session-scoped
+    scroll narrows to that session's own rows — the transcript index has no
+    per-user ownership axis, so the session id IS the boundary.
+    """
+    import json as _json
+
+    from app.json_narrowing import as_int, as_str
+
+    mode = as_str(mode).strip().lower() or 'search'
+    try:
+        if mode == 'browse':
+            wanted = _sessionSearchCoerce(args, ('limit', 'offset'))
+            return await asyncio.to_thread(
+                _sessionSearchBrowse,
+                as_int(wanted.get('limit'), _SESSION_SEARCH_DEFAULT_BROWSE_LIMIT),
+                as_int(wanted.get('offset'), 0),
+            )
+        if mode == 'scroll':
+            wanted = _sessionSearchCoerce(args, ('sessionId', 'beforeId', 'afterId', 'limit'))
+            sid = as_str(wanted.get('sessionId'))
+            if not sid:
+                return _json.dumps(
+                    {
+                        'error': (
+                            'session_search(scroll) requires sessionId — take it from a '
+                            "discovery hit, or call session_search(mode='browse') to list sessions."
+                        )
+                    }
+                )
+            before_id = as_int(wanted.get('beforeId'), 0)
+            after_id = as_int(wanted.get('afterId'), 0)
+            if before_id and after_id:
+                return _json.dumps(
+                    {
+                        'error': (
+                            'session_search(scroll): pass beforeId OR afterId, not both — '
+                            'one walks back through the session, the other forward.'
+                        )
+                    }
+                )
+            return await asyncio.to_thread(_sessionSearchScroll, sid, before_id, after_id)
+        if mode == 'search':
+            wanted = _sessionSearchCoerce(
+                args, ('query', 'sessionId', 'role', 'limit', 'beforeId', 'afterId')
+            )
+            query = as_str(wanted.get('query'))
+            if not query:
+                return _json.dumps(
+                    {
+                        'error': (
+                            'session_search requires a query for discovery. '
+                            "Use mode='browse' to list sessions, or mode='scroll' to move "
+                            'inside one you already have.'
+                        )
+                    }
+                )
+            return await asyncio.to_thread(
+                _sessionSearchDiscovery,
+                query,
+                as_str(wanted.get('sessionId')),
+                as_str(wanted.get('role')),
+                as_int(wanted.get('limit'), _SESSION_SEARCH_DEFAULT_LIMIT),
+                as_int(wanted.get('beforeId'), 0),
+                as_int(wanted.get('afterId'), 0),
+            )
+        return _json.dumps(
+            {
+                'error': (
+                    f"unknown session_search mode {mode!r} — expected 'search' (discovery "
+                    "with a query), 'scroll' (move inside one sessionId) or 'browse' (list sessions)."
+                )
+            }
+        )
+    except Exception as exc:
+        return _json.dumps({'error': f'session_search({mode}): {exc}'})
+
+
+def _sessionSearchDiscovery(
+    query: str,
+    session_id: str,
+    role: str,
+    limit: int,
+    before_id: int,
+    after_id: int,
+) -> str:
+    """Discovery shape: FTS5 matches over messages, narrowed by session/role."""
+    import json as _json
+
+    from app.services.memory_store.kv import _fts_match_query
+
+    lim = max(1, min(limit, _SESSION_SEARCH_MAX_LIMIT))
+    ftsQuery = _fts_match_query(query)
+    if not ftsQuery:
+        return _json.dumps(
+            {
+                'mode': 'search',
+                'query': query,
+                'messages': [],
+                'note': 'query has no searchable tokens (punctuation/short words only).',
+            }
+        )
+    where = 'messages_fts MATCH ?'
+    params: list[object] = [ftsQuery]
+    if session_id:
+        where += ' AND m.session_id = ?'
+        params.append(session_id)
+    if role:
+        where += ' AND m.role = ?'
+        params.append(role)
+    if before_id:
+        where += ' AND m.id < ?'
+        params.append(before_id)
+    if after_id:
+        where += ' AND m.id > ?'
+        params.append(after_id)
+    rows = _sessionSearchRows(where, params, lim, order='DESC')
+    messages = _sessionSearchPreview(rows, full=False)
+    return _json.dumps(
+        {
+            'mode': 'search',
+            'query': query,
+            'sessionId': session_id or '',
+            'role': role or '',
+            'count': len(messages),
+            'messages': messages,
+            'note': (
+                'matching MESSAGES, newest first — each hit carries its sessionId. '
+                'Pass sessionId + beforeId to scroll further back in one session, '
+                "or sessionId + afterId to move forward."
+            ),
+        },
+        default=str,
+        ensure_ascii=False,
+    )
+
+
+def _sessionSearchScroll(session_id: str, before_id: int, after_id: int) -> str:
+    """Scroll shape: a bounded window of ONE session, by message id."""
+    import json as _json
+
+    if after_id:
+        where = 'm.session_id = ? AND m.id > ?'
+        params: list[object] = [session_id, after_id]
+        rows = _sessionSearchRows(where, params, _SESSION_SEARCH_MAX_WINDOW, order='ASC')
+        messages = _sessionSearchPreview(rows)
+        endId = messages[-1]['id'] if messages else 0
+        return _json.dumps(
+            {
+                'mode': 'scroll',
+                'sessionId': session_id,
+                'direction': 'forward',
+                'fromId': after_id,
+                'count': len(messages),
+                'messages': messages,
+                'hasMore': len(messages) >= _SESSION_SEARCH_MAX_WINDOW,
+                'nextAfterId': endId or None,
+                'note': 'older messages are behind you: pass beforeId to walk back.',
+            },
+            default=str,
+            ensure_ascii=False,
+        )
+    where = 'm.session_id = ?'
+    params = [session_id]
+    if before_id:
+        where += ' AND m.id < ?'
+        params.append(before_id)
+    rows = _sessionSearchRows(where, params, _SESSION_SEARCH_MAX_WINDOW, order='DESC')
+    messages = _sessionSearchPreview(rows)
+    # DESC is the fetch order for "walk back"; the transcript reads forward.
+    messages.reverse()
+    firstId = messages[0]['id'] if messages else 0
+    return _json.dumps(
+        {
+            'mode': 'scroll',
+            'sessionId': session_id,
+            'direction': 'back',
+            'fromId': before_id or None,
+            'count': len(messages),
+            'messages': messages,
+            'hasMore': len(messages) >= _SESSION_SEARCH_MAX_WINDOW,
+            'nextBeforeId': firstId or None,
+            'note': (
+                'newest-first window reversed for reading. Pass nextBeforeId to keep '
+                "walking back, or afterId to walk forward from the newest message."
+            ),
+        },
+        default=str,
+        ensure_ascii=False,
+    )
+
+
+def _sessionSearchBrowse(
+    limit: int = _SESSION_SEARCH_DEFAULT_BROWSE_LIMIT,
+    offset: int = 0,
+) -> str:
+    """Browse shape: one bounded page of the session list, newest first.
+
+    Two sources, because the sidebar's own list is only half the truth:
+    ``list_workbench_sessions`` reads the workbench BLOB, and a session whose
+    blob is absent (a row written by the message path alone, or a blob lost to a
+    pre-T18 install) still has messages worth finding — omitting it would make
+    this door report a session as nonexistent while discovery returns its
+    messages. The sessions-table rows are the fallback set, keyed by id so a
+    session present in both is reported once.
+
+    Message counts come from the ``messages`` table (COUNT per session, one
+    grouped query) rather than the ``sessions.message_count`` column, which the
+    workbench writes from its in-memory copy and which a row written through
+    the message path never updates.
+
+    Paged, never a dump: ``limit``/``offset`` bound the page and the response
+    carries ``total``/``hasMore`` like ``list_facts``, so the model can walk the
+    whole list. The fallback SQL reads the newest ``offset + limit`` rows rather
+    than a same-offset window — the fallback set is disjoint from the workbench
+    list, so a page of the MERGED list can contain fallback rows from the TOP of
+    their own order. A source that fails is reported in ``degraded``/``errors``
+    and the list is explicitly NOT claimed complete.
+    """
+    import json as _json
+
+    from app.services.memory_conn import conn as _conn
+    from app.services.workbench import workbench as _wb
+
+    lim = max(1, min(as_int(limit, _SESSION_SEARCH_DEFAULT_BROWSE_LIMIT),
+                     _SESSION_SEARCH_MAX_BROWSE_LIMIT))
+    off = max(0, as_int(offset, 0))
+    items: dict[str, dict[str, object]] = {}
+    errors: list[str] = []
+    try:
+        for item in _wb.listWorkbenchSessions():
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get('id') or '')
+            if sid:
+                items[sid] = {
+                    'sessionId': sid,
+                    'title': str(item.get('title') or '')[:120],
+                    'messageCount': item.get('messageCount') or 0,
+                    'updatedAt': item.get('updatedAt') or item.get('startedAt') or '',
+                    'isArchived': bool(item.get('isArchived')),
+                }
+    except Exception as exc:
+        errors.append(f'workbench sessions: {type(exc).__name__}: {exc}')
+    try:
+        rows = _conn().execute(
+            'SELECT s.id, s.title, s.updated_at, s.started_at, s.is_archived, '
+            'COUNT(m.id) AS msg_count '
+            'FROM sessions s LEFT JOIN messages m ON m.session_id = s.id '
+            'GROUP BY s.id ORDER BY COALESCE(s.updated_at, s.started_at) DESC '
+            'LIMIT ? OFFSET ?',
+            (off + lim, 0),
+        ).fetchall()
+        for row in rows:
+            sid = str(row['id'] or '')
+            if not sid or sid in items:
+                continue
+            items[sid] = {
+                'sessionId': sid,
+                'title': str(row['title'] or '')[:120],
+                'messageCount': int(row['msg_count'] or 0),
+                'updatedAt': str(row['updated_at'] or row['started_at'] or ''),
+                'isArchived': bool(row['is_archived']),
+            }
+    except Exception as exc:
+        errors.append(f'sessions table: {type(exc).__name__}: {exc}')
+    sessions = sorted(
+        items.values(),
+        key=lambda x: str(x.get('updatedAt') or ''),
+        reverse=True,
+    )
+    total = len(sessions)
+    page = sessions[off : off + lim]
+    note = (
+        'newest first. Pass one of these sessionId values to '
+        "session_search(mode='scroll') to read it, or to "
+        "session_search(mode='search', sessionId=…) to narrow a discovery query."
+    )
+    if errors:
+        note += (
+            ' INCOMPLETE — a source failed (' + '; '.join(errors) + '), so this is '
+            'NOT the full session list and `total`/`hasMore` are unknown.'
+        )
+    return _json.dumps(
+        {
+            'mode': 'browse',
+            'count': len(page),
+            'total': None if errors else total,
+            'offset': off,
+            'limit': lim,
+            'hasMore': True if errors else (off + len(page) < total),
+            'degraded': bool(errors),
+            'errors': errors,
+            'sessions': page,
+            'note': note,
+        },
+        default=str,
+        ensure_ascii=False,
+    )
+
 
 def _contextCapsule(blob: dict[str, object], maxChars: int, focus: str = '') -> str:
     """Render a past session as a compact handoff capsule (title, metadata,
@@ -1687,6 +2120,66 @@ def register() -> None:
             },
             'required': ['sessionId'],
         },
+    )
+    tool_registry.register(
+        'session_search',
+        'Search past conversation MESSAGES across every session, then move inside one. '
+        "Three shapes on one tool: mode='search' (discovery) runs an FTS5 full-text query over the "
+        'messages store and returns matching messages, each carrying its sessionId — use it to find '
+        "what was discussed before; mode='scroll' walks one session by message id (sessionId plus "
+        'beforeId to go back, afterId to go forward — never both); mode=\'browse\' lists sessions '
+        'newest first, paged (limit/offset, hasMore). Prefer this over brain_query(store=\'messages\') '
+        'when you are looking for conversational history rather than a row listing. Read-only; costs one '
+        'call regardless of how much history it searches.',
+        _sessionSearch,
+        {
+            'type': 'object',
+            'properties': {
+                'mode': {
+                    'type': 'string',
+                    'enum': ['search', 'scroll', 'browse'],
+                    'description': "Which shape: 'search' (discovery, needs query), 'scroll' (needs "
+                    "sessionId and one of beforeId/afterId), 'browse' (list sessions, newest first, "
+                    "paged). Default 'search'.",
+                },
+                'query': {
+                    'type': 'string',
+                    'description': 'Discovery text to find in past messages (mode=search). Required there; '
+                    'ignored by the other shapes.',
+                },
+                'sessionId': {
+                    'type': 'string',
+                    'description': 'Session to scroll inside (mode=scroll), or to narrow a discovery '
+                    'query to (mode=search). Take it from a discovery hit or mode=browse.',
+                },
+                'role': {
+                    'type': 'string',
+                    'enum': ['user', 'assistant', 'system', 'tool'],
+                    'description': 'Optional discovery filter: only messages from this role.',
+                },
+                'beforeId': {
+                    'type': 'integer',
+                    'description': 'Scroll/back-paging cursor: return messages with id < beforeId '
+                    '(older). Discovery accepts it too. Mutually exclusive with afterId.',
+                },
+                'afterId': {
+                    'type': 'integer',
+                    'description': 'Forward-paging cursor: return messages with id > afterId (newer). '
+                    'Mutually exclusive with beforeId.',
+                },
+                'limit': {
+                    'type': 'integer',
+                    'description': 'Discovery hits to return (1-50, default 20) or browse page size '
+                    '(1-200, default 50). Scroll windows are bounded server-side and ignore this.',
+                },
+                'offset': {
+                    'type': 'integer',
+                    'description': 'Browse paging cursor: sessions to skip (default 0). Page with '
+                    '`limit` and stop when `hasMore` is false; `total` is the full session count.',
+                },
+            },
+        },
+        keywords=['session', 'search', 'history', 'messages', 'conversation', 'transcript', 'recall', 'scroll', 'browse'],
     )
     tool_registry.register(
         'rename_session',
