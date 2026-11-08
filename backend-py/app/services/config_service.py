@@ -13,7 +13,13 @@ from typing import Optional
 from app.atomic_write import write_json_atomic
 from app.json_narrowing import as_int, as_list
 from app.lib.paths import dataPath
-from app.models.config import ModelConfig, ProviderConfig, QuotaAuthConfig, QuotaEndpointConfig
+from app.models.config import (
+    DEFAULT_CONTEXT_WINDOW,
+    ModelConfig,
+    ProviderConfig,
+    QuotaAuthConfig,
+    QuotaEndpointConfig,
+)
 
 # ── read cache (avoids hitting disk on every hot-path call) ──────────────
 _CONFIG_CACHE_TTL_S = 2.0  # seconds — long enough to dedup burst reads,
@@ -189,7 +195,7 @@ def getProvidersAsModels() -> list[ProviderConfig]:
                         id=str(m.get('id', '')),
                         name=str(m.get('name', '')),
                         context_window=as_int(
-                            m.get('contextWindow') or m.get('context_window'), 128000
+                            m.get('contextWindow') or m.get('context_window'), DEFAULT_CONTEXT_WINDOW
                         ),
                         reasoning=bool(m.get('reasoning', False)),
                         free=bool(m.get('free', False)),

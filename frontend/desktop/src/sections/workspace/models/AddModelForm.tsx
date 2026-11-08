@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MODAL_LAYER, modalLayerClass } from '@/components/overlays/modal-layers';
 import { cn } from '@/lib/utils';
+import { DEFAULT_CONTEXT_WINDOW } from '@/lib/context-window';
 import { useMutation } from '@tanstack/react-query';
 import { Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -112,7 +113,7 @@ export function AddModelForm({
     mutationFn: () =>
       providersApi.addModel(providerId, {
         id,
-        contextWindow: contextWindow ? Number(contextWindow) : 128000,
+        contextWindow: contextWindow ? Number(contextWindow) : DEFAULT_CONTEXT_WINDOW,
         maxOutputTokens: maxOutputTokens ? Number(maxOutputTokens) : null,
         inputTypes: inputTypes.length ? inputTypes.map((t) => t.toLowerCase()) : null,
         outputTypes: outputTypes.length ? outputTypes.map((t) => t.toLowerCase()) : null,

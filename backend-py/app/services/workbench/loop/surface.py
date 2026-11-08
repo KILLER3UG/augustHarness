@@ -6,8 +6,9 @@ text) with its TTL memo, the tool-result cap resolver, the tool-definition
 name extractor, and the real MCP-server tool tails in both wire formats.
 
 Two things deliberately did NOT move, even though only the tool surface
-reads them: the fallback window ``DEFAULT_CONTEXT_WINDOW`` (the single
-``128000`` in workbench.py) and ``_resolveModelContextWindow``. The two
+reads them: the fallback window ``DEFAULT_CONTEXT_WINDOW`` (imported from
+``app/models/config.py``, the app-wide 1M default) and
+``_resolveModelContextWindow``. The two
 BUILDER functions (``toolDefinitions`` / ``openaiToolDefinitions``) also
 stay in workbench.py for now — they are the workbench's public tool
 surface, and moving them belongs to the canonical-tool-spec change, not

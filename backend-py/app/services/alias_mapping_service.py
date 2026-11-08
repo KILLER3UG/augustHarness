@@ -41,6 +41,7 @@ import logging
 from app.config import settings
 from app.json_narrowing import as_str
 from app.models.aliases import AliasMapping, AliasResolutionResult
+from app.models.config import DEFAULT_CONTEXT_WINDOW
 from app.providers import resolver as providerResolver
 from app.providers.route_resolver import resolve_for_model
 
@@ -303,7 +304,7 @@ def get_alias_models_for_v1_models() -> list[dict[str, object]]:
                         'id': aliasName,
                         'name': entry.get('displayAlias') or aliasName,
                         'provider': entry.get('targetProvider', 'unknown'),
-                        'contextWindow': 128000,
+                        'contextWindow': DEFAULT_CONTEXT_WINDOW,
                         'ownedBy': entry.get('targetProvider', 'unknown'),
                         'isAlias': True,
                     }
@@ -318,7 +319,7 @@ def get_alias_models_for_v1_models() -> list[dict[str, object]]:
                     'id': aliasName,
                     'name': aliasName,
                     'provider': 'builtin',
-                    'contextWindow': 128000,
+                    'contextWindow': DEFAULT_CONTEXT_WINDOW,
                     'ownedBy': 'builtin',
                     'isAlias': True,
                 }

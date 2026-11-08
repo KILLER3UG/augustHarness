@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Callable, Coroutine, cast
 
 from app.json_narrowing import as_bool, as_dict, as_float, as_int, as_list, as_str
+from app.models.config import DEFAULT_CONTEXT_WINDOW
 from app.services.tool_policy import is_mutating, is_shell_mutation
 from app.services.workbench import providers as _providers_mod
 from app.services.workbench import sessions as _sessions_mod
@@ -1390,11 +1391,8 @@ def effortToOpenaiReasoningEffort(effort: str) -> str:
 
 # Auto-compact when estimated history reaches this fraction of the model window.
 # Fallback window when a model's real contextWindow cannot be resolved.
-# Three sites hardcoded this value independently; one constant now.
-# This one and the resolver below stay in THIS file on purpose:
-# tests/test_compaction_threshold_authority.py reads this file's source text
-# and asserts the fallback window appears exactly once in it.
-DEFAULT_CONTEXT_WINDOW = 128000
+# Imported from app/models/config so the workbench, the provider CRUD path and
+# the model list cannot disagree about what "the default" means.
 
 
 def _resolveModelContextWindow(

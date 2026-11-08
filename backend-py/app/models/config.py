@@ -10,14 +10,21 @@ from typing import Literal
 
 from app.models.base import ExtraAllowBaseModel
 
+# The window assumed when neither the provider's /models metadata nor the user
+# has declared one. Owner directive (2026-11-09): the default is 1M, not 128k —
+# a model August knows nothing about should not be treated as the smallest one
+# on the market. Declared values and the per-family heuristics in
+# model_service._getContextWindow still win; this is only the last resort.
+DEFAULT_CONTEXT_WINDOW = 1_000_000
+
 
 class ModelConfig(ExtraAllowBaseModel):
     """A single model entry within a provider configuration."""
 
     id: str
     name: str = ''
-    # Default 128k; users can override in Model Providers.
-    context_window: int = 128000
+    # Default 1M; users can override in Model Providers.
+    context_window: int = DEFAULT_CONTEXT_WINDOW
     reasoning: bool = False
     free: bool = False
     pinned: bool = False

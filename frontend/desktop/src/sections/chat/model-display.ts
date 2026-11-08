@@ -238,9 +238,13 @@ export function findModelByKey<T extends { id: string; provider: string }>(
  * per-model entry from providers.json). The heuristics below are a sensible
  * default for the brief pre-hydration window, NOT the source of truth.
  */
+/** The window assumed for a model nothing else describes. Declared values and
+ *  the family heuristics below still win; this is only the last resort. */
+import { DEFAULT_CONTEXT_WINDOW } from '@/lib/context-window';
+
 export function estimateContextWindow(id?: string | null): number {
   const mid = (id || '').toLowerCase();
-  if (!mid) return 128000;
+  if (!mid) return DEFAULT_CONTEXT_WINDOW;
   if (mid.includes('claude')) return 200000;
   if (
     mid.includes('gemini') &&
@@ -255,7 +259,7 @@ export function estimateContextWindow(id?: string | null): number {
   if (mid.includes('deepseek')) return 128000;
   if (mid.includes('kimi') || mid.includes('moonshot')) return 128000;
   if (mid.includes('grok')) return 131072;
-  return 128000;
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 export function formatContextWindow(num?: number): string {

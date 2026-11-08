@@ -10,7 +10,14 @@ import logging
 from fastapi import APIRouter, HTTPException
 
 from app.json_narrowing import as_bool, as_dict, as_int, as_list, as_str
-from app.models.config import ModelCreate, ModelUpdate, ProviderConfig, ProviderCreate, ProviderUpdate
+from app.models.config import (
+    DEFAULT_CONTEXT_WINDOW,
+    ModelCreate,
+    ModelUpdate,
+    ProviderConfig,
+    ProviderCreate,
+    ProviderUpdate,
+)
 from app.services import config_service, model_service
 
 logger = logging.getLogger(__name__)
@@ -740,7 +747,7 @@ async def addModel(providerId: str, body: ModelCreate):
             entry: dict = {
                 'id': body.id,
                 'name': body.name or body.id,
-                'contextWindow': body.context_window if body.context_window and body.context_window > 0 else 128000,
+                'contextWindow': body.context_window if body.context_window and body.context_window > 0 else DEFAULT_CONTEXT_WINDOW,
                 'reasoning': body.reasoning or False,
                 'free': body.free or False,
                 'pinned': body.pinned or False,
@@ -794,7 +801,7 @@ async def updateModel(providerId: str, modelId: str, body: ModelUpdate):
                     if 'context_window' in dumped:
                         cw = dumped['context_window']
                         if cw is None or (isinstance(cw, int) and cw <= 0):
-                            m['contextWindow'] = 128000
+                            m['contextWindow'] = DEFAULT_CONTEXT_WINDOW
                         else:
                             m['contextWindow'] = cw
                         # Mark user-edited so a 128k value is kept (not treated as

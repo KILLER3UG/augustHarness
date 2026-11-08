@@ -23,6 +23,7 @@ import { providersApi, type ApiFormat, type Provider } from '@/api/providers';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { DEFAULT_CONTEXT_WINDOW } from '@/lib/context-window';
 import { useConfirmDialog } from '@/hooks/useConfirmDialog';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import { ConfirmDialog } from '@/components/overlays/ConfirmDialog';
@@ -66,7 +67,7 @@ export function ModelRow({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(model.name ?? model.id);
   const [contextWindow, setContextWindow] = useState(
-    (model.contextWindow ?? 128000).toString(),
+    (model.contextWindow ?? DEFAULT_CONTEXT_WINDOW).toString(),
   );
   const [maxOutputTokens, setMaxOutputTokens] = useState(
     (model.maxOutputTokens ?? 128000).toString(),
@@ -127,7 +128,7 @@ export function ModelRow({
 
   useEffect(() => {
     setName(model.name ?? model.id);
-    setContextWindow((model.contextWindow ?? 128000).toString());
+    setContextWindow((model.contextWindow ?? DEFAULT_CONTEXT_WINDOW).toString());
     setMaxOutputTokens((model.maxOutputTokens ?? 128000).toString());
     setInputTypes(
       (model.inputTypes ?? ['text']).map((t) => t.charAt(0).toUpperCase() + t.slice(1)),
@@ -541,7 +542,7 @@ if (editing) {
                   name,
                   contextWindow: contextWindow.trim()
                     ? Number(contextWindow)
-                    : 128000,
+                    : DEFAULT_CONTEXT_WINDOW,
                   maxOutputTokens: maxOutputTokens.trim()
                     ? Number(maxOutputTokens)
                     : null,
@@ -603,7 +604,7 @@ if (editing) {
         {ctxLabel && (
           <span
             className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 text-2xs font-mono text-muted-foreground"
-            title={`Context window: ${(model.contextWindow ?? 128000).toLocaleString()} tokens`}
+            title={`Context window: ${(model.contextWindow ?? DEFAULT_CONTEXT_WINDOW).toLocaleString()} tokens`}
           >
             {ctxLabel}
           </span>

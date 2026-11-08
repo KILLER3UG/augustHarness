@@ -19,6 +19,7 @@ import re
 import time
 
 from app.json_narrowing import as_dict, as_int, as_list, as_str
+from app.models.config import DEFAULT_CONTEXT_WINDOW
 from app.providers.api_format import normalize_api_format
 from app.providers.clients import getClient
 from app.services.cost_estimator import price_for_model
@@ -79,18 +80,48 @@ def _context_from_model_entry(entry: dict[str, object]) -> int:
     return 0
 
 
+def _familyContextWindow(modelId: str) -> int | None:
+    """The window a known model family carries, or None when the id names
+    nothing this code knows. None is what sends the caller to the app default,
+    so an unrecognised model is no longer assumed to be the smallest one."""
+    mid = (modelId or '').lower()
+    if 'claude' in mid:
+        return 200000
+    if 'gemini' in mid and any(x in mid for x in ('1.5', '2.0', '2.5', 'pro', 'flash', 'ultra')):
+        return 1_000_000
+    if 'deepseek-v4' in mid or re.search(r'deepseek[-_]?v4', mid):
+        return 1_000_000
+    if 'gpt-4.1' in mid:
+        return 1_047_576
+    if 'gpt-4o' in mid or 'chatgpt-4o' in mid:
+        return 128000
+    if re.search(r'\b(o1|o3|o4)\b', mid):
+        return 200000
+    if 'deepseek' in mid:
+        return 128000
+    if 'kimi' in mid or 'moonshot' in mid:
+        return 128000
+    if 'grok' in mid:
+        return 131072
+    return None
+
+
 def _getContextWindow(
     modelId: str, provider: dict[str, object] | None = None, fallback: object = None
 ) -> int:
     """Resolve context window.
 
     Priority (user intent first — applies to every model, not one family):
-      1. Per-model entry from Model Providers UI (``providers.json``)
+      1. Per-model entry from Model Providers UI (``providers.json``) — except a
+         FETCHED 128k on an id no family heuristic recognises: that number is
+         August's old default stamped onto an unknown model, not the provider's
+         word, so it falls through to the current default
       2. modelProfiles exact → longest prefix (not ``*``)
       3. Explicit fallback (live ``/models`` metadata from the host)
       4. Family heuristic
       5. Wildcard ``*`` profile (weak — often a stale 128k boilerplate)
-      6. 128000
+      6. ``DEFAULT_CONTEXT_WINDOW`` (1M) — an unknown model is not treated as
+         the smallest one on the market
     """
     profiles: dict[str, object] = {}
     if provider:
@@ -101,13 +132,19 @@ def _getContextWindow(
                 if n > 0:
                     # A stored contextWindow is the user's intent — whether it
                     # came from auto-discovery (source='fetched') or a manual
-                    # edit (source='manual'). Always honor it. The previous
-                    # carve-out treated 128000+fetched as "unset" and fell
-                    # through to heuristics that *also* return 128000 for
-                    # deepseek/kimi/gpt-4o — making those families look
-                    # permanently stuck regardless of edits. See A1 in
-                    # test_context_window_resolution.py.
-                    return n
+                    # edit (source='manual'). Always honor it, EXCEPT for the
+                    # one value that was never a fact: 128k auto-stamped onto an
+                    # unknown id by the old default. Honouring that made every
+                    # unrecognised model look permanently 128k, whatever the
+                    # default said. Families keep their real windows below, so
+                    # gpt-4o/deepseek still read 128k.
+                    stale_default = (
+                        n == 128000
+                        and as_str(m.get('source')) == 'fetched'
+                        and _familyContextWindow(modelId) is None
+                    )
+                    if not stale_default:
+                        return n
                 break
 
         profiles = as_dict(
@@ -138,38 +175,22 @@ def _getContextWindow(
         return explicit
 
     # Family heuristics when nothing was configured.
-    mid = (modelId or '').lower()
-    if 'claude' in mid:
-        return 200000
-    if 'gemini' in mid and any(x in mid for x in ('1.5', '2.0', '2.5', 'pro', 'flash', 'ultra')):
-        return 1_000_000
-    if 'deepseek-v4' in mid or re.search(r'deepseek[-_]?v4', mid):
-        return 1_000_000
-    if any(x in mid for x in ('gpt-4.1',)):
-        return 1_047_576
-    if any(x in mid for x in ('gpt-4o', 'chatgpt-4o')):
-        return 128000
-    if re.search(r'\b(o1|o3|o4)\b', mid):
-        return 200000
-    if 'deepseek' in mid:
-        return 128000
-    if 'kimi' in mid or 'moonshot' in mid:
-        return 128000
-    if 'grok' in mid:
-        return 131072
+    family = _familyContextWindow(modelId)
+    if family is not None:
+        return family
 
     if profiles:
         wildcard = as_dict(profiles.get('*'), {})
         n = _context_from_model_entry(wildcard) if wildcard else 0
         if n > 0:
             return n
-    return 128000
+    return DEFAULT_CONTEXT_WINDOW
 
 
 def _resolve_context_window(raw: object) -> int:
-    """Stored contextWindow, or 128k when unset."""
+    """Stored contextWindow, or the default when unset."""
     n = _extract_context_window_value(raw)
-    return n if n > 0 else 128000
+    return n if n > 0 else DEFAULT_CONTEXT_WINDOW
 
 
 # No hardcoded model catalogs — models always come from the provider's
