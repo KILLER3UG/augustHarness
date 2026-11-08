@@ -2,7 +2,10 @@ import { phaseLabel } from '@/lib/phase-labels';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { Brain, ChevronDown, Settings } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { isTransportError } from '@/lib/error-copy';
+import { restartBackendFromShell } from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Task, TaskContent, TaskTrigger } from '@/components/ui/task';
 import { ToolCallItemBody } from '@/components/chat/ToolCallItem';
@@ -43,6 +46,24 @@ import {
 import { getToolLabel } from '@/lib/tool-labels';
 import { useVerboseMode } from '@/lib/verbose-mode';
 import { resolveUiSessionId } from '../stream/session-id-map';
+
+/** Restart the supervised backend from a "Cannot reach August" bubble, then let
+ *  the caller re-send the turn. This goes through the shell's IPC because HTTP
+ *  cannot reach the thing that needs killing. The escalation is deliberate: a
+ *  backend that will not come back needs a fresh August, and only that failing
+ *  needs a reboot. */
+async function restartBackendThenRetry(retry?: () => void): Promise<void> {
+  toast.message('Restarting the August backend…');
+  const ok = await restartBackendFromShell();
+  if (ok) {
+    toast.success('Backend restarted');
+    retry?.();
+    return;
+  }
+  toast.error(
+    'The backend did not come back — restart August. If a fresh launch still cannot reach it, restart the computer.',
+  );
+}
 
 /** A stalled tool is a failed tool: the backend emits `stalled` when a call
  *  timed out, and every run-level summary must treat it the same as `error`
@@ -1396,6 +1417,10 @@ export function AssistantBlockTimeline({
       // action, and a corner ✕ to dismiss. Never collapsed into the activity
       // pack: a failed turn must be impossible to miss.
       const raw = block.rawContent;
+      // "Failed to fetch" is the one error a backend restart can fix. The
+      // restart goes through the shell's IPC because HTTP cannot reach the
+      // thing that needs killing.
+      const transport = isTransportError(raw);
       const key = block.id || `error_${index}`;
       return (
         <div
@@ -1440,8 +1465,8 @@ export function AssistantBlockTimeline({
                 </TaskContent>
               </Task>
             ) : null}
-            {(onRetryTurn || onSwitchModel) && (
-              <div className="mt-2.5 flex items-center gap-2">
+            {(onRetryTurn || onSwitchModel || transport) && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-2">
                 {onRetryTurn ? (
                   <button
                     type="button"
@@ -1451,6 +1476,18 @@ export function AssistantBlockTimeline({
                   >
                     ↻ Try again
                   </button>
+                ) : null}
+                {transport ? (
+                  <Button
+                    variant="bare"
+                    type="button"
+                    onClick={() => void restartBackendThenRetry(onRetryTurn)}
+                    data-testid="chat-error-restart-backend"
+                    title="Kill and relaunch the local August backend, then retry"
+                    className="inline-flex items-center gap-1 rounded-lg border border-danger/40 bg-danger/15 px-2.5 py-1 text-2xs font-medium text-danger-fg transition hover:bg-danger/25"
+                  >
+                    ⟳ Restart backend
+                  </Button>
                 ) : null}
                 {onSwitchModel ? (
                   <button

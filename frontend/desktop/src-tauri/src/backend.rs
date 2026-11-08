@@ -42,6 +42,17 @@ static ACTIVE_PROXY_PORT: AtomicU16 = AtomicU16::new(DEFAULT_PROXY_PORT);
 /// When true, the watchdog must not respawn the backend (update/install in progress).
 static UPDATE_HOLDOFF: AtomicBool = AtomicBool::new(false);
 
+/// When the holdoff was raised, and the installer it is protecting. A holdoff
+/// is meant to last until the app EXITS: the installer replaces the payload and
+/// the process quits. If the app is still running with the proxy down long
+/// after, the update never happened (a cancelled download, a failed launch),
+/// and the latch used to disable every respawn for the life of the process —
+/// recovery was a restart of August or of the machine. The watchdog releases it
+/// once this window has passed AND the installer process is gone.
+static UPDATE_HOLDOFF_SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+static INSTALLER_PID: Mutex<Option<u32>> = Mutex::new(None);
+const UPDATE_HOLDOFF_MAX: Duration = Duration::from_secs(180);
+
 /// True only for the process that actually owns the single-instance lock.
 /// A launch that was refused by the guard must never run backend teardown: its
 /// exit fires `ExitRequested`, and the orphan sweep would kill the *first*
@@ -1683,6 +1694,44 @@ pub fn updateHoldoffActive() -> bool {
     UPDATE_HOLDOFF.load(Ordering::SeqCst)
 }
 
+fn raiseUpdateHoldoff() {
+    UPDATE_HOLDOFF.store(true, Ordering::SeqCst);
+    if let Ok(mut since) = UPDATE_HOLDOFF_SINCE.lock() {
+        *since = Some(std::time::Instant::now());
+    }
+}
+
+fn clearUpdateHoldoff() {
+    UPDATE_HOLDOFF.store(false, Ordering::SeqCst);
+    if let Ok(mut since) = UPDATE_HOLDOFF_SINCE.lock() {
+        *since = None;
+    }
+}
+
+/// The installer this holdoff is protecting, if it is still running. An
+/// August-named image keeps a recycled PID from reading as "the install is
+/// still going" (see `processAlive`).
+fn installerRunning() -> bool {
+    INSTALLER_PID
+        .lock()
+        .ok()
+        .and_then(|pid| *pid)
+        .map(processAlive)
+        .unwrap_or(false)
+}
+
+/// True when the holdoff has outlived any real update: the window passed and no
+/// installer is running. Only then may the watchdog treat it as stale.
+fn updateHoldoffExpired() -> bool {
+    let aged = UPDATE_HOLDOFF_SINCE
+        .lock()
+        .ok()
+        .and_then(|since| *since)
+        .map(|since| since.elapsed() >= UPDATE_HOLDOFF_MAX)
+        .unwrap_or(false);
+    aged && !installerRunning()
+}
+
 /// Stop the supervised backend and keep the watchdog from respawning it.
 /// Used on Quit and before the Windows updater/NSIS install step so bundled
 /// `resources/python/*.pyd` files are not locked.
@@ -1704,7 +1753,7 @@ fn stopBackend(app: &AppHandle, reason: &str) {
         return;
     }
     // Prevent watchBackend from respawning while we tear down.
-    UPDATE_HOLDOFF.store(true, Ordering::SeqCst);
+    raiseUpdateHoldoff();
     let detail = match reason {
         "quit" => "Stopping backend…",
         "lan-access" => "Restarting backend for LAN access…",
@@ -2484,7 +2533,16 @@ pub fn watchBackend(app: &AppHandle) {
 
         // Avoid thrashing while the user is mid-bootstrap (copy/pip) or updating.
         if updateHoldoffActive() {
-            continue;
+            if !updateHoldoffExpired() {
+                continue;
+            }
+            // The app is still here long after the backend was stopped for an
+            // update, and no installer is running: the update never happened.
+            // Holding the latch would disable every respawn from now on.
+            log::warn!(
+                "[backend] update holdoff expired with no installer running — clearing it and restarting"
+            );
+            clearUpdateHoldoff();
         }
         if let Some(state) = app.try_state::<BackendSetupStatus>() {
             if let Ok(guard) = state.0.lock() {
@@ -3136,7 +3194,7 @@ pub async fn restart_proxy(app: AppHandle) -> String {
         // writer), and ensureRunning would then silently skip every respawn —
         // both here and in the watchdog — with no recovery path short of a
         // reboot. This command is the recovery door: clear it first.
-        UPDATE_HOLDOFF.store(false, Ordering::SeqCst);
+        clearUpdateHoldoff();
         killStoredChild(&app2);
         if ensureRunning(&app2) {
             "restarted".into()
@@ -3199,7 +3257,7 @@ pub async fn set_lan_access(app: AppHandle, enabled: bool) -> Result<LanAccessSt
         // teardown; clear it before the respawn, or `ensureRunning` would
         // skip the spawn and the backend would stay down until the user
         // pressed Retry.
-        UPDATE_HOLDOFF.store(false, Ordering::SeqCst);
+        clearUpdateHoldoff();
         ensureRunning(&app2)
     })
     .await
@@ -3688,13 +3746,18 @@ pub fn launch_installer_and_exit(app: AppHandle, path: String) -> Result<String,
     } else {
         log::info!("[update] backend already stopped for this update — not tearing down twice");
     }
-    Command::new(&installer)
+    let installer_child = Command::new(&installer)
         .arg("/UPDATE")
         // NSIS silent: no install pages. The update is a background operation
         // the user opted into with one click.
         .arg("/S")
         .spawn()
         .map_err(|e| format!("could not launch the installer: {e}"))?;
+    // Remember which process the holdoff is waiting for: the watchdog may only
+    // release a stale holdoff once this one is gone.
+    if let Ok(mut pid) = INSTALLER_PID.lock() {
+        *pid = Some(installer_child.id());
+    }
     log::info!(
         "[update] verified installer launched ({}) — exiting August",
         installer.display()

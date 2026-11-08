@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauri } from '@/lib/tauri-detect';
+import { isTransportError } from '@/lib/error-copy';
 
 let baseUrl: string | null = null;
 let fetchPatched = false;
@@ -284,9 +285,24 @@ function installFetchPatch(): void {
     // Outside Tauri the token is already in hand -- the pairing URL put it
     // there, or the host page set the global. Inside Tauri it arrives over
     // the IPC, so it is awaited here rather than blocking the patch.
-    if (resolvedLocalToken) return send(resolvedLocalToken);
-    if (!isTauri) return send(hostGlobalToken() ?? bootHostToken);
-    return localToken().then(send);
+    const request = (): Promise<Response> => {
+      if (resolvedLocalToken) return send(resolvedLocalToken);
+      if (!isTauri) return send(hostGlobalToken() ?? bootHostToken);
+      return localToken().then(send);
+    };
+
+    /* A transport-level failure means the cached base URL may be stale: the
+     * supervisor respawns the backend on the next free port when 8085 is taken
+     * (8086..8095), and discovery resolves ONCE. Left alone, every later request
+     * keeps targeting the dead port and the app reports "Failed to fetch" until
+     * it is restarted, while the watchdog sees a healthy backend on the new one.
+     * Dropping the resolved base makes the NEXT request re-discover. */
+    return request().catch((err: unknown) => {
+      if (isTransportError(err instanceof Error ? err.message : String(err))) {
+        resetDiscovery();
+      }
+      throw err;
+    });
   };
 }
 
@@ -373,6 +389,33 @@ function ensureReady(): Promise<void> {
  *  gate when it observes the proxy come up after discovery gave up. */
 export function resetDiscovery(): void {
   readyPromise = null;
+}
+
+let restartInFlight: Promise<boolean> | null = null;
+
+/** Kill and relaunch the supervised backend, then let the next request resolve
+ *  its port again.
+ *
+ *  HTTP cannot restart a backend that HTTP cannot reach, so this goes through
+ *  the shell's IPC. `restart_proxy` is the supervisor's own recovery door: it
+ *  clears the update holdoff that otherwise suppresses every respawn for the
+ *  life of the process. Returns false outside Tauri or when the restart failed
+ *  (the caller should then ask for a fresh launch of August). */
+export function restartBackendFromShell(): Promise<boolean> {
+  if (!isTauri) return Promise.resolve(false);
+  if (restartInFlight) return restartInFlight;
+  restartInFlight = (async () => {
+    try {
+      const result = await invoke<string>('restart_proxy');
+      resetDiscovery();
+      return result === 'restarted';
+    } catch {
+      return false;
+    } finally {
+      restartInFlight = null;
+    }
+  })();
+  return restartInFlight;
 }
 
 /** Await by modules that make raw fetch calls (e.g. gateway health poll).

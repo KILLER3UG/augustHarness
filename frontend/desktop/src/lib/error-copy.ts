@@ -10,23 +10,37 @@ export interface FriendlyError {
   raw: string;
 }
 
+/**
+ * Every string here is a transport failure in the webview, which means the
+ * request never left the machine — the provider never saw it. `Failed to fetch`
+ * is Chromium's whole message for a rejected same-origin fetch (backend
+ * restarting, the socket dropped mid-SSE, the window suspended), and it used to
+ * fall through to the catch-all below, which told the user their provider had
+ * rejected the request and sent them to Settings → Models & Providers to fix a
+ * thing that was never the provider. `backend.log` shows the matching side of
+ * it: `_ProactorBasePipeTransport._call_connection_lost` while uvicorn is
+ * otherwise healthy.
+ *
+ * Exported because the recovery path needs the same test: a transport failure
+ * is the one error the backend can be restarted for.
+ */
+export const TRANSPORT_ERROR_RE =
+  /failed to fetch|networkerror|load failed|network request failed|err_network|err_connection|\beconnrefused\b|\benetunreach\b|\beconnreset\b|stream read error|stream ended without/i;
+
+export function isTransportError(message: string | null | undefined): boolean {
+  return TRANSPORT_ERROR_RE.test(message || '');
+}
+
 const KNOWN_PATTERNS: Array<{ re: RegExp; title: string; detail: string }> = [
   {
     // FIRST, and deliberately before the provider patterns: every string here
     // is a transport failure in the webview, which means the request never left
     // the machine — the provider never saw it, so no provider-flavoured copy is
-    // true of it. `Failed to fetch` is Chromium's whole message for a rejected
-    // same-origin fetch (backend restarting, the socket dropped mid-SSE, the
-    // window suspended), and it used to fall through to the catch-all below,
-    // which told the user their provider had rejected the request and sent them
-    // to Settings → Models & Providers to fix a thing that was never the
-    // provider. `backend.log` shows the matching side of it:
-    // `_ProactorBasePipeTransport._call_connection_lost` while uvicorn is
-    // otherwise healthy.
-    re: /failed to fetch|networkerror|load failed|network request failed|err_network|err_connection|\beconnrefused\b|\benetunreach\b|\beconnreset\b|stream read error|stream ended without/i,
+    // true of it.
+    re: TRANSPORT_ERROR_RE,
     title: 'Cannot reach August',
     detail:
-      'The app could not reach its own backend, so this request never left the computer — the provider was not involved. Retry; if it keeps happening, restart August.',
+      'The app could not reach its own backend, so this request never left the computer — the provider was not involved. Retry, or restart the backend below. If August still cannot reach it after a restart, restart August; restart the computer only if a fresh launch fails the same way.',
   },
   {
     re: /session_id.*expected string, received null|session_id.*null/i,
