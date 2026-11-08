@@ -17,8 +17,11 @@ interface SessionSidebarProps {
   onNavigate: (path: string) => void;
 }
 
-const SIDEBAR_WIDTH_KEY = "august-session-sidebar-width-v2";
-const DEFAULT_WIDTH = 340;
+/* v3: the default moved 340 → 316 to match the reference rail. The key bump is
+ * deliberate — a stored width overrides the default, so without it the change
+ * would only ever reach a profile that never dragged the handle. */
+const SIDEBAR_WIDTH_KEY = "august-session-sidebar-width-v3";
+const DEFAULT_WIDTH = 316;
 const MIN_WIDTH = 220;
 const MAX_VIEWPORT_FRACTION = 0.33;
 

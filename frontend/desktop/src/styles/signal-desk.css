@@ -53,7 +53,7 @@
   --radius-md: 13px;
   --radius-lg: 18px;
   --radius-xl: 24px;
-  --sidebar-w: 340px;
+  --sidebar-w: 316px;
   --canvas-w: 430px;
   --titlebar-h: 56px;
   --ease: cubic-bezier(.2, .75, .2, 1);
@@ -162,7 +162,7 @@
     flex: 0 0 auto;
   }
   .sd-app .brand-copy { display: flex; flex-direction: column; line-height: 1.05; min-width: 0; }
-  .sd-app .brand-name { font-weight: 680; font-size: 0.875rem; letter-spacing: -0.03em; }
+  .sd-app .brand-name { font-weight: 680; font-size: 0.8125rem; letter-spacing: -0.03em; }
   .sd-app .brand-sub {
     margin-top: 4px;
     font-family: var(--mono);
@@ -229,7 +229,7 @@
   }
   .sd-app .new-thread kbd { border-color: rgba(16,20,11,.15); background: rgba(16,20,11,.09); color: rgba(16,20,11,.58); box-shadow: none; }
 
-  .sd-app .nav { margin-top: 14px; display: flex; flex-direction: column; gap: 2px; }
+  .sd-app .nav { margin-top: 14px; display: flex; flex-direction: column; gap: 4px; }
   /* The "More" card opens to the right of the rail like the composer's model
      menu. Its rows reuse `.nav-item` so the rail keeps one voice; the focus
      ring is restated because Radix paints `focus:bg-accent`, which is not the
@@ -240,14 +240,14 @@
   .sd-app .nav-more-panel .nav-item:focus svg { color: var(--accent-text); }
   .sd-app .nav-item {
     width: 100%;
-    height: 40px;
+    height: 42px;
     display: flex;
     align-items: center;
     gap: 11px;
     padding: 0 12px;
     border-radius: 10px;
     color: var(--ink-3);
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     text-align: left;
     transition: background .15s var(--ease), color .15s var(--ease);
     position: relative;
