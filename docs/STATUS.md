@@ -1,12 +1,51 @@
 # Status — the current round
 
-Last updated: 2026-11-07 · App version: **0.22.0** + `orca-ui-ux` branch
+Last updated: 2026-11-09 · App version: **0.23.0**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the orca round: the review loop, honest glyphs, one tool pipeline
+## This round — the 0.23.0 round: a backend that heals, 1M context, the rail
+
+- **August now recovers from its own dead backend.** Three defects made
+  "Cannot reach August" unrecoverable: the update holdoff was a latch that
+  suppressed every watchdog respawn (recovery was restarting August or the
+  machine), the SPA cached the backend port across a respawn on 8086–8095, and
+  the one command that clears the holdoff (`restart_proxy`) had no UI. The
+  holdoff now expires 180 s after it is raised once no installer is running; a
+  transport failure drops the cached base so the next request re-discovers; and
+  the error card carries **Restart backend** (kill + relaunch over IPC, then
+  retry), escalating to restarting August and only then the computer.
+- **The context default is 1M, not 128k.** One `DEFAULT_CONTEXT_WINDOW` feeds
+  the model config, provider create/update, config load, alias list, resolver,
+  workbench budget, model editor and the frontend estimate. A stored
+  `source='fetched'` 128k on an id no family heuristic recognises now falls
+  through to the default — that number was August's old default, not the
+  provider's word. Manual values, real non-default fetched values and every
+  family (gpt-4o/deepseek 128k, claude 200k, gemini 1M) still win. Intended
+  side effect: `assembleToolDefs` budgets the tool surface by the model window,
+  so an unknown model now discloses 131 tools instead of 45 (prompt 8841 →
+  10127 chars).
+- **The rail matches the reference at 1920×1200:** 316px wide (was a 340
+  default, usually overridden by a stored 425), 13px nav/brand labels, and
+  42px rows on a 46px pitch. The width storage key moved v2 → v3 so a saved
+  width cannot pin the old default.
+- **Landed from the parallel Perch session** (reviewed here; green on every
+  gate): `session_search` (read-only transcript search, discovery/scroll/
+  browse, parameterized SQL, in the planner and subagent read-only tiers);
+  **skill support files** (`references/`, `templates/`, `scripts/`, `assets/`
+  with relative-only + traversal + symlink containment, 25-file / 200k caps,
+  the body's content scan, and rollback on a failed SKILL.md write); and a
+  **verified skills `tar.gz` inside every brain backup**. The skills archive is
+  an offline copy — restore still swaps only the database, and the UI now says
+  so.
+- **Verified:** all four gate groups locally (mypy 387 files, smoke 20/20 with
+  170 tools and parity), CI green on the push. **Owed:** the human desktop run
+  of the orca round and of this one — annotate→send, chord, degraded toast,
+  quit copy, PNG export, theme repaint, Restart backend, and the new rail.
+
+## The orca round — the review loop, honest glyphs, one tool pipeline
 
 Six commits on `orca-ui-ux` implementing the cross-repo program from
 `C:/Dev/_research/orca-deep-dive-2026-11-07.md` (hygiene → feedback loop →

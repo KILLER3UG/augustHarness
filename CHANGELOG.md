@@ -1,5 +1,31 @@
 # August Proxy — Changelog
 
+## 2026-11-09 — the 0.23.0 round (self-healing backend, 1M context, the rail)
+
+- **A dead backend recovers itself.** The update holdoff stops being a latch —
+  it expires 180 s after being raised once no installer is running, so a
+  cancelled update no longer disables every watchdog respawn. A transport
+  failure drops the cached backend port, so a respawn on a fallback port is
+  picked up instead of failing forever. The "Cannot reach August" card gains
+  **Restart backend** (kill + relaunch over IPC, then retry) and escalates to
+  restarting August, then the computer.
+- **Context windows default to 1M.** A model August cannot identify is no
+  longer assumed to be 128k. Stored auto-fetched 128k values on unknown ids
+  fall through to the default; manual values, real non-default fetched values
+  and family heuristics still win. The tool surface is budgeted by the window,
+  so an unknown model now discloses 131 tools instead of 45.
+- **The sidebar matches the reference:** 316px, 13px labels, 46px row pitch.
+- **`session_search`** — read-only search over past conversation messages
+  (discovery, scroll, browse), core to the planner and the read-only subagent
+  tier.
+- **Skill support files** — `references/`, `templates/`, `scripts/` and
+  `assets/` can ship with a skill, validated (relative-only, no traversal or
+  symlink escape, size and count caps, the body's content scan) and written
+  with rollback. Promotions carry them.
+- **Skills in brain backups** — each rolling backup now holds a verified
+  `skills-*.tar.gz` beside the database copy, with a hash manifest. It is an
+  offline copy: restore still applies the database only, and the UI says so.
+
 ## 2026-11-07 — hygiene round (retention, dead code, the loop gate)
 
 - The four diagnostics ledgers (`subagent_runs`, `routing_evidence`,
