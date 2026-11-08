@@ -10013,6 +10013,10 @@ export interface components {
              * @description What the skill does and when to use it (≤ 500 chars). This is the trigger — a future agent sees only this text before loading the skill.
              */
             description: string;
+            /** Files */
+            files?: components["schemas"]["SkillFileWrite"][] | {
+                [key: string]: string;
+            } | null;
             /**
              * Name
              * @description Lowercase, dotted/hyphenated skill name.
@@ -10026,6 +10030,16 @@ export interface components {
             /** Workspace */
             workspace?: string | null;
         };
+        /**
+         * SkillFileWrite
+         * @description One support file (references/, templates/, scripts/, assets/).
+         */
+        SkillFileWrite: {
+            /** Content */
+            content: string;
+            /** Filepath */
+            filePath: string;
+        };
         /** SkillPatch */
         SkillPatch: {
             /** Body */
@@ -10036,6 +10050,10 @@ export interface components {
             description?: string | null;
             /** Disabled */
             disabled?: boolean | null;
+            /** Files */
+            files?: components["schemas"]["SkillFileWrite"][] | {
+                [key: string]: string;
+            } | null;
             /** Trigger */
             trigger?: string | null;
             /** Workspace */

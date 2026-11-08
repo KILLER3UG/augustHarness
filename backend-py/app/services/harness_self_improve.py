@@ -666,9 +666,12 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
             _MAX_SKILL_BODY_CHARS,
             _agentSkillsDir,
             _ensure_canonical_body,
+            _rollbackSupportFiles,
             _validateDescription,
             _validateName,
             skill_authoring_warnings,
+            validateSupportFiles,
+            writeSupportFiles,
         )
 
         if len(body) > _MAX_SKILL_BODY_CHARS:
@@ -677,6 +680,10 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
                 'error': f'skill body exceeds the hard cap ({len(body)} > '
                 f'{_MAX_SKILL_BODY_CHARS} chars); move long material into references/.',
             }
+        # Support files (references/, templates/, scripts/, assets/) are
+        # validated BEFORE the SKILL.md write: a refused path or file must not
+        # leave a half-applied proposal behind.
+        supportEntries = validateSupportFiles(payload.get('files'))
 
         _validateName(name)
         workspace = as_str(payload.get('workspace'), '').strip()
@@ -854,7 +861,17 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
             actor='distiller',
             rationale=f'approved {kind} for {name!r}',
         )
-        md.write_text(content, encoding='utf-8')
+        # Support files first, SKILL.md last: if the SKILL.md write fails,
+        # roll back the support files this apply wrote rather than leave a
+        # half-applied skill behind. They ride the SAME write door as the UI
+        # create/patch route, so `load_skill(name, file=...)` reads back
+        # exactly what was approved.
+        writtenFiles = writeSupportFiles(skill_dir, supportEntries)
+        try:
+            md.write_text(content, encoding='utf-8')
+        except Exception:
+            _rollbackSupportFiles(skill_dir, writtenFiles)
+            raise
         # Part 16 Phase D step 2 supersession: an approved v2 disables
         # the v1 it supersedes in the SAME write — no double injection.
         supersededResult = ''
@@ -877,6 +894,7 @@ def _apply_skill_write(row: dict[str, Any]) -> dict[str, Any]:
             'version': version,
             'status': status,
             'superseded': supersededResult,
+            'files': writtenFiles,
             'warnings': _warnings,
             # The snapshot this write took. Auto-apply records it so probation can
             # name the exact bytes to put back; '' when there was nothing to

@@ -3237,6 +3237,26 @@
             "title": "Description",
             "type": "string"
           },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SkillFileWrite"
+                },
+                "type": "array"
+              },
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          },
           "name": {
             "description": "Lowercase, dotted/hyphenated skill name.",
             "title": "Name",
@@ -3265,6 +3285,25 @@
           "body"
         ],
         "title": "SkillCreate",
+        "type": "object"
+      },
+      "SkillFileWrite": {
+        "description": "One support file (references/, templates/, scripts/, assets/).",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "filePath": {
+            "title": "Filepath",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filePath",
+          "content"
+        ],
+        "title": "SkillFileWrite",
         "type": "object"
       },
       "SkillPatch": {
@@ -3312,6 +3351,26 @@
               }
             ],
             "title": "Disabled"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SkillFileWrite"
+                },
+                "type": "array"
+              },
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
           },
           "trigger": {
             "anyOf": [

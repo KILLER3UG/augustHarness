@@ -397,12 +397,18 @@ def apply_promotion(payload: dict[str, Any]) -> dict[str, Any]:
             detail = skill_service.get(name, origin)
             if detail is None:
                 return {'ok': False, 'error': f'project skill {name!r} not found in {origin!r}'}
+            # Carry the source skill's support files (references/, …) into the
+            # global copy: a promoted skill that silently loses them names
+            # files the copy does not have.
+            src = Path(as_str(detail.get('path'), ''))
+            supportFiles = skill_service.readSupportFiles(src.parent) if src.is_file() else None
             skill_service.createSkill(
                 name=name,
                 description=as_str(detail.get('description')),
                 body=as_str(detail.get('instructions')),
                 trigger=as_str(detail.get('trigger') or ''),
                 created_by='promotion',
+                files=supportFiles,
             )
             return {'ok': True, 'action': 'promoted_skill', 'target': name, 'origin': origin}
         return {'ok': False, 'error': f'unknown promoteType {promoteType!r}'}

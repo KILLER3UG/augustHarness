@@ -417,22 +417,57 @@ def _evidence_check(row: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     return None
 
 
+def _scanText(text: str, subject: str) -> dict[str, Any] | None:
+    """One blob of text through the shell/URL/credential scan."""
+    if _SHELL_FENCE_RE.search(text) or _SHELL_PROSE_RE.search(text):
+        return _refuse(
+            'unsafe-content', f'{subject} contains a shell command or a script block'
+        )
+    if _URL_RE.search(text):
+        return _refuse(
+            'unsafe-content', f'{subject} contains a URL the agent could be told to fetch'
+        )
+    if _CREDENTIAL_RE.search(text):
+        return _refuse(
+            'unsafe-content', f'{subject} talks about keys, tokens or credentials'
+        )
+    return None
+
+
 def _content_check(payload: dict[str, Any]) -> dict[str, Any] | None:
     body = str(payload.get('body') or '')
     if not body:
         return _refuse('unsafe-content', 'the proposal carries no skill body to inspect')
-    if _SHELL_FENCE_RE.search(body) or _SHELL_PROSE_RE.search(body):
-        return _refuse(
-            'unsafe-content', 'the skill body contains a shell command or a script block'
-        )
-    if _URL_RE.search(body):
-        return _refuse(
-            'unsafe-content', 'the skill body contains a URL the agent could be told to fetch'
-        )
-    if _CREDENTIAL_RE.search(body):
-        return _refuse(
-            'unsafe-content', 'the skill body talks about keys, tokens or credentials'
-        )
+    refused = _scanText(body, 'the skill body')
+    if refused:
+        return refused
+    # A skill proposal may carry support files (references/, scripts/, …).
+    # They are text the next turn reads, so they ride the SAME scan as the
+    # body: refusing here holds the write for a human instead of letting it
+    # reach the applier and come back apply_failed. The write door accepts
+    # BOTH payload shapes — a mapping and a list of {path, content} — so the
+    # rail scans both; a list-shaped payload otherwise rides the rail and only
+    # fails at apply time. Normalizing through the same helper keeps the two
+    # shape rules from drifting. Lazy import: skill_service imports this
+    # function, so a module-level import here would be circular.
+    files = payload.get('files')
+    if files is None:
+        return None
+    try:
+        from app.services.skill_service import _normalizeSupportFiles
+
+        entries = _normalizeSupportFiles(files)
+    except (ImportError, ValueError):
+        # A malformed shape is the write door's refusal, not the rail's:
+        # returning None lets that door name the real problem.
+        # (SkillValidationError subclasses ValueError.)
+        return None
+    for path, content in entries:
+        if not content.strip():
+            continue
+        refused = _scanText(content, f'support file {path!r}')
+        if refused:
+            return refused
     return None
 
 

@@ -30,15 +30,129 @@ SKILLS_DIR = Path(__file__).resolve().parent.parent.parent.parent / 'skills'
 
 
 
-def _agentSkillsDir() -> Path:
-    """Agent-authored skills root. Lazily reads the configured data_dir."""
+def _dataDir() -> Path:
+    """The configured data dir, with the same fallback ``_agentSkillsDir`` used."""
     try:
         from app.config import settings
 
-        base = Path(settings.dataDir)
+        return Path(settings.dataDir)
     except Exception:
-        base = SKILLS_DIR.parent / 'data'
-    return base / 'skills'
+        return SKILLS_DIR.parent / 'data'
+
+
+def _agentSkillsDir() -> Path:
+    """Agent-authored skills root. Lazily reads the configured data_dir."""
+    return _dataDir() / 'skills'
+
+
+def _external_skill_roots() -> list[Path]:
+    """Operator-configured read-only roots (``externalSkillRoots``).
+
+    One door for both readers — the per-session search order and the backup
+    archive — so the two can never disagree about which external roots exist.
+    A missing/invalid config value is an empty list, never an error: an
+    optional root must not take discovery down with it.
+    """
+    try:
+        from app.services.brain_config_service import getRuntimeConfig
+
+        rawExternal = str(getRuntimeConfig().get('externalSkillRoots') or '')
+        out: list[Path] = []
+        for part in re.split(r'[;,\n]', rawExternal):
+            rawPath = part.strip()
+            if not rawPath:
+                continue
+            candidate = Path(rawPath).expanduser()
+            if candidate.is_dir():
+                out.append(candidate.resolve())
+        return out
+    except Exception:
+        return []
+
+
+def _known_workspace_paths() -> list[str]:
+    """Distinct workspace paths sessions were bound to (the scope-selector rule).
+
+    A workspace is "known" when a session was ever bound to it — the same
+    enumeration ``list_memory_workspaces`` and ``_known_workspaces`` use, so
+    the backup never invents a path the rest of the app would not show. Home
+    and the temp tree are excluded, matching ``_skillRoots``.
+    """
+    import tempfile
+
+    try:
+        from app.services.memory_conn import conn as _conn
+
+        rows = _conn().execute(
+            "SELECT DISTINCT workspace_path FROM sessions "
+            "WHERE workspace_path IS NOT NULL AND TRIM(workspace_path) != ''"
+        ).fetchall()
+    except Exception:
+        return []
+    home = Path.home().resolve()
+    tmpRoot = Path(tempfile.gettempdir()).resolve()
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        raw = str(row['workspace_path']).strip()
+        if not raw or raw in seen:
+            continue
+        try:
+            resolved = Path(raw).resolve()
+        except OSError:
+            continue
+        if resolved == home or resolved == tmpRoot or tmpRoot in resolved.parents:
+            continue
+        if not resolved.is_dir():
+            continue
+        seen.add(raw)
+        out.append(raw)
+    return out
+
+
+def all_skill_roots() -> list[tuple[str, Path]]:
+    """Every durable skill root on this install — the backup archive's input.
+
+    ``_skillRoots`` resolves the roots for ONE session (one workspace, one
+    Bot). A backup has no session, so it needs the whole install: the agent
+    root, every Bot's private root, every known project's ``.aug/skills``, and
+    the operator's external roots.
+
+    The bundled root is deliberately absent: it is the one root an app update
+    restores from the repo payload, so archiving it would spend backup space
+    on bytes the installer already holds. The four durable roots are the ones
+    a bad bulk edit can destroy and nothing else can rebuild.
+
+    Existing directories only, deduped, sorted for a stable archive.
+    """
+    roots: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    def add(scope: str, path: Path) -> None:
+        try:
+            if not path.is_dir():
+                return
+            key = str(path.resolve())
+        except OSError:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        roots.append((scope, path))
+
+    add('agent', _agentSkillsDir())
+    botsDir = _dataDir() / 'bots'
+    try:
+        for child in sorted(botsDir.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                add('bot', child / 'skills')
+    except OSError:
+        pass
+    for workspace in _known_workspace_paths():
+        add('project', Path(workspace) / '.aug' / 'skills')
+    for external in _external_skill_roots():
+        add('external', external)
+    return sorted(roots, key=lambda pair: (pair[0], str(pair[1])))
 
 
 def _skillRoots(
@@ -95,19 +209,8 @@ def _skillRoots(
     # Listed before bundled so an operator's catalogue can override a shipped
     # skill; a same-named agent/project skill still wins (the spec's user >
     # external ordering).
-    try:
-        from app.services.brain_config_service import getRuntimeConfig
-
-        rawExternal = str(getRuntimeConfig().get('externalSkillRoots') or '')
-        for part in re.split(r'[;,\n]', rawExternal):
-            rawPath = part.strip()
-            if not rawPath:
-                continue
-            candidate = Path(rawPath).expanduser()
-            if candidate.is_dir():
-                roots.append(('external', candidate.resolve()))
-    except Exception:
-        pass
+    for candidate in _external_skill_roots():
+        roots.append(('external', candidate))
     roots.append(('bundled', SKILLS_DIR))
     return roots
 
@@ -1731,6 +1834,232 @@ def _copyOnWrite(name: str) -> Path:
     return agent_dir
 
 
+# ── Support files (references/, templates/, scripts/, assets/) ────────────
+#
+# A skill is more than its SKILL.md: the authoring standard gives it four
+# sibling roles, and `load_skill(name, file=...)` already reads one of them.
+# This is the write door for those files, shared by the UI create/patch route
+# and the proposal applier so the two cannot drift apart. The containment
+# rules are the pack installer's (`skill_packs`): a relative path under one of
+# the four roles, no traversal, and a resolved destination that stays inside
+# the skill directory. Files are written as text and never executed.
+
+#: The only directories a support file may live in (SKILL_AUTHORING.md layout).
+SKILL_SUPPORT_ROLES = ('references', 'templates', 'scripts', 'assets')
+#: Per-file ceiling — the same cap `_loadSkillFile` enforces on the read side,
+#: so a file written here is always one `load_skill(name, file=...)` can return.
+_MAX_SKILL_SUPPORT_FILE_CHARS = 200_000
+#: File-count ceiling — `_siblingFiles` lists at most this many, so a skill
+#: with more support files than the listing shows would be partly invisible.
+_MAX_SKILL_SUPPORT_FILES = 25
+
+
+def _normalizeSupportFiles(files: object) -> list[tuple[str, str]]:
+    """Shape-check a support-file payload into ``(path, content)`` pairs.
+
+    Accepts the two shapes a model naturally emits — a JSON object mapping
+    ``path -> content`` and a list of ``{"path": ..., "content": ...}`` items.
+    Anything else is a refusal, never a silent drop.
+    """
+    if files is None:
+        return []
+    items: list[tuple[object, object]] = []
+    if isinstance(files, dict):
+        items = list(files.items())
+    elif isinstance(files, list):
+        for entry in files:
+            if not isinstance(entry, dict):
+                raise SkillValidationError(
+                    'support files must be an object or a list of {path, content}'
+                )
+            items.append((entry.get('path', entry.get('file')), entry.get('content')))
+    else:
+        raise SkillValidationError('support files must be an object or a list of {path, content}')
+    out: list[tuple[str, str]] = []
+    for path, content in items:
+        if not isinstance(path, str) or not isinstance(content, str):
+            raise SkillValidationError('each support file needs a string path and string content')
+        out.append((path, content))
+    return out
+
+
+def validateSupportFiles(files: object) -> list[tuple[str, str]]:
+    """Normalize + validate a support-file payload into ``(rel_path, content)``.
+
+    Path rules are the pack installer's containment rules: relative only, no
+    traversal, first component one of the four roles, and at least one path
+    segment below it (a bare role directory is not a file). Every non-empty
+    file's text runs through the SAME content scan the proposal rails apply to
+    a skill body, so shell fences, URLs and credential prose are refused here.
+
+    Raises :class:`SkillValidationError` on the first refused path or file.
+    """
+    entries = _normalizeSupportFiles(files)
+    if len(entries) > _MAX_SKILL_SUPPORT_FILES:
+        raise SkillValidationError(
+            f'a skill may carry at most {_MAX_SKILL_SUPPORT_FILES} support files '
+            f'(got {len(entries)})'
+        )
+    out: list[tuple[str, str]] = []
+    for raw_path, content in entries:
+        rel = str(raw_path).strip().replace('\\', '/')
+        if not rel or rel.startswith('/') or re.match(r'^[A-Za-z]:', rel):
+            raise SkillValidationError(
+                f'support file {raw_path!r} must be a relative path inside the skill directory'
+            )
+        parts = [p for p in rel.split('/') if p not in ('', '.')]
+        if not parts or any(p == '..' for p in parts):
+            raise SkillValidationError(f'support file {raw_path!r} must not contain traversal')
+        if parts[0] not in SKILL_SUPPORT_ROLES or len(parts) < 2:
+            raise SkillValidationError(
+                f'support file {raw_path!r} must live under one of '
+                f'{"/".join(SKILL_SUPPORT_ROLES)}/'
+            )
+        rel = '/'.join(parts)
+        if len(content) > _MAX_SKILL_SUPPORT_FILE_CHARS:
+            raise SkillValidationError(
+                f'support file {rel!r} exceeds the {_MAX_SKILL_SUPPORT_FILE_CHARS}-char cap'
+            )
+        if content.strip():
+            from app.services.harness_rails import _content_check
+
+            refused = _content_check({'body': content})
+            if refused:
+                raise SkillValidationError(
+                    f'support file {rel!r} refused: '
+                    f'{str(refused.get("reason") or refused.get("rule") or "unsafe content")}'
+                )
+        out.append((rel, content))
+    return out
+
+
+def writeSupportFiles(skill_dir: str | Path, entries: list[tuple[str, str]]) -> list[str]:
+    """Write already-validated support files. Returns the relative paths written.
+
+    The containment check runs again here, against the real directory: the
+    path rules are necessary but not sufficient, because a symlinked role
+    directory would otherwise resolve outside the skill.
+    """
+    base = Path(skill_dir).resolve()
+    written: list[str] = []
+    for rel, content in entries:
+        dest = (base / rel).resolve()
+        if not dest.is_relative_to(base):
+            raise SkillValidationError(
+                f'support file {rel!r} resolves outside the skill directory'
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, 'utf-8')
+        written.append(rel)
+    return written
+
+
+def _rollbackSupportFiles(skill_dir: str | Path, written: Iterable[str]) -> None:
+    """Best-effort unlink of support files written by a failed apply.
+
+    The write order is support files first, SKILL.md second: a SKILL.md write
+    failure must not leave the support files behind, or the apply reports
+    failed while the skill is half-authored. Containment is re-checked so a
+    hostile ``written`` entry cannot reach outside the skill directory.
+    """
+    base = Path(skill_dir).resolve()
+    for rel in written:
+        try:
+            dest = (base / rel).resolve()
+            if dest.is_relative_to(base) and dest.is_file():
+                dest.unlink()
+        except OSError:
+            logger.debug('support file rollback skipped for %r', rel, exc_info=True)
+
+
+def _supportFileEntries(skill_dir: str | Path) -> tuple[list[tuple[str, str]], list[str]]:
+    """Enumerate a skill directory's support files under the four roles.
+
+    Returns ``(entries, warnings)`` where each entry is ``(relative posix
+    path, text)``. A file that cannot be read, or that resolves outside the
+    skill directory, is skipped and named in the warnings; the caller decides
+    how loudly to report it.
+    """
+    base = Path(skill_dir).resolve()
+    entries: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    if not base.is_dir():
+        return entries, [f'skill directory {base} is missing']
+    for role in SKILL_SUPPORT_ROLES:
+        role_dir = base / role
+        if not role_dir.is_dir():
+            continue
+        try:
+            paths = sorted(p for p in role_dir.rglob('*') if p.is_file())
+        except OSError as exc:
+            warnings.append(f'support files under {role}/ could not be listed: {exc}')
+            continue
+        for path in paths:
+            try:
+                rel = path.relative_to(base).as_posix()
+            except ValueError:
+                continue
+            if not path.resolve().is_relative_to(base):
+                warnings.append(
+                    f'support file {rel!r} resolves outside the skill directory; skipped'
+                )
+                continue
+            try:
+                text = path.read_text('utf-8')
+            except (OSError, UnicodeDecodeError) as exc:
+                warnings.append(f'support file {rel!r} could not be read: {exc}')
+                continue
+            entries.append((rel, text))
+    return entries, warnings
+
+
+def readSupportFiles(skill_dir: str | Path) -> dict[str, str]:
+    """Read a skill's support files (the four roles) as a ``path -> content`` map.
+
+    The read half of the support-file door, for a caller carrying a skill's
+    support files somewhere else (promotion). Unreadable files are skipped —
+    see :func:`_supportFileEntries` for the warnings this discards.
+    """
+    entries, _warnings = _supportFileEntries(skill_dir)
+    return dict(entries)
+
+
+def copySupportFiles(
+    src_dir: str | Path, dest_dir: str | Path
+) -> tuple[list[str], list[str]]:
+    """Copy a skill's support files into another skill directory.
+
+    Project copy-on-write: an override of a global/bundled skill must carry
+    the same ``references/``, ``templates/``, ``scripts/`` and ``assets/``
+    the source has, or the override names files it does not have. Same
+    containment as :func:`writeSupportFiles` — every source path must resolve
+    inside ``src_dir`` and every destination inside ``dest_dir``.
+
+    Returns ``(copied relative paths, warnings)``. A file that cannot be read
+    or written is skipped and named in the warnings rather than aborting the
+    copy: the SKILL.md override still lands and the caller reports what is
+    missing.
+    """
+    entries, warnings = _supportFileEntries(src_dir)
+    dest = Path(dest_dir).resolve()
+    copied: list[str] = []
+    for rel, text in entries:
+        target = (dest / rel).resolve()
+        if not target.is_relative_to(dest):
+            warnings.append(
+                f'support file {rel!r} resolves outside the destination; not copied'
+            )
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, 'utf-8')
+        except OSError as exc:
+            warnings.append(f'support file {rel!r} could not be copied: {exc}')
+            continue
+        copied.append(rel)
+    return copied, warnings
+
+
 def createSkill(
     name: str,
     description: str,
@@ -1740,6 +2069,7 @@ def createSkill(
     created_by: str = 'agent',
     workspace: str | Path | None = None,
     keywords: Optional[Iterable[str]] = None,
+    files: object = None,
 ) -> dict[str, object]:
     """Create a new agent-authored skill.
 
@@ -1751,6 +2081,11 @@ def createSkill(
     explicitly; when they do not and ``skillKeywordExpansion`` is on, a cheap
     model is asked for it here. Either way it is best-effort metadata: a
     failure leaves the skill written with no keywords rather than unwritten.
+
+    ``files`` (optional) carries the skill's support files — a mapping (or a
+    list of ``{path, content}``) under ``references/``, ``templates/``,
+    ``scripts/`` or ``assets/``. They are validated and written through the
+    same door the proposal applier uses, so the two paths cannot drift.
     """
     _validateName(name)
     _validateDescription(description)
@@ -1763,6 +2098,9 @@ def createSkill(
         )
     if get(name, workspace):
         raise SkillValidationError(f"Skill '{name}' already exists.")
+    # Validated BEFORE the directory is created: a refused support file must
+    # not leave a half-authored skill behind.
+    supportEntries = validateSupportFiles(files)
     wsStr = str(workspace or '').strip()
     if wsStr and Path(wsStr).resolve() != Path.home().resolve():
         root = Path(wsStr) / '.aug' / 'skills'
@@ -1805,10 +2143,19 @@ def createSkill(
     snapshot_before_write(
         skill_dir, content, actor='user', rationale=f'created skill {name!r}'
     )
-    md.write_text(content, 'utf-8')
+    # Support files first, SKILL.md last: a SKILL.md write failure must not
+    # leave the support files behind, or the apply reports failed while the
+    # skill is half-authored. Roll back what this call wrote.
+    writtenFiles = writeSupportFiles(skill_dir, supportEntries)
+    try:
+        md.write_text(content, 'utf-8')
+    except Exception:
+        _rollbackSupportFiles(skill_dir, writtenFiles)
+        raise
     parsed = _parseSkill(md)
     _bust_prompt_skills_cache()
     result = dict(parsed or {'name': name, 'description': description})
+    result['files'] = writtenFiles
     warnings = skill_authoring_warnings(description, normalized)
     if warnings:
         result['warnings'] = warnings
@@ -1823,6 +2170,7 @@ def patchSkill(
     category: Optional[str] = None,
     enabled: Optional[bool] = None,
     workspace: str | Path | None = None,
+    files: object = None,
 ) -> dict[str, object]:
     """Patch an existing skill (copy-on-write for bundled skills).
 
@@ -1833,6 +2181,11 @@ def patchSkill(
     Part 17 Phase B: with a ``workspace``, a project entry patches in
     place (project root); a bundled/global name copy-on-writes INTO the
     project root as a project override — the workspace's customized copy.
+
+    ``files`` (optional) carries support files under ``references/``,
+    ``templates/``, ``scripts/`` or ``assets/`` — same shape and same
+    validated door as :func:`createSkill`. A patch that does not name one
+    leaves the file it is not about untouched.
     """
     existing = get(name, workspace)
     if not existing:
@@ -1848,6 +2201,7 @@ def patchSkill(
     wsStr = str(workspace or '').strip()
     inProject = False
     md = None
+    copyWarnings: list[str] = []
     if wsStr and Path(wsStr).resolve() != Path.home().resolve():
         projDir = Path(wsStr) / '.aug' / 'skills' / name
         if projDir.exists():
@@ -1856,9 +2210,13 @@ def patchSkill(
         else:
             # Copy-on-write the resolved skill into the project root —
             # the project's customized shadow of a global/bundled skill.
+            # The support files ride along: an override of a skill with
+            # references/ that does not carry them names files it does not
+            # have. Files that cannot be copied are reported, not fatal.
             projDir.mkdir(parents=True, exist_ok=True)
             src = Path(as_str(existing.get('path'), ''))
             (projDir / 'SKILL.md').write_text(src.read_text('utf-8'), 'utf-8')
+            _copiedFiles, copyWarnings = copySupportFiles(src.parent, projDir)
             md = projDir / 'SKILL.md'
             inProject = True
     if not inProject:
@@ -1894,6 +2252,9 @@ def patchSkill(
             f'Skill body exceeds the hard cap ({len(body.strip())} > {_MAX_SKILL_BODY_CHARS} chars); '
             'move long material into references/.'
         )
+    # Validated BEFORE the file is rewritten: a refused support file must not
+    # leave a half-patched skill behind.
+    supportEntries = validateSupportFiles(files)
     # The file on disk decides whether this is a machine-authored skill. A
     # bundled or hand-written skill keeps its prose: the canonical body is a
     # contract for machine-authored skills, not curated ones.
@@ -1927,13 +2288,23 @@ def patchSkill(
     snapshot_before_write(
         md.parent, content, actor='user', rationale=f'patched skill {name!r}'
     )
-    md.write_text(content, 'utf-8')
+    # Support files first, SKILL.md last: if the SKILL.md write fails, the
+    # support files this call wrote are rolled back rather than left behind.
+    writtenFiles = writeSupportFiles(md.parent, supportEntries)
+    try:
+        md.write_text(content, 'utf-8')
+    except Exception:
+        _rollbackSupportFiles(md.parent, writtenFiles)
+        raise
     parsed = _parseSkill(md)
     _bust_prompt_skills_cache()
     result = dict(parsed or {'name': name, 'description': frontmatter.get('description', '')})
+    result['files'] = writtenFiles
     warnings = skill_authoring_warnings(
         as_str(frontmatter.get('description', ''), ''), new_body
     )
+    if copyWarnings:
+        warnings = list(copyWarnings) + list(warnings)
     if warnings:
         result['warnings'] = warnings
     return result

@@ -15,6 +15,13 @@ from app.services.skill_service import SkillValidationError
 router = APIRouter(prefix='/api/skills')
 
 
+class SkillFileWrite(CamelModel):
+    """One support file (references/, templates/, scripts/, assets/)."""
+
+    file_path: str
+    content: str
+
+
 class SkillCreate(CamelModel):
     name: str = Field(..., description='Lowercase, dotted/hyphenated skill name.')
     description: str = Field(
@@ -30,6 +37,10 @@ class SkillCreate(CamelModel):
     # A non-home workspace routes the create to the
     # project root <ws>/.aug/skills/ (project scope by choice).
     workspace: str | None = None
+    # Support files ride the same validated write door as the proposal
+    # applier. A list of {filePath, content} (the SkillFileWrite shape) or a
+    # path -> content mapping; both are accepted by the service door.
+    files: list[SkillFileWrite] | dict[str, str] | None = None
 
 
 class SkillPatch(CamelModel):
@@ -39,11 +50,25 @@ class SkillPatch(CamelModel):
     category: str | None = None
     disabled: bool | None = None
     workspace: str | None = None
+    # Same shape and same validated door as SkillCreate.files. A patch that
+    # does not name a file leaves it untouched.
+    files: list[SkillFileWrite] | dict[str, str] | None = None
 
 
-class SkillFileWrite(CamelModel):
-    file_path: str
-    content: str
+def _supportFilesPayload(
+    files: list[SkillFileWrite] | dict[str, str] | None,
+) -> object:
+    """Translate the API's support-file shape into the write door's shape.
+
+    ``SkillFileWrite`` speaks camelCase on the wire; the service door accepts
+    a mapping or a list of ``{path, content}``. The list form is translated
+    here so the route and the door cannot drift; a mapping passes through.
+    """
+    if files is None:
+        return None
+    if isinstance(files, dict):
+        return files
+    return [{'path': f.file_path, 'content': f.content} for f in files]
 
 
 def _usage_fields(skill_name: str) -> dict[str, object]:
@@ -232,6 +257,7 @@ async def createSkill(body: SkillCreate):
         return skill_service.createSkill(
             body.name, body.description, body.body,
             trigger=body.trigger, category=body.category, workspace=body.workspace,
+            files=_supportFilesPayload(body.files),
         )
     except SkillValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -258,6 +284,7 @@ async def patchSkill(name: str, body: SkillPatch):
             category=body.category,
             enabled=enabled,
             workspace=body.workspace,
+            files=_supportFilesPayload(body.files),
         )
     except SkillValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
