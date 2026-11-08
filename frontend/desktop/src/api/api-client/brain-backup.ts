@@ -27,6 +27,23 @@ export interface BrainBackupEntry {
   fromTheFuture: boolean;
   /** Present only when the copy could not be opened or verified. */
   error?: string;
+  /** The skills half of this backup, verified on the spot by the server.
+   *  Absent when the pair has no archive (older backups, or one that failed). */
+  skills?: BrainSkillsArchiveEntry;
+}
+
+/** One skills archive as the backup list shows it — verified on the spot. */
+export interface BrainSkillsArchiveEntry {
+  name: string;
+  verified: boolean;
+  bytes?: number;
+  files?: number;
+  roots?: number;
+  skipped?: number;
+  /** Verified but incomplete: a cap or an unreadable file left gaps, recorded
+   *  in the archive manifest. Never read "verified" as "complete". */
+  truncated?: boolean;
+  error?: string;
 }
 
 export interface BrainBackupList {
@@ -45,7 +62,28 @@ export interface BrainBackupCreated {
   appliedVersion?: number;
   /** Older copies the retention rule retired by this call. */
   pruned?: string[];
+  /** The skills half's verdict. The DB copy can be good while this failed:
+   *  `archived: false` means the memory copy is safe but the skills archive
+   *  is not — `error`/`reason` (or `skillsError`) carries why. */
+  skills?: BrainSkillsArchiveResult;
+  /** Flattened `skills.error`, for callers that only need the reason. */
+  skillsError?: string;
   error?: string;
+}
+
+/** The skills half of one backup, as reported when it was created. */
+export interface BrainSkillsArchiveResult {
+  archived: boolean;
+  name?: string;
+  bytes?: number;
+  files?: number;
+  roots?: number;
+  skipped?: number;
+  /** Verified but incomplete — see BrainSkillsArchiveEntry.truncated. */
+  truncated?: boolean;
+  error?: string;
+  /** Present when there was nothing to archive (e.g. no skill roots). */
+  reason?: string;
 }
 
 export interface BrainRestoreStaged {

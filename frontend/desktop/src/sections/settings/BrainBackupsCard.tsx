@@ -38,7 +38,22 @@ export function BrainBackupsCard() {
     mutationFn: () => createBrainBackup('manual'),
     onSuccess: (res) => {
       if (res.ok) {
-        toast.success(`Backup created (${res.name ?? 'copy'})`);
+        const skills = res.skills;
+        if (skills && !skills.archived) {
+          // The DB copy is good — that is why this is not an error toast — but
+          // a backup whose skills half failed must not read as a clean success.
+          toast.warning(
+            `Backup created, but the skills archive failed: ${
+              skills.error ?? skills.reason ?? res.skillsError ?? 'unknown error'
+            }`,
+          );
+        } else if (skills?.truncated) {
+          toast.success(`Backup created (${res.name ?? 'copy'})`, {
+            description: 'Skills archive truncated — some files were not backed up.',
+          });
+        } else {
+          toast.success(`Backup created (${res.name ?? 'copy'})`);
+        }
       } else {
         toast.error(res.error || 'Backup failed');
       }
@@ -53,7 +68,7 @@ export function BrainBackupsCard() {
     onSuccess: (res, name) => {
       if (res.ok) {
         toast.success('Restore staged — it applies the next time August starts.', {
-          description: res.note ?? name,
+          description: `${res.note ?? name} · memory only; the skills archive is an offline copy you extract by hand.`,
         });
       } else {
         toast.error(res.error || 'Could not stage the restore');
@@ -185,45 +200,76 @@ export function BrainBackupsCard() {
         {!backups.isLoading && entries.length === 0 && (
           <li className="text-xs text-muted-foreground">No copies yet.</li>
         )}
-        {entries.map((entry) => (
-          <li
-            key={entry.name}
-            className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-3 py-1.5 text-xs"
-          >
-            <span className="min-w-0 flex-1 truncate">
-              <span className="text-foreground">{entry.name}</span>
-              <span className="ml-2 text-muted-foreground">
-                {new Date(entry.createdAt).toLocaleString()}
-                {entry.reason ? ` · ${entry.reason}` : ''}
+        {entries.map((entry) => {
+          const skills = entry.skills;
+          return (
+            <li
+              key={entry.name}
+              className="flex items-center gap-2 rounded-lg border border-border/50 bg-background/40 px-3 py-1.5 text-xs"
+            >
+              <span className="min-w-0 flex-1 truncate">
+                <span className="text-foreground">{entry.name}</span>
+                <span className="ml-2 text-muted-foreground">
+                  {new Date(entry.createdAt).toLocaleString()}
+                  {entry.reason ? ` · ${entry.reason}` : ''}
+                </span>
               </span>
-            </span>
-            {entry.fromTheFuture ? (
-              <span className="shrink-0 text-warning" title="Newer schema than this build">
-                newer schema
-              </span>
-            ) : entry.healthy ? (
-              <span className="shrink-0 text-success">verified</span>
-            ) : (
-              <span className="shrink-0 text-danger" title={entry.error}>
-                unverified
-              </span>
-            )}
-            {pending !== entry.name && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setBusyName(entry.name);
-                  restoreMut.mutate(entry.name);
-                }}
-                disabled={restoreMut.isPending && busyName === entry.name}
-                data-testid={`brain-restore-${entry.name}`}
-              >
-                Restore
-              </Button>
-            )}
-          </li>
-        ))}
+              {entry.fromTheFuture ? (
+                <span className="shrink-0 text-warning" title="Newer schema than this build">
+                  newer schema
+                </span>
+              ) : entry.healthy ? (
+                <span className="shrink-0 text-success">verified</span>
+              ) : (
+                <span className="shrink-0 text-danger" title={entry.error}>
+                  unverified
+                </span>
+              )}
+              {/* The DB verdict above is not the whole backup: the skills half
+                  has its own verdict, and "verified" must not hide a failed or
+                  truncated archive. */}
+              {skills ? (
+                skills.verified ? (
+                  skills.truncated ? (
+                    <span
+                      className="shrink-0 text-warning"
+                      title={`${skills.files ?? 0} files archived · ${skills.skipped ?? 0} skipped`}
+                    >
+                      skills truncated
+                    </span>
+                  ) : (
+                    <span
+                      className="shrink-0 text-success"
+                      title={`${skills.files ?? 0} files archived${
+                        skills.skipped ? ` · ${skills.skipped} skipped` : ''
+                      }`}
+                    >
+                      skills ok
+                    </span>
+                  )
+                ) : (
+                  <span className="shrink-0 text-danger" title={skills.error}>
+                    skills failed
+                  </span>
+                )
+              ) : null}
+              {pending !== entry.name && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setBusyName(entry.name);
+                    restoreMut.mutate(entry.name);
+                  }}
+                  disabled={restoreMut.isPending && busyName === entry.name}
+                  data-testid={`brain-restore-${entry.name}`}
+                >
+                  Restore
+                </Button>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
