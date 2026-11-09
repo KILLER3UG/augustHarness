@@ -1347,6 +1347,25 @@ def buildSystemPrompt(
 
 
 
+def _makeCompactorSummarizer(
+    provider: dict[str, object] | None, model: str
+) -> Callable[..., Any] | None:
+    """The LLM summarizer when `llm_compactor` is enabled, else None.
+
+    One factory for the compaction path and the precompute task: two copies of
+    this rule could disagree about WHICH summarizer a session gets.
+    """
+    try:
+        from app.services.cognitive_config import get_features
+        from app.services.workbench.providers import make_compactor_llm_client
+
+        if get_features().get('llm_compactor', False):
+            return make_compactor_llm_client(provider, model)
+    except Exception:
+        return None
+    return None
+
+
 def _shouldAutoCompact(
     attention_pressure: str,
     turns_since_compaction: int,
@@ -3165,6 +3184,46 @@ async def _sendWorkbenchMessageStreamImpl(
             remainingTokens = max(0, contextWindow - originalTokens)
             # Compress toward ~55% of the real window so the next turn has headroom.
             threshold = max(4096, int(contextWindow * 0.55))
+            # OpenCode-style precompute: near the trigger, write the compaction
+            # summary ahead of time so the compaction itself is a swap instead
+            # of a model call on this turn's critical path. Only when an LLM
+            # summarizer exists (the heuristic one costs no model call);
+            # fingerprint-checked, so a changed head chunk misses and the real
+            # summarizer runs at compaction time.
+            if (
+                contextWindow
+                and ratio >= max(0.0, COMPACT_TRIGGER_RATIO - 0.10)
+                and not getattr(session, '_compactionPrecomputeTask', None)
+                and not getattr(session, '_compactionCheckpoint', None)
+            ):
+                try:
+                    from app.services import brain_config_service as _pc_cfg
+
+                    _precomputeOn = bool(
+                        _pc_cfg.getRuntimeConfig().get('compactionPrecompute', True)
+                    )
+                except Exception:
+                    _precomputeOn = True
+                _pc_summarizer = (
+                    _makeCompactorSummarizer(resolvedProvider, resolvedModel)
+                    if _precomputeOn
+                    else None
+                )
+                if _pc_summarizer is not None:
+                    from app.services.workbench.loop.precompute import (
+                        precomputeSummary as _precomputeSummary,
+                    )
+
+                    session._compactionPrecomputeTask = asyncio.create_task(  # type: ignore[attr-defined]
+                        _precomputeSummary(
+                            session,
+                            compactionCall=_compactionCall,
+                            summarizer=_pc_summarizer,
+                            context_window=contextWindow,
+                            goalHint=as_str(getattr(session, 'goal', '') or ''),
+                            workspace=as_str(getattr(session, 'workspacePath', '') or ''),
+                        )
+                    )
             currentMessages = list(session.messages)
             # Tier (a) projection prune: old tool outputs are blanked
             # in the model-facing projection only — session.messages stays
@@ -3189,15 +3248,13 @@ async def _sendWorkbenchMessageStreamImpl(
                         archive_messages(sessionId, unprunedMessages, reason='auto-compact')
                     except Exception:
                         logger.debug('transcript archive failed', exc_info=True)
-                    summarizer = None
-                    try:
-                        from app.services.cognitive_config import get_features
-                        from app.services.workbench.providers import make_compactor_llm_client
+                    summarizer = _makeCompactorSummarizer(resolvedProvider, resolvedModel)
+                    if summarizer is not None:
+                        # Swap in a pre-written summary when the head chunk is
+                        # byte-identical to the one it was written for.
+                        from app.services.workbench.loop.precompute import CachedSummarizer
 
-                        if get_features().get('llm_compactor', False):
-                            summarizer = make_compactor_llm_client(resolvedProvider, resolvedModel)
-                    except Exception:
-                        summarizer = None
+                        summarizer = CachedSummarizer(session, summarizer)
                     noteCompactionPhase(session, 'summary')
                     # One policy, three paths. The pre-turn trigger, the budget
                     # ladder's middle rung and the overflow rescue all go through
@@ -3231,6 +3288,16 @@ async def _sendWorkbenchMessageStreamImpl(
                         # Persist so later turns / reload don't re-send the bloated history.
                         session.messages = list(compressed)
                         session.messageCount = len(session.messages)
+                        # The precomputed summary (if any) described the OLD
+                        # head chunk and was consumed or is now stale.
+                        try:
+                            session._compactionCheckpoint = None  # type: ignore[attr-defined]
+                            _pcTask = getattr(session, '_compactionPrecomputeTask', None)
+                            if _pcTask is not None and not _pcTask.done():
+                                _pcTask.cancel()
+                            session._compactionPrecomputeTask = None  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
                         try:
                             saveSessions()
                         except Exception:

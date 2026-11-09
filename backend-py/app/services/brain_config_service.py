@@ -63,6 +63,7 @@ boolKeys: tuple[str, ...] = (
     'cameraAccess',
     'consolidationModelSummarize',
     'memoryRetireEnabled',
+    'compactionPrecompute',
     'skillArchiveEnabled',
     'skillAutonomy',
     'skillAutonomyShadow',

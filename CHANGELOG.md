@@ -1,12 +1,16 @@
 # August Proxy — Changelog
 
-## 2026-11-09 — 0.23.2 (no hostile env, told-once memory, reasoning vision)
+## 2026-11-09 — 0.24.0 (precomputed compaction, no hostile env, told-once memory)
 
 - **One broken `NO_PROXY` can no longer disable a feature.** Every httpx client
   now builds through `http_env` — the provider client, `web_fetch`, and 27
   constructions across 14 services. A bracketed IPv6 in the bypass list makes a
   raw httpx client refuse to construct; the door falls back to no environment
   proxy discovery and logs why.
+- **Compaction is precomputed.** Near the trigger, an LLM-compactor session
+  writes its summary in the background against the exact head chunk it will
+  need; a matching chunk at compaction time is an instant swap, and a changed
+  one falls back to the real summarizer. `compactionPrecompute` (default on).
 - **`analyze_media` reads a reasoning model's answer.** When `content` is null
   but `reasoning` carries the description (a chain-of-thought model that ran out
   of cap), the tool returns the reasoning instead of "(empty vision response)";

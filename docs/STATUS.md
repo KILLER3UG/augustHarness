@@ -1,12 +1,12 @@
 # Status — the current round
 
-Last updated: 2026-11-09 · App version: **0.23.2**
+Last updated: 2026-11-09 · App version: **0.24.0**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the 0.23.2 round: no hostile env, told-once memory, reasoning vision
+## This round — the 0.24.0 round: precomputed compaction, no hostile env, told-once memory
 
 - **A hostile `NO_PROXY` can no longer take a feature offline.** A bracketed
   IPv6 (`[::1]`, which Windows bypass lists write) makes httpx refuse to
@@ -31,6 +31,14 @@ waiting on the owner, and how to resume.
   boot index is scoped by `memoryIndexCategories` (default
   user,feedback,project,reference); `general` stays reachable through
   `list_facts(category=…)`, `brain_query` and recall.
+- **Compaction is precomputed (OpenCode's precompute shape).** When an LLM compactor is on and the session crosses 70% of its window, a background task learns the exact head chunk the compressor will summarise and writes the summary ahead of time, stored against the chunk's fingerprint. At the trigger a matching chunk is an instant swap (0 extra model calls, probed); any change misses and the real summarizer runs. Config:  (default on).
+- **Compaction is precomputed (OpenCode's precompute shape).** When an LLM
+  compactor is on and the session crosses 70% of its window, a background task
+  learns the exact head chunk the compressor will summarise and writes the
+  summary ahead of time, stored against the chunk's fingerprint. At the trigger
+  a matching chunk is an instant swap — probed: 0 extra model calls — and any
+  change misses and runs the real summarizer. Config: `compactionPrecompute`
+  (default on).
 - **Verified:** full tool/skill sweep (170 registered, 85 real successes, 12/12
   skill bodies, real ngspice circuit loop driven by the model: skill → netlist
   → simulation → read-back), the ablation arms, and every gate group.
