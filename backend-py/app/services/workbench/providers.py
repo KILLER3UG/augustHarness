@@ -203,7 +203,16 @@ def make_compactor_llm_client(
     callable takes the middle messages and returns a concise summary string
     (``''`` on failure, so the caller can fall back to the local summarizer).
     """
-    base = make_review_llm_client(main_provider, compactor_model_hint)
+    # The hint is the RESOLVED model id, and a namespaced id ("nvidia/model")
+    # makes `make_review_llm_client` split it: provider "nvidia" does not
+    # exist, so it fails closed and `llm_compactor` silently degrades to the
+    # heuristic for exactly the gateway ids this app uses. Naming the main
+    # provider explicitly skips that split and keeps the id a model.
+    base = make_review_llm_client(
+        main_provider,
+        compactor_model_hint,
+        review_provider_hint=as_str((main_provider or {}).get('id'), ''),
+    )
     if base is None:
         return None
 
