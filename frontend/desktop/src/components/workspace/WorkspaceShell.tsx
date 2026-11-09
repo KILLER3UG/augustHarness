@@ -360,7 +360,20 @@ export function WorkspaceShell({
   return (
     <div className={SETTINGS_PAGE_CLASS} data-testid="settings-page">
       <aside className={SETTINGS_RAIL_CLASS} aria-label="Settings sections">
-        <div className="px-3 pb-2 pt-3">
+        {/* The reference capture puts the way out at the top of the rail, above
+            search: a labelled pill, not a bare chevron. */}
+        <div className="px-3 pt-3">
+          <Button
+            variant="outline"
+            type="button"
+            className="h-8 w-fit gap-1.5 rounded-full px-3 text-xs text-foreground"
+            onClick={() => void navigate('/')}
+            data-testid="settings-back-to-app"
+          >
+            <ChevronLeft className="size-3.5" /> Back to app
+          </Button>
+        </div>
+        <div className="px-3 pb-2 pt-2">
           <SettingsSearch value={query} onChange={setQuery} />
           {isFiltering && (
             <p
