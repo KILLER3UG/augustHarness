@@ -1,6 +1,6 @@
 # Status — the current round
 
-Last updated: 2026-11-09 · App version: **0.23.0**
+Last updated: 2026-11-09 · App version: **0.23.1**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
@@ -27,10 +27,25 @@ waiting on the owner, and how to resume.
   side effect: `assembleToolDefs` budgets the tool surface by the model window,
   so an unknown model now discloses 131 tools instead of 45 (prompt 8841 →
   10127 chars).
-- **The rail matches the reference at 1920×1200:** 316px wide (was a 340
-  default, usually overridden by a stored 425), 13px nav/brand labels, and
-  42px rows on a 46px pitch. The width storage key moved v2 → v3 so a saved
-  width cannot pin the old default.
+- **The rail matches the reference at this display's scaling.** The reference
+  rail is 315 DEVICE px; this machine runs at 125% (AppliedDPI 120), so the
+  CSS width is 315 / 1.25 = **252px**. The first attempt used 316 (device px
+  read as CSS) and rendered 395 — wider than the image it was meant to match.
+  13px nav/brand labels and 42px rows on a 46px pitch were already right. The
+  width storage key is v4 so a saved width cannot pin an older default.
+- **One thinking block is one thought.** The thought card made a row per
+  paragraph, so a single continuous reasoning stream arrived as three rows with
+  three headers and the block's one summary line never appeared. A block
+  boundary is the semantic boundary (a new block follows a tool call or a new
+  stream); one block now renders one row that expands onto its own text.
+- **`analyze_media` hands the provider's refusal to the model verbatim.** The
+  old result carried only an HTTP status plus `error.message` when the provider
+  wrapped it in a dict — so a gateway's `{"detail": …}`, a bare `message`, or an
+  HTML page reached the model as "(vision request failed: HTTP 400)" with no
+  reason, and a 2xx with no text as "(empty vision response)". The turn then
+  retried the same image, listed directories and tried a `file://` URL. The
+  result now names the provider/model, states the status, and appends the body
+  verbatim (capped at 4000 chars with the cut counted).
 - **Landed from the parallel Perch session** (reviewed here; green on every
   gate): `session_search` (read-only transcript search, discovery/scroll/
   browse, parameterized SQL, in the planner and subagent read-only tiers);

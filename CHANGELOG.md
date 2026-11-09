@@ -1,5 +1,17 @@
 # August Proxy — Changelog
 
+## 2026-11-09 — 0.23.1 (the rail at 125%, whole thoughts, honest media errors)
+
+- **The rail default is 252 CSS px** (315 device at this machine's 125%
+  scaling). 0.23.0 shipped 316 CSS, which rendered 395 device px — wider than
+  the reference it was measured from.
+- **One thinking block is one thought.** The card no longer makes a row per
+  paragraph, so a continuous reasoning stream gets one summary and one
+  expansion instead of three fragments.
+- **`analyze_media` returns the provider's refusal verbatim**, capped at 4000
+  chars, instead of an HTTP status with no reason. A model that cannot accept
+  image input now learns that from the provider's own words.
+
 ## 2026-11-09 — the 0.23.0 round (self-healing backend, 1M context, the rail)
 
 - **A dead backend recovers itself.** The update holdoff stops being a latch —
