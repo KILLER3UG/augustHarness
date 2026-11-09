@@ -46,6 +46,20 @@ and in the bare-tool allow list.
   default** since 2026-10-24; an explicit stored `false` wins). A fact dropped
   for budget is named in a `recall partial:` line.
 
+**Told once, and re-told only when the context is rebuilt.** The boot memory
+index is frozen per session, and the per-turn tails skip anything this session
+already rendered (`_seen_memory_keys`, `_seen_skill_hints`) — the bytes are still
+in the transcript, so repeating them spends context for nothing. A compaction
+rewrites the transcript; both the frozen indexes and the seen-sets are cleared
+there, so the next build re-reads. A fresh session and a compaction are the only
+two moments re-telling is right.
+
+**The boot index is scoped.** `memoryIndexCategories` (default
+`user,feedback,project,reference`) limits which fact categories the index lists.
+A `general` fact stays reachable through `list_facts(category=…)`, `brain_query`
+and per-turn recall, which this key does not filter. The selection itself keeps
+its existing shape: 40 newest, sensitive and `person` rows excluded.
+
 **Write rules.**
 
 - `remember` refuses its first write in a turn until `list_facts` (or a memory

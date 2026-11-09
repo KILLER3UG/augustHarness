@@ -148,6 +148,7 @@ strKeys: tuple[str, ...] = (
     'skillLearningJudgeModel',
     'autonomyKinds',
     'toolSchemaCheck',
+    'memoryIndexCategories',
 )
 allowedKeys: frozenset[str] = frozenset(boolKeys + numKeys + floatKeys + strKeys)
 maxAgentDepthRange = (1, 5)
@@ -416,6 +417,12 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # it with a default of 'off', so a key the config layer refuses to store
     # silently pins every install to off.
     ('toolSchemaCheck', 'tool_schema_check', 'off', 'str'),
+    # Which fact categories the boot memory index lists. The index is told
+    # once per session (and re-read after compaction), so it must not spend
+    # its ~40 lines on categories the model never needs at turn zero. The
+    # full store stays reachable through list_facts(category=…) / brain_query
+    # and through per-turn recall, which is not filtered by this.
+    ('memoryIndexCategories', 'memory_index_categories', 'user,feedback,project,reference', 'str'),
     # Item 14 — the autonomy switch. ON is the shipped default: a learned
     # skill write is the same trust class as a memory write (which has always
     # been direct), and the reference harnesses put no human between the agent
@@ -664,6 +671,17 @@ def validatePatch(patch: object) -> tuple[bool, str]:
                     False,
                     f'{key!r} must be off | warn | strict (got {value!r})',
                 )
+            if key == 'memoryIndexCategories':
+                wanted = [c.strip().lower() for c in value.split(',') if c.strip()]
+                allowedCats = ('user', 'feedback', 'project', 'reference', 'general')
+                bad = [c for c in wanted if c not in allowedCats]
+                if bad:
+                    return (
+                        False,
+                        f'{key!r} accepts only {" / ".join(allowedCats)} (got {bad})',
+                    )
+                if not wanted:
+                    return (False, f'{key!r} needs at least one category')
             if key == 'autonomyKinds':
                 # Validated against the code's ceiling, and unknown names are
                 # REFUSED rather than dropped: a typo that silently armed nothing

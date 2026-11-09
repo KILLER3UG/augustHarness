@@ -748,6 +748,37 @@ def _spawn_background(coro: Coroutine[Any, Any, object], name: str):
 
 
 
+def _unfreezePromptIndexes(session: object) -> None:
+    """Let the next build re-read the memory/project indexes.
+
+    Both indexes are frozen per session so the provider's prefix cache stays
+    byte-stable ("told once"). That freeze assumes the model keeps seeing the
+    system prompt. Compaction rewrites the transcript and the model loses the
+    text it was told once, so the next build must read the store again — a new
+    session and a compaction are the only two moments re-telling is right.
+    Clearing when a compaction attempt starts is deliberate: a build that
+    re-reads costs one prompt rebuild, while a stale index survives every
+    later turn in the compacted context.
+    """
+    for attr in (
+        '_frozen_mem_index',
+        '_frozen_project_index',
+        '_seen_memory_keys',
+        '_seen_skill_hints',
+    ):
+        try:
+            setattr(session, attr, None)
+        except Exception:
+            pass
+    try:
+        _caps_block_cache.clear()
+        from app.services import capabilities_prompt as _caps
+
+        _caps._skills_bm25_cache.clear()
+    except Exception:
+        logger.debug('prompt: index cache clear failed', exc_info=True)
+
+
 def buildSystemPrompt(
     session: WorkbenchSession,
     tools: list[dict[str, object]] | None = None,
@@ -1023,10 +1054,16 @@ def buildSystemPrompt(
             frozen = getattr(session, '_frozen_mem_index', None)
             if frozen is None:
                 try:
+                    from app.services import brain_config_service as _idx_cfg
                     from app.services import session_scope as _ss
                     from app.services.memory_store import brain_index_snippet as _brain_index
 
-                    frozen = _brain_index(_ss.resolve_scope(session)).strip()
+                    _idxCats = str(
+                        _idx_cfg.getRuntimeConfig().get('memoryIndexCategories') or ''
+                    )
+                    frozen = _brain_index(
+                        _ss.resolve_scope(session), categories=_idxCats
+                    ).strip()
                 except Exception:
                     frozen = ''
                 try:
@@ -3138,6 +3175,7 @@ async def _sendWorkbenchMessageStreamImpl(
                 if not acquireCompactionLock(session):
                     logger.info('workbench auto-compact skipped — compaction lock held session=%s', sessionId)
                 else:
+                    _unfreezePromptIndexes(session)
                     try:
                         from app.services.transcript_archive import archive_messages
 
@@ -3324,6 +3362,9 @@ async def _sendWorkbenchMessageStreamImpl(
                 _memoryBlock, _injectedFacts = '', []
             elif _memReadOn:
                 _recalledRows: list[dict[str, object]] = []
+                _seenMem = getattr(session, '_seen_memory_keys', None)
+                if not isinstance(_seenMem, set):
+                    _seenMem = set()
                 _memoryBlock, _injectedFacts = build_memory_block(
                     _userText,
                     workspace=_wsForTail,
@@ -3332,7 +3373,16 @@ async def _sendWorkbenchMessageStreamImpl(
                     # M-2: Bot home chats recall global ∪ own notes;
                     # every other session stays on the plain global corpus.
                     scope=_turnScope,
+                    # Told once: a fact this session already injected stays out
+                    # of later tails — its bytes are still in the transcript.
+                    # Reset by `_unfreezePromptIndexes` after a compaction.
+                    exclude_keys=_seenMem,
                 )
+                try:
+                    _seenMem.update(k for k, _title in _injectedFacts if k)
+                    session._seen_memory_keys = _seenMem  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 # C6 deterministic alias pre-read: substring-match the message
                 # against the fields a fact already carries (key/title/
                 # description — there is no aliases column), riding the same
@@ -3503,12 +3553,23 @@ async def _sendWorkbenchMessageStreamImpl(
             # written to the session. Unknown names drop silently at the
             # catalogue lookup, so `/totally-not-a-skill …` costs nothing here.
             _pinnedSkill = pinned_skill_token(_userText)
+            _seenSkills = getattr(session, '_seen_skill_hints', None)
+            if not isinstance(_seenSkills, set):
+                _seenSkills = set()
             _skillsBlock, _skillsDetail = render_relevant_skills(
                 _userText,
                 _wsForTail or None,
                 _session_scope.bot_agent_id(_turnScope),
                 pinned=(_pinnedSkill,) if _pinnedSkill else (),
+                # Told once: a skill described earlier this session is not
+                # described again. Pinned `/name` requests bypass this.
+                exclude=_seenSkills,
             )
+            try:
+                _seenSkills.update(str(n) for n in (_skillsDetail or {}))
+                session._seen_skill_hints = _seenSkills  # type: ignore[attr-defined]
+            except Exception:
+                pass
             # C6 skill half: a name/keyword/trigger the message spells
             # verbatim gets a ONE-LINE hint pointing at load_skill — never a
             # body, never an auto-load. HINT-ONLY by contract, and the bytes
@@ -4505,6 +4566,7 @@ async def _sendWorkbenchMessageStreamImpl(
                             currentMessages, contextWindow, session, statsOut=_reactiveSplit
                         )
                         if reduced is not None:
+                            _unfreezePromptIndexes(session)
                             from app.providers.clients.base import estimateTokens as _estTok
 
                             beforeTokens = _tokensBeforeReactive

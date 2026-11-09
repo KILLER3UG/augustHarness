@@ -678,6 +678,7 @@ def render_relevant_skills(
     workspace: str | Path | None = None,
     agent_id: str = '',
     pinned: 'tuple[str, ...]' = (),
+    exclude: set[str] | None = None,
 ) -> tuple[str, dict[str, int]]:
     """Render the per-turn Relevant skills section (M6 item 6).
 
@@ -787,7 +788,18 @@ def render_relevant_skills(
             for score, s in scored
         ]
         ranked.sort(key=lambda pair: pair[0], reverse=True)
-        for _score, s in ranked[:_RELEVANT_SKILLS_TOP_K]:
+        # Told once: a skill this session already described stays out of later
+        # tails — its bytes are still in the transcript and the Tier-1 index
+        # still names it. Pinned names (an explicit `/skill`) bypass this: an
+        # explicit request is always answered. The caller resets the set when a
+        # compaction rewrites the transcript.
+        excluded = {str(n).lower() for n in (exclude or ())}
+        for _score, s in ranked:
+            if len(chosen) >= _RELEVANT_SKILLS_TOP_K:
+                break
+            name = as_str(s.get('name'), '')
+            if name.lower() in excluded:
+                continue
             if s not in chosen:
                 chosen.append(s)
         return _render_skill_lines(chosen, wantPinned, detail)
@@ -833,16 +845,6 @@ def _render_skill_lines(
         )
     lines.append('Load one with load_skill(name) if it fits the request.')
     return '\n'.join(lines), detail
-
-
-def build_relevant_skills_block(
-    query: str,
-    workspace: str | Path | None = None,
-    agent_id: str = '',
-    pinned: 'tuple[str, ...]' = (),
-) -> str:
-    """The Relevant skills text alone, for callers that don't meter it."""
-    return render_relevant_skills(query, workspace, agent_id, pinned)[0]
 
 
 _PIN_TOKEN_RE = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}$')

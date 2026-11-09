@@ -724,7 +724,7 @@ def _kv_note_hook(value_raw: object) -> str:
     return ' '.join(raw.split('\n', 1)[0].split())[:80]
 
 
-def brain_index_snippet(scope: str = 'global') -> str:
+def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
     """Compact boot index of durable memory for intake injection (B3).
 
     ZCode-parity (044): one line per stored fact — ``- title (key) — hook`` —
@@ -767,14 +767,20 @@ def brain_index_snippet(scope: str = 'global') -> str:
         "(expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday('now')) "
         "AND (status IS NULL OR status = 'active')"
     )
+    _cats = [c.strip().lower() for c in str(categories or '').split(',') if c.strip()]
+    catClause = ''
+    catParams: tuple[object, ...] = ()
+    if _cats:
+        catClause = ' AND category IN (' + ','.join('?' * len(_cats)) + ')'
+        catParams = tuple(_cats)
     try:
         factRows = conn.execute(
             "SELECT fact_key, title, category, description, fact_value, "
             "COALESCE(aliases, '[]') AS aliases, COALESCE(sensitive, 0) AS sensitive, "
             "COALESCE(subject_type, '') AS subject_type FROM facts "
-            f"WHERE {_vis} {scopeClause} "
+            f"WHERE {_vis} {scopeClause} {catClause} "
             "ORDER BY updated_at DESC LIMIT 40",
-            scopeParams,
+            scopeParams + catParams,
         ).fetchall()
         if factRows:
             lines.append('Facts:')
@@ -820,9 +826,9 @@ def brain_index_snippet(scope: str = 'global') -> str:
                 lines.append(line)
             try:
                 total = conn.execute(
-                    f"SELECT COUNT(*) FROM facts WHERE {_vis} {scopeClause} "
+                    f"SELECT COUNT(*) FROM facts WHERE {_vis} {scopeClause} {catClause} "
                     "AND COALESCE(sensitive, 0) = 0 AND COALESCE(subject_type, '') != 'person'",
-                    scopeParams,
+                    scopeParams + catParams,
                 ).fetchone()[0]
                 if total and total > len(factRows):
                     lines.append(f'  … +{total - len(factRows)} more (brain_query store=facts)')

@@ -1018,6 +1018,7 @@ def build_memory_block(
     scope: str = 'global',
     *,
     record: bool = True,
+    exclude_keys: set[str] | None = None,
 ) -> tuple[str, list[tuple[str, str]]]:
     """Render the memory injection section for one turn.
 
@@ -1077,7 +1078,15 @@ def build_memory_block(
     # reported it, because the budget was spent on a lane that is injected
     # regardless.
     facts = retrieve_relevant_facts(
-        query, k=k, prior_turn=prior_turn, scope=scope, exclude_keys=laneKeys
+        query,
+        k=k,
+        prior_turn=prior_turn,
+        scope=scope,
+        # `exclude_keys` is the told-once lane: a fact this session already
+        # rendered does not need the bytes again — the model still has it in
+        # the transcript. The caller resets the set when a compaction rewrites
+        # that transcript.
+        exclude_keys=laneKeys | {str(x) for x in (exclude_keys or ())},
     )
     projectSection = ''
     projectRows: list[dict[str, object]] = []
