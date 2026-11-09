@@ -399,11 +399,19 @@ class BaseProviderClient:
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
-            # Lazy import — httpx costs ~170 ms of module-import time and is
+            # Lazy imports — httpx costs ~170 ms of module-import time and is
             # only needed once a provider call actually runs.
             import httpx
 
-            self._client = httpx.AsyncClient(
+            from app.services import http_env
+
+            # `http_env.client` exists because a bracketed IPv6 in NO_PROXY
+            # ("[::1]", which Windows bypass lists and several tools write)
+            # makes httpx refuse to CONSTRUCT a client. Every other HTTP path
+            # (Hub, downloads, llama runtime) already builds through it; the
+            # provider call was the one left out, so a hostile bypass list took
+            # every model call offline while the rest of the app stayed up.
+            self._client = http_env.client(
                 timeout=httpx.Timeout(self.timeout, connect=self.connectTimeout),
                 follow_redirects=True,
             )
