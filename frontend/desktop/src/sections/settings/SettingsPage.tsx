@@ -241,11 +241,17 @@ export function SettingsPage() {
           entry — the presence gate goes. A section that swaps without fading is
           a smaller loss than one that never swaps. */}
       <div key={activeId} className="h-full min-h-0">
-        <div className="min-h-0">
+        {/* Explore owns its own scrolling (two panes, each with its own
+            scrollbar). Without a bounded height here its `h-full` resolved to
+            auto, so the panes never scrolled and the whole page moved
+            together. Other sections keep the page scroll. */}
+        <div className={activeId === 'explore' ? 'flex h-full min-h-0 flex-col' : 'min-h-0'}>
           <SectionHeader active={active} />
           {SectionComponent ? (
             <React.Suspense fallback={<SettingsSectionLoader />}>
-              <SectionComponent active={active} />
+              <div className={activeId === 'explore' ? 'flex min-h-0 flex-1 flex-col' : undefined}>
+                <SectionComponent active={active} />
+              </div>
             </React.Suspense>
           ) : null}
         </div>

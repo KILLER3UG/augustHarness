@@ -466,7 +466,7 @@ export function ExploreSection() {
     detailQ.data?.[field] ?? results.find((r) => r.repoId === selectedRepo)?.[field] ?? 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <header className="shrink-0 px-6 pb-3 pt-5">
         <h2 className="text-xl font-semibold tracking-tight text-foreground">Explore</h2>
         <div className="mt-3 flex items-center gap-2">
