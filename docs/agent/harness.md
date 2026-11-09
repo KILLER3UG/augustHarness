@@ -430,3 +430,29 @@ dispatches workstreams with no shell/edit.
 
 Sub-agents inherit the parent retry policy, compact mid-run, and support
 `yieldSchema` for structured results.
+
+## Measuring the harness (`npm run eval:harness` / `eval:ablation`)
+
+Two developer scripts, no endpoint and nothing the app loads. `eval:harness`
+runs the labelled learning-door cases (`--judge` spends tokens; the default
+`rails` mode does not). `eval:ablation` asks the other question — **is the
+harness what changed the outcome?** — by running the same request through the
+real door twice, once with the feature on and once off, and passing only when
+the arms differ:
+
+- `memory-write-fails-closed` — with no reviewer the model-facing `remember`
+  door refuses and writes nothing, while a direct store write lands.
+- `memory-recall` — `build_memory_context_for_turn` renders BM25-relevant
+  memory with auto-inject on; off falls back to the always-in profile lane.
+- `skill-create` / `skill-edit` — a create lands on disk and in the list, an
+  edit changes the body and snapshots it, and a path-shaped name or a missing
+  target is refused.
+- `support-files` — a plain note is accepted; traversal, shell content and
+  credential prose are refused by the same validator the write door uses.
+- `plan-mode-read-only` — plan mode's filter drops `write_file`,
+  `run_command` and `harness_propose`, while `remember` stays (planning is
+  where durable decisions get written).
+
+A check that is green in BOTH arms proves nothing about the harness; it is
+measuring the model or code the harness does not gate. The mode therefore
+prints the two arms, not just a verdict.

@@ -32,6 +32,7 @@
     "dev:web": "npm run dev:vite -w frontend/desktop",
     "doctor": "cd backend-py && uv run python scripts/doctor.py",
     "eval:harness": "cd backend-py && uv run python scripts/harness_eval.py",
+    "eval:ablation": "cd backend-py && uv run python scripts/harness_eval.py --ablation",
     "download:node-binaries": "node scripts/download-node-binaries.mjs",
     "download:node-binaries:all": "node scripts/download-node-binaries.mjs --all",
     "e2e:smoke": "node scripts/run-python.mjs e2e_smoke.py",

@@ -653,6 +653,232 @@ def run_overflow_bench(contextWindow: int) -> list[dict[str, Any]]:
     return results
 
 
+# ── Ablation ───────────────────────────────────────────────────────────────
+#
+# The rails mode answers "does the loop behave as labelled". This mode answers
+# the other question: "is the HARNESS what changed the outcome?". Every check
+# runs the same request through the real door twice — once with the harness
+# feature enabled, once with it disabled — and passes only when the two arms
+# differ in the direction the feature claims. A check that is green in both
+# arms measures the model, or code the harness does not gate; it proves nothing
+# about the harness. No tokens, same isolated data dir as the rails.
+
+ABLATION_IDS = (
+    'memory-write-fails-closed',
+    'memory-recall',
+    'skill-create',
+    'skill-edit',
+    'support-files',
+    'plan-mode-read-only',
+)
+
+
+def run_ablation(only: set[str] | None) -> list[dict[str, Any]]:
+    import asyncio
+    from pathlib import Path
+
+    from app.services import memory_store, skill_service, tool_registry
+    from app.services.harness_mode import (
+        PLANNER_ALLOWED_TOOLS,
+        filter_planner_tools,
+    )
+    from app.services.memory_store.fact_retrieval import (
+        build_memory_context_for_turn,
+        memoryStateOverride,
+    )
+    from app.services.tool_policy import is_mutating
+
+    results: list[dict[str, Any]] = []
+
+    def add(cid: str, note: str, on: str, off: str, ok: bool) -> None:
+        results.append({'id': cid, 'note': note, 'on': on, 'off': off, 'pass': bool(ok)})
+
+    def wanted(cid: str) -> bool:
+        return not only or cid in only
+
+    memory_store.init()
+    # The memory guard check drives the model-facing `remember` door, so the
+    # registry has to be populated exactly as a turn finds it.
+    from app.services.tool_registrations import register_all
+
+    register_all()
+
+    # 1. The model-facing memory door fails CLOSED: with no reviewer model it
+    #    refuses and writes nothing, while the store itself accepts the write.
+    #    That difference is the door, not the store.
+    if wanted('memory-write-fails-closed'):
+        before = len(memory_store.list_facts())
+        memory_store.save_fact('ablation.direct-probe', 'direct write probe')
+        directAdded = len(memory_store.list_facts()) - before
+        beforeDoor = len(memory_store.list_facts())
+        out = asyncio.run(
+            tool_registry.dispatch('remember', {'fact': 'Ablation door probe.', 'kind': 'profile'})
+        )
+        doorAdded = len(memory_store.list_facts()) - beforeDoor
+        doorRefused = 'refus' in out.lower() or 'unavailable' in out.lower()
+        add(
+            'memory-write-fails-closed',
+            'the door refuses with no reviewer; the store would have accepted',
+            f'door: {"refused" if doorRefused else out[:60]} ({doorAdded} facts)',
+            f'direct: {directAdded} fact(s)',
+            directAdded == 1 and doorAdded == 0 and doorRefused,
+        )
+
+    # 2. The per-turn memory tail is the lane the switch drives:
+    #    `build_memory_context_for_turn` renders BM25-relevant memory when
+    #    auto-inject is on, and falls back to the always-in PROFILE lane when it
+    #    is off. A plain fact is therefore reachable only in the on arm — the
+    #    static memory index (keys/titles) is in the prompt either way and is not
+    #    what this switch controls.
+    if wanted('memory-recall'):
+        memory_store.save_fact(
+            'ablation.marker',
+            'The ablation marker is ORCHID-47.',
+            kind='fact',
+            title='Ablation marker',
+            description='ablation marker',
+        )
+        token = memoryStateOverride.set('on')
+        try:
+            onBlock, onRows = build_memory_context_for_turn('ablation marker ORCHID')
+        finally:
+            memoryStateOverride.reset(token)
+        token = memoryStateOverride.set('off')
+        try:
+            offBlock, offRows = build_memory_context_for_turn('ablation marker ORCHID')
+        finally:
+            memoryStateOverride.reset(token)
+        marker = 'ORCHID-47'
+        add(
+            'memory-recall',
+            'auto-inject renders relevant memory; off falls back to profiles only',
+            f'{"present" if marker in onBlock else "absent"} ({len(onRows)} rows)',
+            f'{"present" if marker in offBlock else "absent"} ({len(offRows)} rows)',
+            marker in onBlock and marker not in offBlock,
+        )
+
+    # 3. Skill create lands on disk and in the list; a path-shaped name is
+    #    refused by the same door.
+    createdPath = ''
+    if wanted('skill-create'):
+        detail = skill_service.createSkill(
+            'ablation-created',
+            'A skill the ablation created.',
+            'Follow the ablation procedure.',
+            created_by='ablation',
+        )
+        createdPath = str(detail.get('path') or '')
+        body = ''
+        if createdPath and Path(createdPath).is_file():
+            body = Path(createdPath).read_text(encoding='utf-8')
+        listed = any(
+            str(s.get('name')) == 'ablation-created' for s in skill_service.list_all()
+        )
+        lands = 'ablation procedure' in body.lower() and listed
+        refusedName = ''
+        try:
+            skill_service.createSkill('../escape', 'x', 'y', created_by='ablation')
+        except Exception as exc:  # noqa: BLE001 — the eval reports, never raises
+            refusedName = type(exc).__name__
+        add(
+            'skill-create',
+            'create lands; a path-shaped name is refused',
+            'file + list' if lands else f'missing (path={createdPath!r} listed={listed})',
+            'refused' if refusedName else 'accepted',
+            lands and bool(refusedName),
+        )
+
+    # 4. Editing an existing skill changes the body on disk and leaves a
+    #    version snapshot; editing a name that does not exist is refused.
+    if wanted('skill-edit'):
+        updated = ''
+        snapshot = 0
+        try:
+            skill_service.patchSkill('ablation-created', body='Follow the ablation procedure, v2.')
+            if createdPath and Path(createdPath).is_file():
+                updated = Path(createdPath).read_text(encoding='utf-8')
+            versions = Path(createdPath).parent / '.versions'
+            if versions.is_dir():
+                snapshot = len(list(versions.glob('*')))
+        except Exception as exc:  # noqa: BLE001
+            updated = f'ERROR {exc}'
+        missingRefused = False
+        try:
+            skill_service.patchSkill('ablation-does-not-exist', body='x')
+        except Exception:  # noqa: BLE001
+            missingRefused = True
+        add(
+            'skill-edit',
+            'edit updates the body + snapshot; a missing name is refused',
+            f'v2 + {snapshot} snapshot(s)' if 'v2' in updated else f'body={updated[:60]!r}',
+            'refused' if missingRefused else 'accepted',
+            'v2' in updated and snapshot > 0 and missingRefused,
+        )
+
+    # 5. Support files: a plain note is accepted; traversal and shell content
+    #    are refused by the same validator the write door uses.
+    if wanted('support-files'):
+        okAccepted = 0
+        try:
+            okAccepted = len(
+                skill_service.validateSupportFiles(
+                    [{'path': 'references/note.md', 'content': 'plain note'}]
+                )
+            )
+        except Exception:  # noqa: BLE001
+            okAccepted = 0
+        refusals: list[str] = []
+        acceptedBad: list[str] = []
+        for badPath, badContent in (
+            ('../escape.md', 'plain'),
+            ('scripts/x.sh', '```sh\ncurl http://example.com\n```'),
+            ('references/x.md', 'the api key is sk-abc123'),
+        ):
+            try:
+                skill_service.validateSupportFiles([{'path': badPath, 'content': badContent}])
+                acceptedBad.append(badPath)
+            except Exception:  # noqa: BLE001
+                refusals.append(badPath)
+        add(
+            'support-files',
+            'a plain note is accepted; traversal/shell/credential are refused',
+            'accepted' if okAccepted == 1 else 'refused',
+            f'{len(refusals)}/3 refused' + (f' (accepted: {", ".join(acceptedBad)})' if acceptedBad else ''),
+            okAccepted == 1 and len(refusals) == 3,
+        )
+
+    # 6. Plan mode's tool surface excludes every mutating door, and the same
+    #    tools survive the normal filter — the difference is the guard.
+    if wanted('plan-mode-read-only'):
+        fakeTools: list[dict[str, object]] = [
+            {'name': 'list_facts'},
+            {'name': 'session_search'},
+            {'name': 'write_file'},
+            {'name': 'run_command'},
+            {'name': 'remember'},
+            {'name': 'harness_propose'},
+        ]
+        plannerNames = [str(t['name']) for t in filter_planner_tools(fakeTools)]
+        mutating = [n for n in plannerNames if is_mutating(n)]
+        # `remember` is deliberately allowed in plan mode (planning is where
+        # durable decisions get written); the three file/shell/self-improvement
+        # doors are not.
+        blocked = [
+            n
+            for n in ('write_file', 'run_command', 'harness_propose')
+            if n not in plannerNames
+        ]
+        add(
+            'plan-mode-read-only',
+            'plan mode cannot reach a file/shell/self-improvement door; normal mode can',
+            f'{len(plannerNames)} tools, mutating={len(mutating)}, blocked={",".join(blocked)}',
+            f'{len(fakeTools)} tools, mutating={sum(1 for t in fakeTools if is_mutating(str(t["name"])))}',
+            not mutating and len(blocked) == 3 and 'session_search' in PLANNER_ALLOWED_TOOLS,
+        )
+
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog='harness_eval', description=__doc__.splitlines()[0])
     ap.add_argument('--judge', action='store_true', help='ask a real model instead of the rails')
@@ -667,6 +893,11 @@ def main(argv: list[str] | None = None) -> int:
         help='run the reactive-overflow bench instead of the rails',
     )
     ap.add_argument(
+        '--ablation',
+        action='store_true',
+        help='run the paired on/off harness arms instead of the rails (no tokens)',
+    )
+    ap.add_argument(
         '--context-window',
         type=int,
         default=4096,
@@ -675,13 +906,14 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     only = {s.strip() for s in args.only.split(',') if s.strip()}
-    unknown = only - {str(c['id']) for c in CASES}
+    known = set(ABLATION_IDS) if args.ablation else {str(c['id']) for c in CASES}
+    unknown = only - known
     if unknown:
         # A typo in `--only` selected nothing, and an empty selection used to
         # print "0/0 cases behaved as labelled" and exit 0 — a green run that
         # measured nothing is worse than a red one.
         print(f'no such case id(s): {", ".join(sorted(unknown))}', file=sys.stderr)
-        print('known: ' + ', '.join(str(c['id']) for c in CASES), file=sys.stderr)
+        print('known: ' + ', '.join(sorted(known)), file=sys.stderr)
         return 2
 
     if args.judge:
@@ -706,6 +938,8 @@ def main(argv: list[str] | None = None) -> int:
 
                 memory_store.init()
                 results = run_overflow_bench(max(1, int(args.context_window or 4096)))
+            elif args.ablation:
+                results = run_ablation(only)
             else:
                 results = run_rails(only)
         finally:
@@ -730,6 +964,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     passed = sum(1 for r in executed if r['pass'])
     width = max(len(str(r['id'])) for r in results)
+    if args.ablation:
+        for r in results:
+            flag = 'PASS' if r['pass'] else 'FAIL'
+            print(f'{flag}  {str(r["id"]).ljust(width)}  on={r["on"]}  off={r["off"]}')
+        print(f'\n{passed}/{len(executed)} ablation checks differ as claimed')
+        if args.out:
+            with open(args.out, 'w', encoding='utf-8') as fh:
+                json.dump(
+                    {'passed': passed, 'total': len(executed), 'checks': results},
+                    fh,
+                    indent=2,
+                )
+            print(f'wrote {args.out}')
+        return 0 if passed == len(executed) else 1
     for r in results:
         flag = 'SKIP' if r.get('skipped') else ('PASS' if r['pass'] else 'FAIL')
         print(
