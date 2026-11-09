@@ -139,6 +139,11 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
     label: 'App',
     description: 'Account, privacy, system health, and updates.',
   },
+  {
+    id: 'local',
+    label: 'Local Models',
+    description: 'Browse Hugging Face and run the models August serves on this device.',
+  },
 ] as const;
 
 /**
@@ -238,7 +243,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     label: 'Local Models',
     description: 'Detect local servers (LM Studio, Ollama, llama.cpp), find GGUF files on disk, download from Hugging Face, and serve models on this machine.',
     icon: HardDrive,
-    category: 'capabilities',
+    category: 'local',
     tier: 'hidden',
     settingHints: [
       'Local server scan',
@@ -261,7 +266,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description:
       'Browse a curated catalog of GGUF models and download one to run locally on this machine.',
     icon: Github,
-    category: 'basics',
+    category: 'local',
     tier: 'basic',
     settingHints: [
       'Model search',
