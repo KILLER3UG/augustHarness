@@ -197,7 +197,13 @@ function ModelRow({
       )}
       data-testid={`explore-row-${repoId}`}
     >
-      <span aria-hidden className="shrink-0 text-lg leading-6">
+      <span
+        aria-hidden
+        className={cn(
+          'grid size-9 shrink-0 place-items-center rounded-lg text-base',
+          selected ? 'bg-primary-foreground/15' : 'bg-muted/60',
+        )}
+      >
         🤗
       </span>
       <span className="min-w-0 flex-1">
@@ -613,12 +619,18 @@ export function ExploreSection() {
               </div>
 
               <section>
-                <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  Download options
-                </h4>
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+                    Download Options
+                  </h4>
+                  <span className="text-2xs text-muted-foreground">
+                    Download to <span className="font-medium text-foreground">This device</span>
+                  </span>
+                </div>
                 {detailQ.isPending ? (
                   <p className="mt-2 inline-flex items-center gap-2 text-xs text-muted-foreground">
-                    <Loader2 className="size-3 animate-spin" aria-hidden /> Reading the file list…
+                    <Loader2 className="size-3 animate-spin" aria-hidden /> Loading download
+                    options… <span className="text-2xs">Finding best options…</span>
                   </p>
                 ) : detailQ.isError ? (
                   <p className="mt-2 inline-flex items-center gap-2 text-xs text-danger-fg">
@@ -634,30 +646,46 @@ export function ExploreSection() {
                   </p>
                 ) : (
                   <>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-1 font-mono text-2xs text-muted-foreground">
-                        GGUF
-                      </span>
-                      <select
-                        value={chosenFile?.filename ?? ''}
-                        onChange={(e) => setFileChoice(e.target.value)}
-                        aria-label="Which GGUF file to download"
-                        className="h-8 min-w-0 flex-1 rounded-md border border-border/60 bg-background px-2 text-xs text-foreground"
-                        data-testid="explore-file-select"
-                      >
-                        {serveable.map((f) => (
-                          <option key={f.filename} value={f.filename}>
-                            {f.filename} · {f.quantization || 'quant not in name'} ·{' '}
-                            {formatBytes(f.size)}
-                            {f.filename === detailQ.data?.recommended ? ' (recommended)' : ''}
-                          </option>
-                        ))}
-                      </select>
-                      {chosenFile && chosenFile.filename === detailQ.data?.recommended ? (
-                        <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-1 text-2xs text-muted-foreground">
-                          Recommended
-                        </span>
-                      ) : null}
+                    <div className="mt-2 overflow-hidden rounded-lg border border-border/60">
+                      <ul className="divide-y divide-border/40" data-testid="explore-file-select">
+                        {serveable.map((f) => {
+                          const isRecommended = f.filename === detailQ.data?.recommended;
+                          const active = f.filename === chosenFile?.filename;
+                          return (
+                            <li key={f.filename}>
+                              <label
+                                className={cn(
+                                  'flex cursor-pointer items-center gap-3 px-3 py-2 text-xs',
+                                  active ? 'bg-primary/10' : 'hover:bg-muted/30',
+                                )}
+                              >
+                                <input
+                                  type="radio"
+                                  name="explore-gguf"
+                                  className="size-3 shrink-0 accent-primary"
+                                  checked={active}
+                                  onChange={() => setFileChoice(f.filename)}
+                                  aria-label={`Choose ${f.filename}`}
+                                />
+                                <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                                  GGUF
+                                </span>
+                                <span className="min-w-0 flex-1 truncate text-foreground">
+                                  {f.quantization || f.filename}
+                                </span>
+                                {isRecommended ? (
+                                  <span className="shrink-0 rounded bg-primary/15 px-1.5 py-0.5 text-2xs font-medium text-primary">
+                                    Recommended
+                                  </span>
+                                ) : null}
+                                <span className="shrink-0 tabular-nums text-2xs text-muted-foreground">
+                                  {formatBytes(f.size)}
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     </div>
 
                     <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -746,32 +774,52 @@ export function ExploreSection() {
                 <h4 className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
                   Details
                 </h4>
-                <dl className="mt-2 space-y-1 text-xs">
-                  <div className="flex gap-3">
-                    <dt className="w-28 shrink-0 text-muted-foreground">Formats</dt>
-                    <dd className="min-w-0 text-foreground">
-                      {(detailQ.data?.formats ?? []).join(', ') || '—'}
-                    </dd>
+                <div className="mt-2 rounded-lg border border-border/60 bg-card/40 p-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+                    <span className="w-24 shrink-0">Formats</span>
+                    {(detailQ.data?.formats ?? []).length ? (
+                      (detailQ.data?.formats ?? []).map((f) => (
+                        <span
+                          key={f}
+                          className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 font-mono text-2xs text-foreground/80"
+                        >
+                          {f}
+                        </span>
+                      ))
+                    ) : (
+                      <span>—</span>
+                    )}
                   </div>
-                  <div className="flex gap-3">
-                    <dt className="w-28 shrink-0 text-muted-foreground">Capabilities</dt>
-                    <dd className="min-w-0 text-foreground">
-                      {(detailQ.data?.capabilities ?? []).length
-                        ? (detailQ.data?.capabilities ?? []).join(', ')
-                        : 'Text'}
-                    </dd>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+                    <span className="w-24 shrink-0">Capabilities</span>
+                    {(detailQ.data?.capabilities ?? []).length ? (
+                      (detailQ.data?.capabilities ?? []).map((c) => (
+                        <span
+                          key={c}
+                          className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-2xs text-foreground/80"
+                        >
+                          {c}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-2xs text-foreground/80">
+                        Text
+                      </span>
+                    )}
                   </div>
-                  <div className="flex gap-3">
-                    <dt className="w-28 shrink-0 text-muted-foreground">License</dt>
-                    <dd className="min-w-0 text-foreground">{detailQ.data?.license || '—'}</dd>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+                    <span className="w-24 shrink-0">Pipeline</span>
+                    <span className="text-foreground/80">{detailQ.data?.pipelineTag || '—'}</span>
+                    <span className="ml-4 w-24 shrink-0">License</span>
+                    <span className="text-foreground/80">{detailQ.data?.license || '—'}</span>
                   </div>
-                  <div className="flex gap-3">
-                    <dt className="w-28 shrink-0 text-muted-foreground">Saved to</dt>
-                    <dd className="min-w-0 truncate text-foreground" title={jobFor?.destPath}>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-2xs text-muted-foreground">
+                    <span className="w-24 shrink-0">Saved to</span>
+                    <span className="min-w-0 truncate text-foreground/80" title={jobFor?.destPath}>
                       {jobFor?.destPath ?? 'This device — your August data folder'}
-                    </dd>
+                    </span>
                   </div>
-                </dl>
+                </div>
               </section>
 
               <section>
