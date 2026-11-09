@@ -244,7 +244,11 @@ async def _vision_describe(
         return '(no provider client available for vision analysis)'
     body: dict[str, object] = {
         'model': model,
-        'max_tokens': 1024,
+        # Reasoning models spend completion tokens on `reasoning` BEFORE any
+        # `content`. Measured on nvidia/nemotron-3.5-super-vl: a 1280x800 image
+        # used 933 completion tokens (reasoning first) and a 1920x1200 one 742,
+        # so 1024 left a dense circuit screenshot with little room to answer.
+        'max_tokens': 2048,
         'messages': [
             {
                 'role': 'user',
@@ -281,7 +285,15 @@ async def _vision_describe(
             if isinstance(block, dict) and block.get('type') == 'text':
                 text_parts.append(str(block.get('text', '')))
     if not text_parts:
-        # A 200 with no text is still a refusal the model must see: some
+        # The answer can be sitting in `reasoning` while `content` is null: a
+        # reasoning model writes its chain first and only then the reply, and a
+        # cap that runs out mid-chain leaves content empty. The transcript used
+        # to say "(empty vision response)" and hide a description the provider
+        # had already produced — the model then retried the same call.
+        reasoning = message.get('reasoning')
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning.strip()
+        # A 200 with no text at all is still a refusal the model must see: some
         # gateways answer an unsupported image part with an empty choice or a
         # refusal field rather than an error status.
         return (
