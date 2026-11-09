@@ -17,11 +17,14 @@ interface SessionSidebarProps {
   onNavigate: (path: string) => void;
 }
 
-/* v3: the default moved 340 → 316 to match the reference rail. The key bump is
- * deliberate — a stored width overrides the default, so without it the change
- * would only ever reach a profile that never dragged the handle. */
-const SIDEBAR_WIDTH_KEY = "august-session-sidebar-width-v3";
-const DEFAULT_WIDTH = 316;
+/* v4: the default moved to 252 CSS px. The reference rail measures 315 device
+ * pixels on this machine, which runs at 125% (AppliedDPI 120) — 315/1.25 = 252
+ * CSS. The v3 default of 316 was measured in device pixels by mistake and
+ * rendered 395, wider than the reference it was meant to match.
+ * The key bump is deliberate: a stored width overrides the default, so without
+ * it the change would only ever reach a profile that never dragged the handle. */
+const SIDEBAR_WIDTH_KEY = "august-session-sidebar-width-v4";
+const DEFAULT_WIDTH = 252;
 const MIN_WIDTH = 220;
 const MAX_VIEWPORT_FRACTION = 0.33;
 
