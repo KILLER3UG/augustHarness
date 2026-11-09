@@ -347,7 +347,13 @@ async def _fetchUrlContent(url: str, maxLength: int = 50000, timeout_s: float = 
         'User-Agent': 'August-Proxy/1.0',
         'Accept': 'text/html,text/markdown,text/plain,*/*',
     }
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+    # `http_env.client` is the one builder that survives a hostile NO_PROXY: a
+    # bracketed IPv6 ("[::1]") in a Windows bypass list makes httpx refuse to
+    # CONSTRUCT a client. This path built one directly, so every web_fetch on
+    # such a machine failed before a single request.
+    from app.services import http_env
+
+    async with http_env.client(timeout=timeout, follow_redirects=False) as client:
         current = url
         for _hop in range(6):
             vetted = _vetted_public_ips(current)
