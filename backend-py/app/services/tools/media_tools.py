@@ -30,6 +30,45 @@ _MIME = {
     '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
 }
 
+#: The provider's own words are handed to the model verbatim, capped so one
+#: HTML error page cannot flood the turn. Deliberately not a summary: the
+#: model acts on this string, and a paraphrase is how "this model does not
+#: accept image input" turns into a retry loop that then lists directories and
+#: tries a file:// URL in the browser looking for another way in.
+_PROVIDER_ERROR_MAX_CHARS = 4000
+
+
+def _providerBodyText(response: object) -> str:
+    """The response body as text, capped, whatever shape it arrived in."""
+    body = getattr(response, 'body', None)
+    if isinstance(body, (dict, list)):
+        try:
+            text = json.dumps(body, ensure_ascii=False, indent=2)
+        except Exception:
+            text = str(body)
+    elif isinstance(body, str):
+        text = body
+    else:
+        text = '' if body is None else str(body)
+    text = text.strip()
+    if len(text) > _PROVIDER_ERROR_MAX_CHARS:
+        cut = len(text) - _PROVIDER_ERROR_MAX_CHARS
+        text = f'{text[:_PROVIDER_ERROR_MAX_CHARS]}\n… ({cut} more chars truncated)'
+    return text or '(empty body)'
+
+
+def _providerRefusal(response: object, provider: object, model: str) -> str:
+    """An error string the model can act on: who refused, and their words."""
+    label = ''
+    if isinstance(provider, dict):
+        label = str(provider.get('name') or provider.get('id') or '')
+    where = f'{label}/{model}' if label else model
+    status = getattr(response, 'status', 0)
+    return (
+        f'Error: the vision provider [{where}] refused the request with HTTP {status}. '
+        f'The provider response follows verbatim:\n{_providerBodyText(response)}'
+    )
+
 
 def _workspace() -> str:
     from app.services.workbench.context import currentSessionId
@@ -222,14 +261,12 @@ async def _vision_describe(
     }
     response = await client.chat_completions(body, apiKey=None)
     if response is None:
-        return '(vision provider returned no response)'
+        return f'(the vision provider [{model}] returned no response object — the request did not complete)'
     if not response.is_success:
-        err = response.body_json if isinstance(response.body_json, dict) else {}
-        detail = ''
-        raw_err = err.get('error')
-        if isinstance(raw_err, dict):
-            detail = str(raw_err.get('message') or '')
-        return f'(vision request failed: HTTP {response.status}{": " + detail if detail else ""})'
+        # The full body, not just error.message: gateways answer with
+        # {"error": "..."}, {"detail": ...}, or an HTML page, and the model
+        # needs the actual reason to change course.
+        return _providerRefusal(response, provider, model)
     payload = response.body_json if isinstance(response.body_json, dict) else None
     choices = payload.get('choices') if isinstance(payload, dict) else None
     message = (
@@ -243,7 +280,15 @@ async def _vision_describe(
         for block in content:
             if isinstance(block, dict) and block.get('type') == 'text':
                 text_parts.append(str(block.get('text', '')))
-    return '\n'.join(t for t in text_parts if t.strip()) or '(empty vision response)'
+    if not text_parts:
+        # A 200 with no text is still a refusal the model must see: some
+        # gateways answer an unsupported image part with an empty choice or a
+        # refusal field rather than an error status.
+        return (
+            f'(the vision provider [{model}] returned HTTP {response.status} with no text content. '
+            f'Its response body follows verbatim:\n{_providerBodyText(response)})'
+        )
+    return '\n'.join(text_parts)
 
 
 async def analyze_media(
