@@ -424,6 +424,10 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # full store stays reachable through list_facts(category=…) / brain_query
     # and through per-turn recall, which is not filtered by this.
     ('memoryIndexCategories', 'memory_index_categories', 'user,feedback,project,reference', 'str'),
+    # Write the compaction summary ahead of the trigger when an LLM compactor
+    # is enabled. A precompute that misses its fingerprint costs one wasted
+    # model call; the compaction itself still uses the real summarizer.
+    ('compactionPrecompute', 'compaction_precompute', True, 'bool'),
     # Item 14 — the autonomy switch. ON is the shipped default: a learned
     # skill write is the same trust class as a memory write (which has always
     # been direct), and the reference harnesses put no human between the agent
