@@ -1,12 +1,12 @@
 # Status — the current round
 
-Last updated: 2026-11-09 · App version: **0.24.0**
+Last updated: 2026-11-09 · App version: **0.24.1**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the 0.24.0 round: precomputed compaction, no hostile env, told-once memory
+## This round — the 0.24.1 round: precomputed compaction, the Explore reference, no hostile env
 
 - **A hostile `NO_PROXY` can no longer take a feature offline.** A bracketed
   IPv6 (`[::1]`, which Windows bypass lists write) makes httpx refuse to
@@ -39,6 +39,21 @@ waiting on the owner, and how to resume.
   a matching chunk is an instant swap — probed: 0 extra model calls — and any
   change misses and runs the real summarizer. Config: `compactionPrecompute`
   (default on).
+- **A namespaced model id no longer disables the compactor.** The compactor
+  client passed the resolved model id as a review-model hint, which is split at
+  the first `/` and looked up as a provider ("nvidia/model" → provider
+  "nvidia"). Every gateway id failed closed and `llm_compactor` silently fell
+  back to the heuristic; naming the main provider explicitly keeps the id a
+  model. Probed with the real compactor: precompute wrote the summary (one
+  call), the following compaction used the cache (0.00 s, 0 extra calls).
+- **Explore matches the reference capture.** The model list and the detail pane
+  scroll independently (the section host had no bounded height, so the page
+  scrolled as one); Download Options is a quant table (radio / GGUF / quant /
+  Recommended / size) under a "Download to This device" header with the
+  reference's loading copy; Details is a chip layout; rows carry an icon tile;
+  the rail gains a labelled "Back to app" pill and a Local Models group. The
+  reference's Billing / LM Link / Devices / Library / API / Defaults / Runtime
+  rows are deliberately not invented — August does not ship those surfaces.
 - **Verified:** full tool/skill sweep (170 registered, 85 real successes, 12/12
   skill bodies, real ngspice circuit loop driven by the model: skill → netlist
   → simulation → read-back), the ablation arms, and every gate group.

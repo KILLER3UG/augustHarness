@@ -1,6 +1,18 @@
 # August Proxy — Changelog
 
-## 2026-11-09 — 0.24.0 (precomputed compaction, no hostile env, told-once memory)
+## 2026-11-09 — 0.24.1 (precomputed compaction, the Explore reference, no hostile env)
+
+- **A namespaced model id no longer disables the LLM compactor.** The compactor
+  client passed the resolved model id as a review-model hint, and a hint is
+  split at the first `/` and looked up as a provider — so `nvidia/model` failed
+  closed for every gateway id and `llm_compactor` silently degraded to the
+  heuristic summarizer. Fixed by naming the main provider explicitly.
+- **Explore matches the reference capture.** Independent scrolling for the
+  model list and the detail pane; Download Options is a quant table (radio,
+  GGUF, quant, Recommended, size) under a "Download to This device" header;
+  Details is a chip layout; rows carry an icon tile; the rail gains a
+  "Back to app" pill and a Local Models group. Sections August does not ship
+  (Billing, LM Link, Devices, Library, API, Defaults, Runtime) are not invented.
 
 - **One broken `NO_PROXY` can no longer disable a feature.** Every httpx client
   now builds through `http_env` — the provider client, `web_fetch`, and 27
