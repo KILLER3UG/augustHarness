@@ -104,16 +104,20 @@ export interface ThoughtStepLine {
  * thought gets a line and every reasoning byte belongs to exactly one row.
  */
 export function distillThoughtSteps(content: string): ThoughtStepLine[] {
-  const { thoughts } = splitThinkingTexts(content);
-  if (thoughts.length === 0) {
-    return content.trim()
-      ? [{ summary: summarizeThoughtHeader(content, false), reasoning: content.trim() }]
-      : [];
-  }
-  return thoughts.map((thought) => ({
-    summary: summarizeThoughtHeader(thought, false),
-    reasoning: thought,
-  }));
+  /* One thinking BLOCK is one thought.
+   *
+   * This used to split the block at blank lines and make a row per paragraph,
+   * so a single continuous reasoning stream arrived as three rows ("Looking
+   * into the image…", "Working through the details.", "Using the analyze media
+   * tool…") and the one summary line the card exists for never appeared. A
+   * block boundary already separates distinct thoughts — a new block starts
+   * after a tool call or a new stream — so a paragraph break inside one block
+   * is not a semantic boundary. `summarizeThoughtHeader` still distils one
+   * honest header from the whole thought, and the row expands onto exactly
+   * the bytes that header was derived from. */
+  const text = content.trim();
+  if (!text) return [];
+  return [{ summary: summarizeThoughtHeader(text, false), reasoning: text }];
 }
 
 /** The distilled lines only, for callers that render the summary and never
