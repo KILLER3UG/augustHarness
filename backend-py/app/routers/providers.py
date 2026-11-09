@@ -18,11 +18,13 @@ from app.models.config import (
     ProviderCreate,
     ProviderUpdate,
 )
-from app.services import config_service, model_service
+from app.services import config_service, http_env, model_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/providers')
+
+
 
 
 def _iso(epoch: float | None) -> str | None:
@@ -631,7 +633,6 @@ async def _discoverProviderModels(
         # Bearer header goes only when there is a key to put in it.
         if baseUrl:
             try:
-                import httpx
 
                 from app.providers.api_format import join_provider_url, normalize_provider_base_url
 
@@ -639,7 +640,7 @@ async def _discoverProviderModels(
                 base = normalize_provider_base_url(baseUrl)
                 models_url = join_provider_url(base, 'models') if base else ''
                 if models_url:
-                    async with httpx.AsyncClient(timeout=5) as client:
+                    async with http_env.client(timeout=5) as client:
                         try:
                             resp = await client.get(
                                 models_url,

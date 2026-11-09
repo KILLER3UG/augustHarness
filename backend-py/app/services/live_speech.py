@@ -12,13 +12,15 @@ import logging
 import httpx
 
 from app.json_narrowing import as_dict, as_str
-from app.services import live_config_service
+from app.services import http_env, live_config_service
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_STT_MODEL = 'whisper-1'
 DEFAULT_TTS_MODEL = 'tts-1'
 DEFAULT_TTS_VOICE = 'alloy'
+
+
 
 
 def _resolve_provider(provider_id: str) -> dict[str, object] | None:
@@ -102,7 +104,7 @@ async def transcribe_audio(
         return {'ok': False, 'status': 501, 'error': 'STT provider API key missing'}
     url = f'{base}/audio/transcriptions'
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with http_env.client(timeout=60.0) as client:
             files = {'file': (filename, audio_bytes, content_type)}
             data = {'model': model, 'response_format': 'json'}
             resp = await client.post(
@@ -148,7 +150,7 @@ async def synthesize_speech(text: str, voice: str = '') -> dict[str, object]:
         return {'ok': False, 'status': 501, 'error': 'TTS provider API key missing'}
     url = f'{base}/audio/speech'
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with http_env.client(timeout=60.0) as client:
             resp = await client.post(
                 url,
                 headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},

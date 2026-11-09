@@ -45,3 +45,22 @@ def client(**kwargs: Any) -> httpx.AsyncClient:
                 exc,
             )
         return httpx.AsyncClient(trust_env=False, **kwargs)
+
+
+def client_sync(**kwargs: Any) -> httpx.Client:
+    """The sync twin of :func:`client` — same fallback, same one warning."""
+    global _warned
+    try:
+        return httpx.Client(**kwargs)
+    except httpx.InvalidURL as exc:
+        if kwargs.get('trust_env') is not None:
+            raise
+        if not _warned:
+            _warned = True
+            logger.warning(
+                'system proxy settings are unparseable (%s) — continuing without '
+                'environment proxy discovery. NO_PROXY entries like "[::1]" make '
+                'httpx refuse to build any client.',
+                exc,
+            )
+        return httpx.Client(trust_env=False, **kwargs)

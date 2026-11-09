@@ -25,6 +25,7 @@ from urllib.parse import urljoin
 
 from app.json_narrowing import as_dict, as_list, as_str
 from app.lib.paths import dataPath
+from app.services import http_env
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,8 @@ _session_locks: dict[str, asyncio.Lock] = {}
 _SESSION_TTL_S = 30 * 60
 # Guards the background refresh scheduled by getMcpToolDefinitionsSync.
 _refresh_task: asyncio.Task | None = None
+
+
 
 
 def _mcpConfigPath() -> Path:
@@ -783,11 +786,10 @@ async def _close_remote_stream(serverId: str) -> None:
     if not sid or not post_url:
         return
     try:
-        import httpx
 
         headers: dict[str, str] = {'Mcp-Session-Id': str(sid)}
         headers.update(_server_headers(serverId))
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+        async with http_env.client(timeout=5.0, follow_redirects=True) as client:
             await client.delete(post_url, headers=headers)
     except Exception as exc:
         logger.debug('MCP session termination best-effort failed for %s: %s', serverId, exc)
@@ -965,7 +967,6 @@ async def _open_sse_stream(serverId: str, base_url: str) -> tuple[str, dict[str,
     and a user registering an MCP server is already choosing to talk to that
     host.
     """
-    import httpx
     from app.services.tool_registrations.web_tools import _vetted_public_ips
 
     if _vetted_public_ips(base_url) is None:
@@ -997,7 +998,7 @@ async def _open_sse_stream(serverId: str, base_url: str) -> tuple[str, dict[str,
     # browser had: a public host answering `302 → 127.0.0.1` walks straight
     # past a check on the initial URL. An MCP SSE endpoint that redirects is
     # unusual, and refusing to chase one is the right default.
-    client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+    client = http_env.client(timeout=30.0, follow_redirects=False)
     st: dict[str, object] = {
         'client': client,
         'pending': {},
@@ -1142,7 +1143,6 @@ async def _ensure_remote_session(serverId: str) -> dict[str, object]:
 
 
 async def _ensure_remote_session_locked(serverId: str) -> dict[str, object]:
-    import httpx
 
     existing = _remote_sessions.get(serverId)
     if isinstance(existing, dict) and existing.get('endpoint') and existing.get('initialized'):
@@ -1197,7 +1197,7 @@ async def _ensure_remote_session_locked(serverId: str) -> dict[str, object]:
         if sse_stream is not None:
             init_resp = await _sse_rpc(serverId, init_req, timeout=30.0)
         else:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with http_env.client(timeout=30.0, follow_redirects=True) as client:
                 hdrs = {
                     'Accept': 'application/json, text/event-stream',
                     'Content-Type': 'application/json',
@@ -1231,7 +1231,7 @@ async def _ensure_remote_session_locked(serverId: str) -> dict[str, object]:
                     timeout=10.0,
                 )
             else:
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                async with http_env.client(timeout=10.0, follow_redirects=True) as client:
                     hdrs = {
                         'Accept': 'application/json, text/event-stream',
                         'Content-Type': 'application/json',
@@ -1258,7 +1258,6 @@ async def _ensure_remote_session_locked(serverId: str) -> dict[str, object]:
 
 async def _remote_rpc(serverId: str, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
     """JSON-RPC request over remote HTTP/SSE session."""
-    import httpx
 
     session = await _ensure_remote_session(serverId)
     transport = as_str(session.get('transport'))
@@ -1277,7 +1276,7 @@ async def _remote_rpc(serverId: str, method: str, params: dict[str, object] | No
     try:
         if transport == 'sse':
             return await _sse_rpc(serverId, request, headers=headers or None)
-        async with httpx.AsyncClient(timeout=MCP_TIMEOUT_MS / 1000, follow_redirects=True) as client:
+        async with http_env.client(timeout=MCP_TIMEOUT_MS / 1000, follow_redirects=True) as client:
             hdrs = {
                 'Accept': 'application/json, text/event-stream',
                 'Content-Type': 'application/json',

@@ -37,12 +37,16 @@ from typing import Any
 
 import httpx
 
+from app.services import http_env
+
 log = logging.getLogger(__name__)
 
 _MAX_BYTES = 20 * 1024 * 1024
 _MANIFEST = '.packs.json'
 _GITHUB_RE = re.compile(r'^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:/([^@]*))?(?:@([^/@]+))?$')
 _SAFE_NAME = re.compile(r'^[A-Za-z0-9._ -]{1,64}$')
+
+
 
 
 def _agentRoot() -> Path:
@@ -67,7 +71,7 @@ def _saveManifest(root: Path, manifest: dict[str, Any]) -> None:
 
 def _fetch(url: str) -> bytes:
     """Download the archive (https only, size-capped). Seam for tests."""
-    with httpx.Client(follow_redirects=True, timeout=30.0) as client:
+    with http_env.client_sync(follow_redirects=True, timeout=30.0) as client:
         with client.stream('GET', url) as resp:
             if resp.status_code != 200:
                 raise ValueError(f'fetch failed: HTTP {resp.status_code} for {url}')

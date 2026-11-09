@@ -6,9 +6,12 @@ import logging
 from typing import Any
 
 from app.json_narrowing import as_str
+from app.services import http_env
 from app.services.web_config_service import get_web_config, resolve_search_backend
 
 logger = logging.getLogger(__name__)
+
+
 
 
 class SearchBackendError(Exception):
@@ -39,7 +42,6 @@ def search_ddgs(query: str, max_results: int) -> list[dict[str, object]]:
 
 
 async def search_brave(query: str, max_results: int, api_key: str) -> list[dict[str, object]]:
-    import httpx
 
     if not api_key:
         raise SearchBackendError('Brave Search requires BRAVE_SEARCH_API_KEY or auxiliary.web.braveApiKey')
@@ -48,7 +50,7 @@ async def search_brave(query: str, max_results: int, api_key: str) -> list[dict[
         'X-Subscription-Token': api_key,
     }
     params: dict[str, str | int] = {'q': query, 'count': min(max_results, 20)}
-    async with httpx.AsyncClient(timeout=12.0) as client:
+    async with http_env.client(timeout=12.0) as client:
         resp = await client.get(
             'https://api.search.brave.com/res/v1/web/search',
             headers=headers,
@@ -64,13 +66,12 @@ async def search_brave(query: str, max_results: int, api_key: str) -> list[dict[
 
 
 async def search_searxng(query: str, max_results: int, base_url: str) -> list[dict[str, object]]:
-    import httpx
 
     if not base_url:
         raise SearchBackendError('SearXNG requires SEARXNG_URL or auxiliary.web.searxngUrl')
     url = base_url.rstrip('/') + '/search'
     params = {'q': query, 'format': 'json'}
-    async with httpx.AsyncClient(timeout=12.0) as client:
+    async with http_env.client(timeout=12.0) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -102,10 +103,9 @@ async def run_search(
 
 async def duckduckgo_instant_answer(query: str) -> dict[str, object] | None:
     """Fallback abstract when a backend returns zero hits."""
-    import httpx
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with http_env.client(timeout=8.0) as client:
             ia_resp = await client.get(
                 'https://api.duckduckgo.com/',
                 params={'q': query, 'format': 'json', 'no_html': '1', 'skip_disambig': '1'},

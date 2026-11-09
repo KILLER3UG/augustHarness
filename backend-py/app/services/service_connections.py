@@ -40,10 +40,8 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import httpx
-
 from app.json_narrowing import as_dict, as_str
-from app.services import secret_store
+from app.services import http_env, secret_store
 from app.services.config_service import getConfig, saveConfig
 
 logger = logging.getLogger(__name__)
@@ -81,6 +79,8 @@ _GOOGLE_FACET_SCOPE_ALIASES: dict[str, tuple[str, ...]] = {
         'https://www.googleapis.com/auth/drive',
     ),
 }
+
+
 
 
 def _normalize_google_facet(facet: str = '') -> str:
@@ -531,7 +531,7 @@ async def test_github(token: str | None = None) -> dict[str, Any]:
     if not tok:
         return {'ok': False, 'error': 'No GitHub token configured'}
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with http_env.client(timeout=12.0) as client:
             res = await client.get(
                 'https://api.github.com/user',
                 headers={
@@ -577,7 +577,7 @@ async def test_slack(bot_token: str | None = None, channel: str = '') -> dict[st
     if not tok:
         return {'ok': False, 'error': 'No Slack bot token configured'}
     try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
+        async with http_env.client(timeout=12.0) as client:
             res = await client.post(
                 'https://slack.com/api/auth.test',
                 headers={'Authorization': f'Bearer {tok}'},
@@ -752,7 +752,7 @@ async def _refresh_google_access_token(raw: dict[str, Any], *, force: bool = Fal
     if client_secret:
         body['client_secret'] = client_secret
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with http_env.client(timeout=30.0) as client:
             resp = await client.post(
                 'https://oauth2.googleapis.com/token',
                 data=body,
@@ -1087,7 +1087,7 @@ async def google_oauth_callback(code: str = '', state: str = '', error: str = ''
         token_body['code_verifier'] = code_verifier
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with http_env.client(timeout=30.0) as client:
             token_res = await client.post(
                 'https://oauth2.googleapis.com/token',
                 data=token_body,

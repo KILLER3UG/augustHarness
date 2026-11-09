@@ -43,6 +43,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.json_narrowing import as_dict, as_str
 from app.providers.api_format import join_provider_url
+from app.services import http_env
 from app.services.quota_observation import BUCKET_GENERIC, QuotaObservation, parse_reset_seconds, quota_observations
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,8 @@ _QUOTA_FETCH_TIMEOUT_S = 8.0
 _TOKEN_RE = re.compile(r'([^.\[\]]+)|\[(\d+)\]')
 
 _AUTH_TYPES = frozenset({'none', 'bearer', 'header', 'query'})
+
+
 
 
 def _flag(value: object, default: bool) -> bool:
@@ -277,9 +280,8 @@ async def fetch_provider_quota(
     headers = build_quota_headers(entry, api_key=api_key)
     body = as_dict(endpoint.get('body')) or None
     try:
-        import httpx
 
-        async with httpx.AsyncClient(timeout=_QUOTA_FETCH_TIMEOUT_S, follow_redirects=True) as client:
+        async with http_env.client(timeout=_QUOTA_FETCH_TIMEOUT_S, follow_redirects=True) as client:
             resp = await client.request(method, url, headers=headers, json=body if method == 'POST' else None)
         if resp.status_code >= 400:
             logger.debug('quotaEndpoint %s → HTTP %s', url, resp.status_code)

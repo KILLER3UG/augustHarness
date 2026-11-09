@@ -32,11 +32,14 @@ import secrets
 from typing import Optional
 
 from app.json_narrowing import as_dict, as_int, as_list, as_str
+from app.services import http_env
 from app.services.gateway.base import BasePlatformAdapter, MessageEvent, SessionSource
 
 log = logging.getLogger(__name__)
 _TELEGRAMApi = 'https://api.telegram.org/bot'
 _TIMEOUT = 30
+
+
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -69,7 +72,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return {'ok': False, 'description': str(exc)}
 
     async def connect(self) -> bool:
-        import httpx
         if not self._token:
             log.error('telegram: HARNESS_TELEGRAM_BOT_TOKEN not set')
             return False
@@ -79,7 +81,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # a failed connect that skipped its own disconnect) orphaned the previous
         # client and its connection pool with nothing left to close them.
         await self.disconnect()
-        self._client = httpx.AsyncClient()
+        self._client = http_env.client()
         me = await self._request('getMe')
         if not me.get('ok'):
             log.error('telegram: getMe failed: %s', as_str(me.get('description')))

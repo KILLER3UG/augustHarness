@@ -22,6 +22,7 @@ from app.json_narrowing import as_dict, as_int, as_list, as_str
 from app.models.config import DEFAULT_CONTEXT_WINDOW
 from app.providers.api_format import normalize_api_format
 from app.providers.clients import getClient
+from app.services import http_env
 from app.services.cost_estimator import price_for_model
 from app.services.workbench.providers import supports_thinking
 
@@ -34,6 +35,8 @@ _aliasCache: dict[str, object] | None = None
 _aliasCacheAt: float = 0
 _ALIASCacheTtl: float = 60
 _refreshInFlight: asyncio.Task | None = None
+
+
 
 
 def invalidate_cache() -> None:
@@ -314,7 +317,6 @@ def _getModelDisplayAlias(model: dict[str, object]) -> str:
 
 
 async def _fetchProviderModels(provider: dict[str, object], timeoutS: float = 5.0) -> list[dict[str, object]]:
-    import httpx
     """Fetch models from a provider's /models endpoint.
 
     Falls back to static list if the endpoint is unavailable.
@@ -329,7 +331,7 @@ async def _fetchProviderModels(provider: dict[str, object], timeoutS: float = 5.
     if modelsUrl and apiKey:
         try:
             headers = client.buildAuthHeaders(apiKey)
-            async with httpx.AsyncClient(timeout=timeoutS) as http:
+            async with http_env.client(timeout=timeoutS) as http:
                 resp = await http.get(modelsUrl, headers=headers)
                 if resp.status_code == 200:
                     data = resp.json()

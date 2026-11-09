@@ -12,6 +12,8 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from app.services import http_env
+
 logger = logging.getLogger(__name__)
 
 _PROBE_INTERVAL_S = 60
@@ -20,6 +22,7 @@ _RING_SIZE = 50
 
 
 @dataclass
+
 class ProbeResult:
     provider_id: str
     success: bool
@@ -136,9 +139,8 @@ class HealthMonitor:
 
         start = time.time()
         try:
-            import httpx
 
-            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S) as client:
+            async with http_env.client(timeout=_PROBE_TIMEOUT_S) as client:
                 url = health.base_url.rstrip('/') + '/models'
                 resp = await client.get(url)
                 latency = (time.time() - start) * 1000

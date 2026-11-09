@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 from app.json_narrowing import as_bool, as_dict, as_list, as_str
-from app.services import config_service
+from app.services import config_service, http_env
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ _GENERATE_TIMEOUT_S = 300
 _POLL_INTERVAL_S = 1.0
 
 _TOOL_NAME = 'generate_image'
+
+
 
 
 def get_config() -> dict[str, object]:
@@ -177,7 +179,7 @@ def _root(cfg: dict[str, object] | None = None) -> str:
 async def health() -> dict[str, Any]:
     """Connection test: ComfyUI answers /system_stats with a system block."""
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with http_env.client(timeout=_TIMEOUT) as client:
             resp = await client.get(f'{_root()}/system_stats')
         if resp.status_code != 200:
             return {'ok': False, 'error': f'HTTP {resp.status_code} from {_root()}/system_stats'}
@@ -212,7 +214,7 @@ async def health() -> dict[str, Any]:
 
 async def checkpoints() -> dict[str, Any]:
     """Checkpoint names ComfyUI can load (from /object_info)."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    async with http_env.client(timeout=_TIMEOUT) as client:
         resp = await client.get(f'{_root()}/object_info/CheckpointLoaderSimple')
     if resp.status_code != 200:
         raise RuntimeError(f'HTTP {resp.status_code} from /object_info/CheckpointLoaderSimple')
@@ -386,7 +388,7 @@ async def generate_image(
     graph = _build_graph(args, ckpt)
 
     client_id = uuid.uuid4().hex
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+    async with http_env.client(timeout=httpx.Timeout(30.0)) as client:
         resp = await client.post(f'{_root()}/prompt', json={'prompt': graph, 'client_id': client_id})
         if resp.status_code != 200:
             detail = ''

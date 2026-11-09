@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 
+from app.services import http_env
+
 
 async def getHostInfo() -> dict[str, object]:
     import httpx
@@ -54,7 +56,7 @@ async def getHostInfo() -> dict[str, object]:
             'mode': 'local' if local_ok else 'off',
         }
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with http_env.client(timeout=5) as client:
             resp = await client.get(f'{baseUrl}/health')
             if resp.status_code == 200:
                 payload = resp.json() if resp.headers.get('content-type', '').startswith('application/json') else {}
@@ -93,7 +95,7 @@ async def executeHostCommand(command: str, args: list[str] | None = None) -> dic
     if not baseUrl:
         return {'error': 'Host agent not available'}
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with http_env.client(timeout=30) as client:
             resp = await client.post(f'{baseUrl}/execute', json={'command': command, 'args': args or []})
             return resp.json() if resp.status_code == 200 else {'error': resp.text}
     except httpx.RequestError as exc:

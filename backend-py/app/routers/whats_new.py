@@ -6,13 +6,16 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import httpx
 from fastapi import APIRouter, Query
+
+from app.services import http_env
 
 router = APIRouter(prefix='/api/whats-new', tags=['whats-new'])
 
 DEFAULT_REPO = 'KILLER3UG/augustHarness'
 GITHUB_API = 'https://api.github.com'
+
+
 
 
 def _repo() -> str:
@@ -57,7 +60,7 @@ async def get_whats_new(hours: int = Query(default=48, ge=1, le=168)):
     errors: list[str] = []
 
 
-    async with httpx.AsyncClient(timeout=12.0) as client:
+    async with http_env.client(timeout=12.0) as client:
         try:
             resp = await client.get(
                 f'{GITHUB_API}/repos/{repo}/commits',

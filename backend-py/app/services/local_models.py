@@ -23,6 +23,8 @@ from typing import Any
 
 import httpx
 
+from app.services import http_env
+
 logger = logging.getLogger(__name__)
 
 # Port → the first probe that identifies a server there. Ordered probes only
@@ -40,6 +42,8 @@ _KIND_LABELS = {
     'comfyui': 'ComfyUI',
     'openai': 'OpenAI-compatible server',
 }
+
+
 
 
 def _models_from_openai_payload(data: Any) -> list[str]:
@@ -155,7 +159,7 @@ async def scan_local_servers(extra_ports: list[int] | None = None) -> dict[str, 
         if 1 <= port <= 65535 and port not in ports:
             ports.append(port)
 
-    async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT, follow_redirects=False) as client:
+    async with http_env.client(timeout=_PROBE_TIMEOUT, follow_redirects=False) as client:
         results = await asyncio.gather(*(_probe_port(client, port) for port in ports))
 
     servers = [r for r in results if r is not None]
