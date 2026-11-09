@@ -1,12 +1,41 @@
 # Status — the current round
 
-Last updated: 2026-11-09 · App version: **0.23.1**
+Last updated: 2026-11-09 · App version: **0.23.2**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the 0.23.0 round: a backend that heals, 1M context, the rail
+## This round — the 0.23.2 round: no hostile env, told-once memory, reasoning vision
+
+- **A hostile `NO_PROXY` can no longer take a feature offline.** A bracketed
+  IPv6 (`[::1]`, which Windows bypass lists write) makes httpx refuse to
+  CONSTRUCT a client. `http_env` already existed for this; adoption was partial.
+  The provider client, `web_fetch`, and 27 constructions across 14 more files
+  (ComfyUI, Telegram, health probe, host agent, live speech, local-model probe,
+  model discovery, quota fetch, service connections, skill packs, MCP, web
+  search backends, providers discovery, What's New) now build through
+  `http_env.client()` / the new `client_sync()`. Zero raw constructions remain.
+  Verified with `NO_PROXY="... [::1] ..."`: the raw client raises, both doors
+  build with `trust_env=False`, all 14 modules import.
+- **A reasoning model's answer is not "empty".** `analyze_media` read only
+  `content`; a reasoning model writes `reasoning` first, so a cap that ran out
+  mid-chain left `content: null` and the tool said "(empty vision response)".
+  It now falls back to `reasoning` and asks for 2048 tokens (measured: a
+  1280×800 image used 933 completion tokens before any content). The refusal
+  path already hands the provider's body back verbatim.
+- **Memory and skills are told once.** Per-turn recall and the Relevant-skills
+  block skip what the session already injected (`_seen_memory_keys`,
+  `_seen_skill_hints`); both compaction paths clear those sets and the frozen
+  indexes so the model is re-told exactly when its context was rebuilt. The
+  boot index is scoped by `memoryIndexCategories` (default
+  user,feedback,project,reference); `general` stays reachable through
+  `list_facts(category=…)`, `brain_query` and recall.
+- **Verified:** full tool/skill sweep (170 registered, 85 real successes, 12/12
+  skill bodies, real ngspice circuit loop driven by the model: skill → netlist
+  → simulation → read-back), the ablation arms, and every gate group.
+
+## The 0.23.0 round — a backend that heals, 1M context, the rail
 
 - **August now recovers from its own dead backend.** Three defects made
   "Cannot reach August" unrecoverable: the update holdoff was a latch that

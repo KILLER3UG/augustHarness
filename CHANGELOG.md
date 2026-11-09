@@ -1,5 +1,21 @@
 # August Proxy — Changelog
 
+## 2026-11-09 — 0.23.2 (no hostile env, told-once memory, reasoning vision)
+
+- **One broken `NO_PROXY` can no longer disable a feature.** Every httpx client
+  now builds through `http_env` — the provider client, `web_fetch`, and 27
+  constructions across 14 services. A bracketed IPv6 in the bypass list makes a
+  raw httpx client refuse to construct; the door falls back to no environment
+  proxy discovery and logs why.
+- **`analyze_media` reads a reasoning model's answer.** When `content` is null
+  but `reasoning` carries the description (a chain-of-thought model that ran out
+  of cap), the tool returns the reasoning instead of "(empty vision response)";
+  the completion cap moves 1024 → 2048.
+- **Memory and skills are told once.** A fact or skill description already
+  injected this session is not injected again; a compaction clears the
+  seen-sets and the frozen indexes so the model is re-told when its context is
+  rebuilt. The boot memory index is scoped by `memoryIndexCategories`.
+
 ## 2026-11-09 — 0.23.1 (the rail at 125%, whole thoughts, honest media errors)
 
 - **The rail default is 252 CSS px** (315 device at this machine's 125%
