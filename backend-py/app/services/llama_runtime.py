@@ -530,6 +530,15 @@ async def _await_server_ready(
     url = f'http://127.0.0.1:{row["port"]}/health'
     deadline = asyncio.get_running_loop().time() + _SERVER_START_TIMEOUT_S
     ready = False
+    # "Not up yet" is the common case and stays quiet, but this loop used to
+    # swallow EVERY failure silently — a poisoned NO_PROXY sat here burning the
+    # full 900 s while llama-server was healthy, and the only trace was a
+    # status that never left "starting". The FIRST occurrence of each failure
+    # class is a warning, so a hang that never resolves still has one line in
+    # the log at the default level; repeats drop to debug at a slow cadence so
+    # a 900-second poll loop cannot flood it.
+    lastPollError: str = ''
+    pollsSinceLog = 0
     while asyncio.get_running_loop().time() < deadline:
         if proc.returncode is not None:
             row['status'] = 'failed'
@@ -542,8 +551,18 @@ async def _await_server_ready(
             if resp.status_code == 200:
                 ready = True
                 break
-        except Exception:  # noqa: BLE001 — not up yet
-            pass
+        except Exception as exc:  # noqa: BLE001 — not up yet
+            kind = type(exc).__name__
+            pollsSinceLog += 1
+            if kind != lastPollError:
+                logger.warning(
+                    'health poll for the local model: %s (server not answering yet)', kind
+                )
+                lastPollError = kind
+                pollsSinceLog = 0
+            elif pollsSinceLog >= 30:
+                logger.debug('health poll: %s persists (%s)', kind, exc)
+                pollsSinceLog = 0
         await asyncio.sleep(_HEALTH_POLL_S)
 
     if not ready:
