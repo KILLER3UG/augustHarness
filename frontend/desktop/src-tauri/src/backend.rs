@@ -1732,6 +1732,18 @@ fn updateHoldoffExpired() -> bool {
     aged && !installerRunning()
 }
 
+/// The ONE answer to "should the backend stay down?".
+///
+/// Two places ask it — the watchdog loop and `ensureRunningLocked` — and they
+/// used to interpret the holdoff differently: the watchdog called
+/// `updateHoldoffExpired()` first and cleared a stale holdoff, while
+/// `ensureRunningLocked` returned early on `updateHoldoffActive()` alone. They
+/// agreed only by accident of call order; a third caller, or a reordering, would
+/// have made a stale holdoff look permanent again. Every site goes through this.
+fn holdoffBlocksRespawn() -> bool {
+    updateHoldoffActive() && !updateHoldoffExpired()
+}
+
 /// Stop the supervised backend and keep the watchdog from respawning it.
 /// Used on Quit and before the Windows updater/NSIS install step so bundled
 /// `resources/python/*.pyd` files are not locked.
@@ -2138,7 +2150,7 @@ pub fn ensureRunning(app: &AppHandle) -> bool {
 fn ensureRunningLocked(app: &AppHandle) -> bool {
     reclaimDeadChild(app);
 
-    if updateHoldoffActive() {
+    if holdoffBlocksRespawn() {
         log::info!("[backend] update holdoff — skip ensureRunning");
         return false;
     }
@@ -2533,7 +2545,7 @@ pub fn watchBackend(app: &AppHandle) {
 
         // Avoid thrashing while the user is mid-bootstrap (copy/pip) or updating.
         if updateHoldoffActive() {
-            if !updateHoldoffExpired() {
+            if holdoffBlocksRespawn() {
                 continue;
             }
             // The app is still here long after the backend was stopped for an
@@ -2543,6 +2555,13 @@ pub fn watchBackend(app: &AppHandle) {
                 "[backend] update holdoff expired with no installer running — clearing it and restarting"
             );
             clearUpdateHoldoff();
+            // The phase rides the same moment: stopBackend set "updating" when
+            // it raised the holdoff, and a failed installer launch (unverified
+            // download, spawn error) leaves nothing to clear it. Clearing only
+            // the holdoff re-latches the watchdog one check later on the phase
+            // branch below — the expiry has to reset both latches or neither
+            // fixed the stranding.
+            setSetupPhase(app, "starting", Some("Recovering backend after a failed update…".into()));
         }
         if let Some(state) = app.try_state::<BackendSetupStatus>() {
             if let Ok(guard) = state.0.lock() {
