@@ -476,6 +476,16 @@ export function removeSessionLocally(
     } catch {
       /* ignore */
     }
+    // Drop the session's device-local review notes too — clearSession existed
+    // with no caller, so a deleted session's notes were re-hydrated from
+    // localStorage on every start forever.
+    try {
+      void import('./review-notes').then((m) =>
+        m.useReviewNotes.getState().clearSession(lid),
+      );
+    } catch {
+      /* ignore */
+    }
   }
   return true;
 }
