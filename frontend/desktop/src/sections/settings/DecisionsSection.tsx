@@ -202,9 +202,9 @@ export function DecisionsSection() {
     },
   });
 
-  // ── The two knobs this panel owns ─────────────────────────────────────
+  // ── The knobs this panel owns ─────────────────────────────────────────
   //
-  // Both were WRITABLE by the backend and had no control anywhere, which
+  // All were WRITABLE by the backend and had no control anywhere, which
   // is the same gap `check:brain-config` exists to close: a key nobody can
   // reach is a key nobody can change.
   //
@@ -213,24 +213,42 @@ export function DecisionsSection() {
   //                      by default, because arming it changes what a
   //                      provider sees.
   //   journalIntervalHours  how often the daily journal pass runs.
+  //   diagnosticsRetentionDays  how long the four diagnostics ledgers this
+  //                      panel reads (subagent_runs, routing_evidence,
+  //                      decision_ledger, harness_jobs) are kept before the
+  //                      consolidation sweep prunes them. It was read by the
+  //                      sweep but registered in NO key list, so every PUT
+  //                      naming it was rejected and the window was pinned to
+  //                      its fallback forever. The range is the sweep's own
+  //                      clamp, so the control cannot offer a value the sweep
+  //                      would ignore.
   const cfgQ = useQuery({ queryKey: ['brain-config'], queryFn: getBrainConfig });
   const [journalHours, setJournalHours] = useState<number | null>(null);
+  const [retentionDays, setRetentionDays] = useState<number | null>(null);
   const [journalError, setJournalError] = useState('');
+  const [retentionError, setRetentionError] = useState('');
 
   useEffect(() => {
     const raw = cfgQ.data?.config?.journalIntervalHours;
     if (typeof raw === 'number') setJournalHours(raw);
   }, [cfgQ.data?.config?.journalIntervalHours]);
 
+  useEffect(() => {
+    const raw = cfgQ.data?.config?.diagnosticsRetentionDays;
+    if (typeof raw === 'number') setRetentionDays(raw);
+  }, [cfgQ.data?.config?.diagnosticsRetentionDays]);
+
   const cfgMut = useMutation({
     mutationFn: (updates: Record<string, unknown>) => saveBrainConfig(updates),
     onSuccess: () => {
       setJournalError('');
+      setRetentionError('');
       void qc.invalidateQueries({ queryKey: ['brain-config'] });
       void qc.invalidateQueries({ queryKey: ['brain-decisions'] });
     },
     onError: (err: Error) => {
       setJournalError(err.message);
+      setRetentionError(err.message);
       toast.error(`Could not save — ${err.message}`);
     },
   });
@@ -311,6 +329,39 @@ export function DecisionsSection() {
           />
           <span>hours</span>
         </label>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>Keep ledger rows</span>
+          <input
+            type="number"
+            min={7}
+            max={365}
+            value={retentionDays ?? ''}
+            onChange={(e) =>
+              setRetentionDays(e.target.value === '' ? null : Number(e.target.value))
+            }
+            onBlur={() => {
+              if (retentionDays === null) return;
+              if (retentionDays < 7 || retentionDays > 365) {
+                setRetentionError('The retention window must be between 7 and 365 days.');
+                return;
+              }
+              cfgMut.mutate({ diagnosticsRetentionDays: retentionDays });
+            }}
+            aria-label="Diagnostics retention in days"
+            data-testid="diagnostics-retention-input"
+            className="w-16 rounded border border-border/60 bg-transparent px-1.5 py-0.5 text-xs text-foreground tabular-nums"
+          />
+          <span>days</span>
+        </label>
+        {retentionError ? (
+          <span
+            role="alert"
+            className="text-xs text-danger-fg"
+            data-testid="diagnostics-retention-error"
+          >
+            {retentionError}
+          </span>
+        ) : null}
         {journalError ? (
           <span role="alert" className="text-xs text-danger-fg" data-testid="journal-cadence-error">
             {journalError}

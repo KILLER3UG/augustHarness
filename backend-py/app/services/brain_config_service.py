@@ -70,7 +70,6 @@ boolKeys: tuple[str, ...] = (
     'projectMemory',
     'projectSkills',
     'fileMemory',
-    'externalSkillRoots',
     'contextReliefRotate',
     # Whether `record_decision` is promoted into the CORE tool set
     # (`workbench._coreToolNames` reads it). It had a fieldTable entry and a
@@ -135,10 +134,17 @@ numKeys: tuple[str, ...] = (
     # consolidation pass curates it back down. 0 = no budget (the shipped
     # state — see the fieldTable entry for why the default is 0 and not 1500).
     'factBudget',
+    # The diagnostics-ledger retention window. consolidation.py reads it for
+    # the four ledgers (subagent_runs, routing_evidence, decision_ledger,
+    # harness_jobs); it was read but never registered, so every PUT naming it
+    # was rejected as an unknown field and the window was pinned to the
+    # fallback 30 no matter what anyone configured. Same shape as the
+    # toolSchemaCheck mistake.
+    'diagnosticsRetentionDays',
     # M-7 negative recall signal: the constants of the disuse penalty. All
     # three are the ranker's, and the ranker reads them from this config, so
-    # they are settable here rather than hardcoded in the scorer.
-    'memoryDisuseWeight',
+    # they are settable here rather than hardcoded in the scorer. The weight
+    # is a float and rides floatKeys below.
     'memoryDisuseCap',
     'memoryDisuseRescue',
 )
@@ -148,6 +154,11 @@ strKeys: tuple[str, ...] = (
     'skillLearning',
     'skillLearningJudgeModel',
     'autonomyKinds',
+    # Operator-configured read-only skill roots (skill_service.external_roots
+    # reads it as a string). It sat in boolKeys while fieldTable declared
+    # 'str', so a boolean PUT was refused with a number-ish message and the
+    # kind lists disagreed about what the key is.
+    'externalSkillRoots',
     'toolSchemaCheck',
     'memoryIndexCategories',
 )
@@ -218,6 +229,10 @@ factBudgetRange = (0, 100_000)
 memoryDisuseCapRange = (0, 500)
 memoryDisuseRescueRange = (0, 20)
 memoryDisuseWeightRange = (0.0, 1.0)
+# Diagnostics-ledger retention, in days. The floor and ceiling match the
+# clamp consolidation.py applies to whatever it reads, so a configured value
+# cannot disagree with the sweep's own bounds.
+diagnosticsRetentionDaysRange = (7, 365)
 fieldTable: tuple[tuple[str, str, object, str], ...] = (
     ('enabled', 'enabled', DEFAULT_FEATURES.get('enabled', True), 'bool'),
     # The agent-jobs flag is gone: the registry job ledger is an in-memory
@@ -428,6 +443,11 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # is enabled. A precompute that misses its fingerprint costs one wasted
     # model call; the compaction itself still uses the real summarizer.
     ('compactionPrecompute', 'compaction_precompute', True, 'bool'),
+    # How long the four diagnostics ledgers (subagent_runs, routing_evidence,
+    # decision_ledger, harness_jobs) are kept before the consolidation pass
+    # prunes them. 30 is the shipped window; the range matches the sweep's
+    # clamp so a configured value and the sweep agree by construction.
+    ('diagnosticsRetentionDays', 'diagnostics_retention_days', 30, 'num'),
     # Item 14 — the autonomy switch. ON is the shipped default: a learned
     # skill write is the same trust class as a memory write (which has always
     # been direct), and the reference harnesses put no human between the agent
@@ -492,6 +512,38 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
 snakeToCamel: dict[str, str] = {snake: camel for camel, snake, _d, _k in fieldTable}
 camelToSnake: dict[str, str] = {camel: snake for camel, snake, _d, _k in fieldTable}
 fieldKind: dict[str, str] = {camel: kind for camel, _s, _d, kind in fieldTable}
+
+# The kind tuples above and this table are ONE contract. Four hand-maintained
+# lists had to agree with a five-column table and they did not, twice, silently:
+# `externalSkillRoots` sat in boolKeys while the table declared 'str' (a boolean
+# PUT was refused with a number-ish message), and `diagnosticsRetentionDays` was
+# in no list at all (every PUT naming it was rejected, so the window was pinned
+# to its fallback forever). Nothing errored — the key just vanished from
+# allowedKeys. These assertions fail at IMPORT instead, which the smoke test
+# turns into a boot refusal: a key is writable exactly when the table has it,
+# with the kind the table declares, and a disagreement cannot ship.
+_kindList: dict[str, tuple[str, ...]] = {
+    'bool': boolKeys,
+    'num': numKeys,
+    'float': floatKeys,
+    'str': strKeys,
+}
+for _kind, _keys in _kindList.items():
+    _declared = {camel for camel, _s, _d, k in fieldTable if k == _kind}
+    _missing = _declared.difference(_keys)
+    _extra = set(_keys).difference(_declared)
+    if _missing or _extra:
+        raise RuntimeError(
+            f'brain-config kind table disagrees with {_kind}Keys: '
+            f'missing from the tuple {sorted(_missing)}, '
+            f'listed under the wrong kind {sorted(_extra)}'
+        )
+if len(allowedKeys) != len(fieldTable):
+    raise RuntimeError(
+        f'brain-config: {len(fieldTable) - len(allowedKeys)} fieldTable key(s) are '
+        'absent from every kind tuple, so validatePatch rejects them'
+    )
+del _kind, _keys, _declared, _missing, _extra
 
 
 def _defaultsCamel() -> BrainConfigDict:
@@ -753,6 +805,8 @@ def validatePatch(patch: object) -> tuple[bool, str]:
                 # 0 is legal and means "no aggregate bound" — the one opt-out
                 # in this family. Read by subagent_fanout.charge_fanout_round.
                 lo, hi = subagentFanoutRoundBudgetRange
+            elif key == 'diagnosticsRetentionDays':
+                lo, hi = diagnosticsRetentionDaysRange
             elif key == 'budgetSoftUsd':
                 lo, hi = budgetSoftUsdRange
             elif key == 'budgetSoftTokens':

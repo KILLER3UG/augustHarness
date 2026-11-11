@@ -281,18 +281,101 @@ for (const [key, files] of panelWritten) {
   }
 }
 
-// REPORT-ONLY: a backend fieldTable key the API refuses to write.
-const notWritable = backend.fieldKeys.filter((k) => !backend.allowedKeys.includes(k));
-let known = [];
+// The READ side: a key backend code pulls out of the runtime config must be
+// a key the config service knows. This is the third member of the family the
+// checks above close: `toolSchemaCheck` was read by dispatch but missing from
+// the allowlist (warn/strict unreachable), `diagnosticsRetentionDays` was
+// read by the consolidation sweep but in NO key list (the window was pinned
+// to its fallback forever), and `compactionPrecompute` shipped with a
+// boolKeys entry and no fieldTable (KeyError on first write). A knob the
+// code reads but the service does not register is a knob nobody can turn.
+//
+// Two read shapes are recognized, both literal-only — a `.get(someVariable)`
+// is invisible to this gate the way a multi-line listener is invisible to
+// the render ratchet:
+//   * inline:  getRuntimeConfig().get('key', ...)
+//   * through a variable assigned from getRuntimeConfig() in the same file,
+//     with the nearest preceding assignment winning and a top-level
+//     def/class boundary ending the tracked scope.
+const APP_ROOT = resolve(root, 'backend-py', 'app');
+const configReads = new Map(); // key -> [where]
+const addRead = (key, where) => {
+  if (!configReads.has(key)) configReads.set(key, []);
+  const sites = configReads.get(key);
+  if (!sites.includes(where)) sites.push(where);
+};
+function* pyFiles(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) yield* pyFiles(p);
+    else if (entry.name.endsWith('.py')) yield p;
+  }
+}
+let scannedFiles = 0;
+for (const file of pyFiles(APP_ROOT)) {
+  scannedFiles += 1;
+  const text = readFileSync(file, 'utf8');
+  const rel = file.slice(root.length + 1);
+  const lineAt = (offset) => text.slice(0, offset).split('\n').length;
+  for (const m of text.matchAll(/getRuntimeConfig\(\)\s*\.get\(\s*['"]([A-Za-z0-9_]+)['"]/g)) {
+    addRead(m[1], `${rel}:${lineAt(m.index)}`);
+  }
+  const assigns = [...text.matchAll(/([A-Za-z_]\w*)\s*=\s*(?:[\w.]+\.)?getRuntimeConfig\(\)/g)].map(
+    (m) => ({ name: m[1], at: m.index })
+  );
+  if (!assigns.length) continue;
+  for (const m of text.matchAll(/([A-Za-z_]\w*)\.get\(\s*['"]([A-Za-z0-9_]+)['"]/g)) {
+    let last = null;
+    for (const a of assigns) {
+      if (a.name === m[1] && a.at < m.index) last = a;
+    }
+    if (!last) continue;
+    // A top-level def/class between the assignment and the read means the
+    // variable is a different binding in a different scope.
+    if (/^(?:async )?def |^class /m.test(text.slice(last.at, m.index))) continue;
+    addRead(m[2], `${rel}:${lineAt(m.index)}`);
+  }
+}
+if (scannedFiles === 0) {
+  errors.push(`no Python files found under ${APP_ROOT} — the read-side census is empty.`);
+}
+const unknownReads = [...configReads.keys()]
+  .filter((k) => !backend.allowedKeys.includes(k))
+  .sort();
+let manifest = {};
 if (existsSync(MANIFEST)) {
   try {
-    const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8'));
-    known = manifest.notWritable ?? [];
+    manifest = JSON.parse(readFileSync(MANIFEST, 'utf8'));
   } catch (err) {
     console.error(`[check-brain-config] ${MANIFEST} is not valid JSON: ${err.message}`);
     process.exit(1);
   }
 }
+const knownUnknownReads = manifest.unknownReads ?? [];
+for (const k of unknownReads) {
+  if (!knownUnknownReads.includes(k)) {
+    const where = (configReads.get(k) ?? []).slice(0, 3).join(', ');
+    errors.push(
+      `backend code reads brain-config key '${k}' (${where}) but the config service does ` +
+        'not know it: it is in no key list, so every PUT naming it is rejected and the ' +
+        'fallback value is permanent. Register the key, or record it in ' +
+        'scripts/brain-config-ranges.pending.json if the read is deliberate.'
+    );
+  }
+}
+for (const k of knownUnknownReads) {
+  if (backend.allowedKeys.includes(k)) {
+    errors.push(
+      `scripts/brain-config-ranges.pending.json lists '${k}' as a deliberate unknown read, ` +
+        'but the key is registered now — remove the entry so the list stays an exception ' +
+        'list, not a rubbish bin.'
+    );
+  }
+}
+
+// REPORT-ONLY: a backend fieldTable key the API refuses to write.
+const notWritable = backend.fieldKeys.filter((k) => !backend.allowedKeys.includes(k));
+let known = manifest.notWritable ?? [];
 const fresh = notWritable.filter((k) => !known.includes(k));
 for (const k of fresh) {
   errors.push(
@@ -321,11 +404,56 @@ for (const k of known) {
   }
 }
 
+// 8. EVERY registered key has a SURFACE — a control that writes it, or a
+//    recorded reason it is API-only. The checks above prove a key is
+//    writable; they say nothing about whether anyone can turn it. That is the
+//    `toolSchemaCheck` defect again one layer over: "a knob that could not be
+//    turned", shipped twice (toolSchemaCheck's warn/strict, and
+//    diagnosticsRetentionDays / externalSkillRoots, which are registered and
+//    validated but have no control anywhere in the settings tree).
+//
+//    A key with no control is not automatically a failure — some are
+//    deliberately API-only (an operator's hand-edited config, a value only the
+//    backend reads) — but the choice has to be WRITTEN DOWN, or the next
+//    reader cannot tell an omission from a decision.
+const apiOnly = manifest.apiOnly ?? {};
+for (const key of Object.keys(apiOnly)) {
+  if (!backend.allowedKeys.includes(key)) {
+    errors.push(
+      `scripts/brain-config-ranges.pending.json lists '${key}' as API-only, but the backend ` +
+        'does not register it — remove the entry so the list stays an exception list.'
+    );
+  }
+  if (panelWritten.has(key)) {
+    errors.push(
+      `scripts/brain-config-ranges.pending.json lists '${key}' as API-only, but ` +
+        `${panelWritten.get(key).join(', ')} writes it — remove the entry.`
+    );
+  }
+}
+const surfaceless = [...backend.allowedKeys]
+  .filter((k) => !panelWritten.has(k) && !(k in apiOnly))
+  .sort();
+for (const key of surfaceless) {
+  errors.push(
+    `the backend registers brain-config key '${key}' but no Settings control writes it and ` +
+      'scripts/brain-config-ranges.pending.json does not record it as API-only — a knob ' +
+      'nobody can turn. Add a control, or record the reason it is deliberately API-only.'
+  );
+}
+if (Object.keys(apiOnly).length) {
+  notes.push(
+    `${Object.keys(apiOnly).length} registered key(s) are deliberately API-only: ` +
+      Object.keys(apiOnly).join(', ')
+  );
+}
+
 if (errors.length > 0) {
   for (const e of errors) console.error(`FAIL  ${e}`);
   console.error(
     `\n${errors.length} brain-config problem(s). A key the panel writes has to be a key the ` +
-      'backend accepts, at a value the backend accepts.'
+      'backend accepts, at a value the backend accepts, and a key the backend registers has ' +
+      'to be reachable or recorded as deliberately not.'
   );
   process.exit(1);
 }

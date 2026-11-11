@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listSkillSuggestions } from '@/api/api-client/skills-versions';
 import { useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   BookOpen,
@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/api/client';
+import { getBrainConfig, saveBrainConfig } from '@/api/workbench';
 import { Button } from '@/components/ui/button';
 import { QueryErrorState } from '@/components/QueryErrorState';
 import { SectionHeader } from '@/components/SectionHeader';
@@ -526,6 +527,7 @@ export function SkillsSection({ host = 'settings' }: { host?: LearningHost } = {
                   onChange={(v) => setSort(v)}
                 />
               </div>
+              <ExternalSkillRootsControl />
               {/* The ONE primary action on this surface. */}
               <Button onClick={startCreate}>
                 <Plus className="size-4" /> New
@@ -1142,6 +1144,96 @@ function SkillFact({ label, children }: { label: string; children: React.ReactNo
       <span className="min-w-0 flex-1 text-[0.78125rem] leading-relaxed text-muted-foreground">
         {children}
       </span>
+    </div>
+  );
+}
+
+/** The operator's extra skill roots, as a comma-separated list.
+ *
+ *  `externalSkillRoots` is read by `skill_service.external_roots` as a STRING
+ *  and was registered in the backend with no control anywhere — a knob nobody
+ *  could turn, which `check:brain-config` now fails on. It also shipped in
+ *  `boolKeys` while the field table declared 'str', so a boolean PUT was
+ *  refused with a number-ish message; the kind lists are now asserted against
+ *  the table at import.
+ *
+ *  The parse rules match the backend's own (`external_roots`): split on the
+ *  platform separator, drop blanks, dedupe. The value is stored in the same
+ *  shape the backend parses, so what the field shows is what the reader sees. */
+function ExternalSkillRootsControl() {
+  const qc = useQueryClient();
+  const cfgQ = useQuery({ queryKey: ['brain-config'], queryFn: getBrainConfig });
+  const [draft, setDraft] = useState<string | null>(null);
+  const [error, setError] = useState('');
+
+  const stored = typeof cfgQ.data?.config?.externalSkillRoots === 'string'
+    ? cfgQ.data.config.externalSkillRoots
+    : '';
+  const value = draft ?? stored;
+
+  const mut = useMutation({
+    mutationFn: (updates: Record<string, unknown>) => saveBrainConfig(updates),
+    onSuccess: () => {
+      setError('');
+      setDraft(null);
+      void qc.invalidateQueries({ queryKey: ['brain-config'] });
+      void qc.invalidateQueries({ queryKey: ['skills-list'] });
+    },
+    onError: (err: Error) => {
+      setError(err.message);
+      toast.error(`Could not save skill roots — ${err.message}`);
+    },
+  });
+
+  const commit = () => {
+    if (draft === null) return;
+    // The backend splits on the platform separator and drops blanks; a
+    // comma-typed list is the mistake a human actually makes, so normalize
+    // it here rather than storing a value the reader parses differently.
+    const parts = draft
+      .split(/[,;\n]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const canonical = parts.join(',');
+    if (canonical === stored) {
+      setDraft(null);
+      setError('');
+      return;
+    }
+    mut.mutate({ externalSkillRoots: canonical });
+  };
+
+  return (
+    <div className="flex items-center gap-1.5" data-testid="external-skill-roots">
+      <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <span className="sr-only">Extra skill roots</span>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit();
+            }
+            if (e.key === 'Escape') {
+              setDraft(null);
+              setError('');
+            }
+          }}
+          placeholder="Extra skill roots"
+          aria-label="Extra skill roots"
+          aria-invalid={error ? true : undefined}
+          title="Comma-separated folders to read skills from, in addition to the built-in roots"
+          className="h-8 w-44 rounded-full border border-border/60 bg-card/60 px-3 text-xs placeholder:text-muted-foreground/70 focus:border-primary/40 focus:outline-none"
+        />
+      </label>
+      {error ? (
+        <span role="alert" className="text-2xs text-danger-fg" data-testid="external-roots-error">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }
