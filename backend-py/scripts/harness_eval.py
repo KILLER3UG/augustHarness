@@ -181,6 +181,12 @@ CASES: list[dict[str, Any]] = [
             'name': 'always-retry-tests',
             'description': 'Retry the test suite when it fails.',
             'body_markdown': 'Retry the test suite when it fails.',
+            # The distiller refuses a create_skill whose judge never compared
+            # the catalogue (dropped-no-review). A real judge shows what it
+            # compared and why none fit — these verdicts model one.
+            'reviewed_skills': ['independent-review', 'august-tools', 'pdf'],
+            'why_not_existing': 'No stored skill covers retrying a failing test '
+            'suite; the closest procedures are change review and tool usage.',
         },
         'expect': {'label': 'memory-saved', 'proposals': 0, 'facts': 1},
     },
@@ -200,6 +206,9 @@ CASES: list[dict[str, Any]] = [
             'episode': 7,
             'name': 'diagnose-locked-sqlite',
             'description': 'Diagnose a brain SQLite lock that only appears under parallel tests.',
+            'reviewed_skills': ['independent-review', 'august-tools', 'pdf'],
+            'why_not_existing': 'No stored skill diagnoses a parallel-test SQLite '
+            'lock; the store covers reviewing changes and the harness tools.',
             **SKILL_SECTIONS,
         },
         'expect': {'label': 'proposal-filed', 'proposals': 1, 'facts': 0},
@@ -216,6 +225,9 @@ CASES: list[dict[str, Any]] = [
             'episode': 8,
             'name': 'diagnose-locked-sqlite',
             'description': 'Diagnose a brain SQLite lock that only appears under parallel tests.',
+            'reviewed_skills': ['independent-review', 'august-tools', 'pdf'],
+            'why_not_existing': 'No stored skill diagnoses a parallel-test SQLite '
+            'lock; the store covers reviewing changes and the harness tools.',
             **SKILL_SECTIONS,
         },
         'expect': {'label': ['proposal-filed', 'duplicate-draft'], 'proposals': 1, 'facts': 0},
