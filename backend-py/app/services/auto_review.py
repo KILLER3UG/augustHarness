@@ -100,10 +100,18 @@ def _section(header: str, lines: list[str], cap: int) -> str:
     return text
 
 
-def _sessionContext() -> tuple[str, str, str]:
-    """(workspace, agent_id, model) for the current session, best effort."""
+def _sessionContext() -> tuple[str, str, str, str]:
+    """(workspace, agent_id, model, provider) for the current session, best effort.
+
+    The provider rides along because the reviewer factory needs it: a session's
+    model id is often namespaced ("gateway/model"), and that is a MODEL on a
+    named provider — the factory does not parse the model argument, so the
+    provider must be named alongside it. Without it the factory cannot tell a
+    namespaced id from a "provider/model" config string and fails closed.
+    """
     workspace = ''
     model = ''
+    provider = ''
     try:
         from app.services.workbench import workbench as _wb
         from app.services.workbench.context import currentSessionId
@@ -114,6 +122,7 @@ def _sessionContext() -> tuple[str, str, str]:
             if session is not None:
                 workspace = as_str(getattr(session, 'workspacePath', '') or '', '')
                 model = as_str(getattr(session, 'model', '') or '', '')
+                provider = as_str(getattr(session, 'provider', '') or '', '')
     except Exception:  # noqa: BLE001
         pass
     agent_id = ''
@@ -123,7 +132,7 @@ def _sessionContext() -> tuple[str, str, str]:
         agent_id = session_scope.bot_agent_id(session_scope.resolve_scope())
     except Exception:  # noqa: BLE001
         pass
-    return workspace, agent_id, model
+    return workspace, agent_id, model, provider
 
 
 def _currentScope() -> str:
@@ -435,13 +444,13 @@ def _reviewClient() -> tuple[Any | None, str, str]:
     is contextual — a fresh call, no conversation, and the whole library — and
     every result still goes through the proposal rails or the memory write door.
     """
-    workspace, agent_id, model = _sessionContext()
+    workspace, agent_id, model, provider = _sessionContext()
     del workspace, agent_id
     try:
         from app.services.workbench.providers import make_review_llm_client
 
-        client = make_review_llm_client(None, model)
-    except Exception as exc:  # noqa: BLE001  # noqa: BLE001 — fail closed on any factory fault
+        client = make_review_llm_client(None, model=model, provider=provider)
+    except Exception as exc:  # noqa: BLE001 — fail closed on any factory fault
         return None, model, f'reviewer could not be created: {type(exc).__name__}'
     if client is None:
         return None, model, 'no model available for auto-review'
@@ -476,7 +485,7 @@ async def reviewLibraryWrite(
             }
     except Exception:  # noqa: BLE001
         pass
-    sessionWorkspace, sessionAgent, sessionModel = _sessionContext()
+    sessionWorkspace, sessionAgent, sessionModel, _sessionProvider = _sessionContext()
     workspace = workspace or sessionWorkspace
     agent_id = agent_id or sessionAgent
     scopeValue = scope or _currentScope()

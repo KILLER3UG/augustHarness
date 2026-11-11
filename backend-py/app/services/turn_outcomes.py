@@ -900,7 +900,9 @@ def _lesson_text(provider: str, model: str, failure: FailureClass, count: int, s
     return lesson
 
 
-async def _review_lesson(lessonText: str, sampleError: str, modelHint: str) -> bool:
+async def _review_lesson(
+    lessonText: str, sampleError: str, modelHint: str, providerHint: str = ''
+) -> bool:
     """Q2-a gate: one cheap-model review, discard-default.
 
     Any failure to reach a model (no provider, no key, empty answer) means
@@ -909,7 +911,10 @@ async def _review_lesson(lessonText: str, sampleError: str, modelHint: str) -> b
     try:
         from app.services.workbench.providers import make_review_llm_client
 
-        reviewLlm = make_review_llm_client(None, modelHint)
+        # The provider rides with the model: the lesson was derived from THIS
+        # provider's failures, and an unnamed provider would review through
+        # whoever happens to be first-enabled.
+        reviewLlm = make_review_llm_client(None, model=modelHint, provider=providerHint)
         if reviewLlm is None:
             return False
         prompt = [
@@ -1099,7 +1104,7 @@ async def _promote_one(
                 '', 'lesson_promotion_skipped', {'signature': sig, 'reason': 'duplicate'}
             )
             return 'duplicate'
-        if not await _review_lesson(lesson, sample, review_model_hint):
+        if not await _review_lesson(lesson, sample, review_model_hint, providerHint=provider):
             set_internal_state(cooldownKey, datetime.now(timezone.utc).isoformat())
             record_lifecycle(
                 '', 'lesson_promotion_skipped', {'signature': sig, 'reason': 'review-rejected'}

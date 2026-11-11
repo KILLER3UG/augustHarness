@@ -38,9 +38,15 @@ def resolve_independent_reviewer(producer_model: str, hint: str = '') -> tuple[A
         )
 
     try:
-        from app.services.workbench.providers import make_review_llm_client
+        from app.services.workbench.providers import make_review_llm_client, parse_config_hint
 
-        client = make_review_llm_client(None, reviewer_model)
+        # `hint` is a CONFIG string the user typed, so it may be "provider/model"
+        # — split it here, at the one place that knows its provenance. The
+        # factory's model argument is a resolved id and is never parsed.
+        reviewer_provider, reviewer_model = parse_config_hint(reviewer_model)
+        client = make_review_llm_client(
+            None, model=reviewer_model, provider=reviewer_provider
+        )
     except Exception as exc:  # noqa: BLE001 — fail closed on ANY factory fault
         # Named, not the raw message: reasons land in a lifecycle row a user may
         # read, and provider exceptions have been known to carry request details.

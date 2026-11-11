@@ -839,10 +839,15 @@ def _resolve_producer() -> RefineProducer | None:
     except Exception:
         hint = ''
     try:
-        from app.services.workbench.providers import make_review_llm_client
+        from app.services.workbench.providers import make_review_llm_client, parse_config_hint
 
-        client = make_review_llm_client(None, hint)
-        return client
+        # `producerModel` is a CONFIG string the user typed, so "provider/model"
+        # is a legal shape for it — split at this boundary, where the provenance
+        # is known. The factory's model argument is never parsed.
+        producer_provider, producer_model = parse_config_hint(hint)
+        return make_review_llm_client(
+            None, model=producer_model, provider=producer_provider
+        )
     except Exception:
         logger.debug('refine producer resolution failed', exc_info=True)
         return None

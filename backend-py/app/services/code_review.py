@@ -694,7 +694,7 @@ async def run_code_review_async(
         try:
             from app.services.workbench.providers import make_review_llm_client
 
-            client = make_review_llm_client(None, model, model_provider)
+            client = make_review_llm_client(None, model=model, provider=model_provider)
         except Exception as exc:
             logger.warning('code review: client resolution failed: %s', exc)
             client = None
@@ -745,7 +745,9 @@ async def run_code_review_async(
                             make_review_llm_client,
                         )
 
-                        active_judge = make_review_llm_client(None, judge_hint, judge_provider)
+                        active_judge = make_review_llm_client(
+                            None, model=judge_hint, provider=judge_provider
+                        )
                     except Exception:
                         active_judge = None
                 if active_judge is None:

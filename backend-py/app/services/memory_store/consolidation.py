@@ -84,7 +84,7 @@ def _model_complete(system: str, user: str) -> str:
         # empty hint, so the call landed on whatever the review client guessed.
         # Unset, the pair is ('', '') and the behavior is exactly the old one.
         model, provider = resolveRoleModel('hippocampus')
-        reviewLlm = make_review_llm_client(None, model, provider)
+        reviewLlm = make_review_llm_client(None, model=model, provider=provider)
         if reviewLlm is None:
             return ''
         prompt = [

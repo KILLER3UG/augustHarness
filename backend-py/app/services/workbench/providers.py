@@ -15,7 +15,7 @@ import re
 import uuid
 from typing import Callable
 
-from app.json_narrowing import as_bool, as_dict, as_int, as_list, as_str
+from app.json_narrowing import as_bool, as_dict, as_int, as_list, as_str, extract_reasoning_delta
 from app.lib.degenerate_output import DEGENERATE_OUTPUT_ERROR, is_degenerate_tail
 from app.models import AnthropicRequest, ChatCompletionRequest
 from app.services.workbench.effort import (
@@ -29,74 +29,112 @@ from app.services.workbench.effort import (
 logger = logging.getLogger('workbench.providers')
 
 
+def _resolve_named_provider(qualified_provider_name: str) -> dict[str, object] | None:
+    """Resolve an explicitly named provider, or None when it is not configured.
+
+    ``resolve()`` deliberately fabricates a placeholder provider when nothing
+    matches (so a bare model name can carry its own provider info), and echoes
+    the input back as the provider id. That leniency is wrong when a caller
+    NAMED a provider: a typo would silently review through a gateway that does
+    not exist. The check reads the raw store entries because
+    ``list_available()`` filters by enabled+key and returns [] here, so it
+    cannot tell "configured" from "absent".
+    """
+    from app.providers import resolver as providerResolver
+
+    want = (qualified_provider_name or '').strip().lower()
+    if not want:
+        return None
+    resolved = providerResolver.resolve(qualified_provider_name)
+    if resolved is not None and as_str(resolved.get('id')).strip().lower() != want:
+        return resolved
+    configured = any(
+        want
+        in {
+            as_str(e.get('id')).strip().lower(),
+            as_str(e.get('name')).strip().lower(),
+        }
+        for e in providerResolver._iter_store_entries()
+    )
+    return resolved if configured else None
+
+
+def parse_config_hint(hint: str) -> tuple[str, str]:
+    """Split a user-typed ``provider/model`` config hint into its two parts.
+
+    ONLY for strings a human typed into a config field (``reviewModel``,
+    ``producerModel``, ``skillLearningJudgeModel``). A resolved id from a live
+    session — ``nvidia/nemotron-3.5-super-vl`` — is NOT this shape: its left
+    side is part of the model name on a gateway, and reading it as a provider
+    is the bug this function exists to keep out of the resolution path.
+    Pass such an id as ``model=`` with its ``provider=`` named explicitly.
+    """
+    raw = (hint or '').strip()
+    if '/' not in raw:
+        return '', raw
+    head, _, tail = raw.partition('/')
+    head, tail = head.strip(), tail.strip()
+    if not head or not tail:
+        return '', raw
+    return head, tail
+
+
 def make_review_llm_client(
     main_provider: dict[str, object] | None,
     review_model_hint: str = '',
-    review_provider_hint: str = '',
+    *,
+    model: str = '',
+    provider: str = '',
 ) -> Callable | None:
     """Create an LLM client for background review calls.
 
-    Resolves the provider from the ``reviewModel`` config (or the provided
-    ``review_model_hint``, which is already the per-task resolved model),
-    falling back to the main session provider. Returns None if no provider
-    is available (review will be a no-op).
+    Two ways to name the target, and they are NOT interchangeable:
+
+    * ``model`` + ``provider`` — the resolved pair. What a session, a turn or a
+      lesson carries. Neither is parsed: a namespaced id
+      (``nvidia/nemotron-3.5``) is a model on a gateway, and the caller names
+      the gateway. Passing it as a model hint instead is what silently
+      disabled the LLM compactor for every gateway id this app uses.
+    * ``review_model_hint`` — a raw config string the user typed, which may be
+      qualified as ``provider/model``. This is the only argument that splits,
+      via :func:`parse_config_hint`, and only because the user typed both
+      halves into one field.
+
+    Falls back to the main session provider when nothing resolves. Returns
+    None if no provider is available (review will be a no-op). An unknown
+    provider named explicitly fails closed: a typo must not review through
+    somebody else's default.
     """
     try:
         from app.providers import resolver as providerResolver
 
-        provider = None
-        review_model = review_model_hint
-        # A hint may be qualified as `provider/model`. resolve() matches
-        # providers by id/name/alias only, so the whole string fell through as a
-        # provider name, survived as the MODEL, and reached apiFormat
-        # normalization ("unknown apiFormat 'zen/claude-sonnet-5'"). Measured:
-        # a qualified reviewer hint resolved to nothing at all. Split here, so
-        # the right-hand side is the model and the left-hand side is looked up
-        # as a provider — and an unknown provider fails closed below instead of
-        # silently reviewing with somebody else's default.
-        qualified_provider_name = (review_provider_hint or '').strip()
-        if not qualified_provider_name and '/' in review_model:
-            head, _, tail = review_model.partition('/')
-            head, tail = head.strip(), tail.strip()
-            if head and tail:
-                qualified_provider_name, review_model = head, tail
-            else:
-                review_model = review_model_hint
-        if review_model:
-            if qualified_provider_name:
-                provider = providerResolver.resolve(qualified_provider_name)
-                # resolve() deliberately fabricates a placeholder provider when
-                # nothing matches (so a bare model name can carry its own
-                # provider info). For a QUALIFIED hint that leniency is wrong: a
-                # typo would silently review through a provider that does not
-                # exist. Require a real configured entry.
-                # resolve() echoes the input back as the provider id when
-                # nothing matched (its deliberate leniency for bare model names).
-                # That is wrong for a QUALIFIED hint, and the check must use the
-                # raw store entries: list_available() filters by enabled+key and
-                # returns [] here, so it cannot tell "configured" from "absent".
-                want = qualified_provider_name.strip().lower()
-                if provider is None or as_str(provider.get('id')).strip().lower() == want:
-                    if not any(
-                        want
-                        in {
-                            as_str(e.get('id')).strip().lower(),
-                            as_str(e.get('name')).strip().lower(),
-                        }
-                        for e in providerResolver._iter_store_entries()
-                    ):
-                        return None
-            else:
-                provider = providerResolver.resolve(review_model)
+        provider = provider.strip()
+        review_model = model.strip() or review_model_hint.strip()
+        resolved: dict[str, object] | None = None
+        # Only the config-hint argument may be split. The model argument is a
+        # resolved id and its slashes belong to the model name.
+        qualified_provider_name = ''
         if not provider:
-            provider = main_provider
-        if not provider:
-            provider = providerResolver.resolve('')
-        if not provider:
+            qualified_provider_name, review_model = parse_config_hint(review_model)
+        if qualified_provider_name:
+            resolved = _resolve_named_provider(qualified_provider_name)
+            if resolved is None:
+                return None
+        elif provider:
+            resolved = _resolve_named_provider(provider)
+            if resolved is None:
+                return None
+        elif review_model:
+            resolved = providerResolver.resolve(review_model)
+        if not resolved:
+            resolved = main_provider
+        if not resolved:
+            resolved = providerResolver.resolve('')
+        if not resolved:
             return None
         from app.providers.clients import getClient
 
-        client = getClient(provider)
+        client = getClient(resolved)
         if not client:
             return None
         apiKey = client.resolveApiKey()
@@ -110,8 +148,8 @@ def make_review_llm_client(
         # access on this install). resolve_model falls back to the provider's
         # defaultModel, which is what the user actually configured.
         if not as_str(review_model, ''):
-            review_model = resolve_model(provider)
-        _reviewModel = as_str(review_model, '') or as_str(provider.get('defaultModel', ''))
+            review_model = resolve_model(resolved)
+        _reviewModel = as_str(review_model, '') or as_str(resolved.get('defaultModel', ''))
 
         async def reviewLlm(
             prompt: list[dict[str, object]],
@@ -130,7 +168,7 @@ def make_review_llm_client(
                 from app.services.model_service import get_max_output_tokens
 
                 # Short background review: use a small slice of the model's ceiling.
-                model_out = get_max_output_tokens(_reviewModel, provider)
+                model_out = get_max_output_tokens(_reviewModel, resolved)
                 body = {
                     'model': _reviewModel,
                     'messages': prompt,
@@ -204,14 +242,14 @@ def make_compactor_llm_client(
     (``''`` on failure, so the caller can fall back to the local summarizer).
     """
     # The hint is the RESOLVED model id, and a namespaced id ("nvidia/model")
-    # makes `make_review_llm_client` split it: provider "nvidia" does not
-    # exist, so it fails closed and `llm_compactor` silently degrades to the
-    # heuristic for exactly the gateway ids this app uses. Naming the main
-    # provider explicitly skips that split and keeps the id a model.
+    # used to reach the split and fail closed: provider "nvidia" does not
+    # exist, so `llm_compactor` silently degraded to the heuristic for exactly
+    # the gateway ids this app uses. The pair goes in as a pair now — the
+    # model is never parsed.
     base = make_review_llm_client(
         main_provider,
-        compactor_model_hint,
-        review_provider_hint=as_str((main_provider or {}).get('id'), ''),
+        model=as_str(compactor_model_hint, ''),
+        provider=as_str((main_provider or {}).get('id'), ''),
     )
     if base is None:
         return None
@@ -969,7 +1007,7 @@ async def call_openai_workbench(
                 # often ignore entirely. Always keep the text for the next
                 # request (tool-loop continuity); only surface it in the UI
                 # when Thinking is enabled.
-                reasoner = as_str(delta.get('reasoning_content')) or as_str(delta.get('reasoning'))
+                reasoner = extract_reasoning_delta(delta)
                 if reasoner:
                     preservedReasoning += reasoner
                     if thinking_enabled:
