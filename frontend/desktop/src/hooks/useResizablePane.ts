@@ -75,15 +75,27 @@ export function useResizablePane(
   const [isDragging, setIsDragging] = useState(false);
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  // A stored width is USER intent, not the default re-stamped. The persist
+  // effect used to write on first mount, so every profile carried the
+  // then-current default in localStorage within one session of first use —
+  // and a new default could never reach anyone without a storage-key bump,
+  // which is how the sidebar wiped stored widths twice in one day (v3, v4).
+  // Only a drag or a keyboard resize marks the size as the user's own; until
+  // then nothing is written and a changed default propagates naturally.
+  const userResizedRef = useRef(false);
 
   const setSize = useCallback(
-    (value: number) => setSizeState(clamp(value)),
+    (value: number) => {
+      userResizedRef.current = true;
+      setSizeState(clamp(value));
+    },
     [clamp],
   );
 
-  // Persist.
+  // Persist — but only a size the user chose.
   useEffect(() => {
     if (!storageKey || typeof window === 'undefined') return;
+    if (!userResizedRef.current) return;
     window.localStorage.setItem(storageKey, String(size));
   }, [size, storageKey]);
 
@@ -118,6 +130,7 @@ export function useResizablePane(
     setIsDragging(true);
     const onMove = (ev: MouseEvent | TouchEvent) => {
       const delta = coord(ev) - startCoord;
+      userResizedRef.current = true;
       setSizeState(clamp(startSize + delta * direction));
     };
     const onUp = () => {

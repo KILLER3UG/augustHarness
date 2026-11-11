@@ -18,11 +18,15 @@ interface SessionSidebarProps {
 }
 
 /* v4: the default moved to 252 CSS px. The reference rail measures 315 device
- * pixels on this machine, which runs at 125% (AppliedDPI 120) — 315/1.25 = 252
- * CSS. The v3 default of 316 was measured in device pixels by mistake and
- * rendered 395, wider than the reference it was meant to match.
- * The key bump is deliberate: a stored width overrides the default, so without
- * it the change would only ever reach a profile that never dragged the handle. */
+ * pixels on the machine the mockup was captured on, which runs at 125%
+ * (AppliedDPI 120) — 315/1.25 = 252 CSS. The v3 default of 316 was measured in
+ * device pixels by mistake and rendered 395, wider than the reference it was
+ * meant to match. 252 is the mockup's CSS width, not a per-machine constant:
+ * at other scalings the rail renders the same CSS size as any other UI text.
+ * The key bump is the LAST one: useResizablePane now persists only a width the
+ * user actually chose, so a changed default propagates without a version bump
+ * (v2→v3→v4 each silently discarded every stored width on the day they
+ * shipped). Existing v4 values are user intent and stay. */
 const SIDEBAR_WIDTH_KEY = "august-session-sidebar-width-v4";
 const DEFAULT_WIDTH = 252;
 const MIN_WIDTH = 220;
