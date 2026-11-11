@@ -199,8 +199,16 @@ def enrich_todos(
         merged['id'] = step_id
         merged['content'] = content
         merged['status'] = as_str(raw.get('status')) or 'pending'
+        # Host-owned proof keys: the client sends id/content/status only, and
+        # the host re-attaches its own evidence. The carry condition is
+        # "omitted", not "falsy" — a client payload that names a key with a
+        # null used to OVERWRITE the host's commit reference with nothing,
+        # so an explicit null (or any client-authored value) is dropped here
+        # before the host value re-attaches. The host is the only writer of
+        # these keys; a check-off can never erase what the turn proved.
         for key in ('commit', 'review', 'summary', 'verification', 'commitSubject'):
-            if key not in merged and prior is not None and key in prior:
+            merged.pop(key, None)
+            if prior is not None and key in prior:
                 merged[key] = prior[key]
         out.append(merged)
         # A new in-progress transition opens the step's work window. A repeat
