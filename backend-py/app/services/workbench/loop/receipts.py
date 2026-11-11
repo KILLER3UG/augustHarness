@@ -27,7 +27,6 @@ Honesty rules (inherited from circuit_test's assertions, the precedent):
 from __future__ import annotations
 
 import contextvars
-import re
 from typing import Any
 
 # Per-turn receipt verdicts. ContextVar so interleaved turns (sub-agent
@@ -176,9 +175,3 @@ def pop_turn_receipts() -> dict[str, int]:
 def clear_turn_receipts() -> None:
     """Drop any tally (worker/sub-agent turn boundaries must not inherit)."""
     _TURN_RECEIPTS.set(None)
-
-
-def receipt_note_matches(text: str) -> bool:
-    """True when the text carries a receipt block (used by callers that want
-    to strip receipts before re-sending a transcript)."""
-    return bool(re.search(r'^\[receipt\] (?:ok|MISMATCH)$', text, re.MULTILINE))
