@@ -299,7 +299,7 @@ function installFetchPatch(): void {
      * Dropping the resolved base makes the NEXT request re-discover. */
     return request().catch((err: unknown) => {
       if (isTransportError(err instanceof Error ? err.message : String(err))) {
-        resetDiscovery();
+        resetDiscoveryCoalesced();
       }
       throw err;
     });
@@ -373,14 +373,26 @@ async function discoverBaseUrl(): Promise<void> {
   throw new Error('August backend did not become ready');
 }
 
+/** False while a discovery run is in flight. The coalesced reset refuses to
+ *  orphan a running loop — the loop is already doing what the reset asks. */
+let readySettled = true;
+
 function ensureReady(): Promise<void> {
   if (!readyPromise) {
+    readySettled = false;
     readyPromise = discoverBaseUrl().catch((err) => {
       // Do not cache the failure: the next caller (a later mount, a retry, the
       // gate's own health poll resolving) must get a fresh attempt.
       readyPromise = null;
+      readySettled = true;
       throw err;
     });
+    void readyPromise.then(
+      () => {
+        readySettled = true;
+      },
+      () => undefined,
+    );
   }
   return readyPromise;
 }
@@ -388,6 +400,23 @@ function ensureReady(): Promise<void> {
 /** Discard a failed discovery so the next caller retries. Used by the bootstrap
  *  gate when it observes the proxy come up after discovery gave up. */
 export function resetDiscovery(): void {
+  readyPromise = null;
+}
+
+/** The transport-failure variant. Mid-stream drops, SSE reconnects and the
+ *  fetch patch can all fire several times a second during one outage; each
+ *  reset that orphaned a running discovery loop would start another on the
+ *  next request, so this one only drops a SETTLED run (a resolved base that
+ *  may be stale, or an already-failed attempt) and coalesces to one per
+ *  window. An intentional one-shot reset (restart button, bootstrap gate)
+ *  uses the unconditional resetDiscovery above. */
+const DISCOVERY_RESET_COALESCE_MS = 2_000;
+let lastDiscoveryResetAt = 0;
+export function resetDiscoveryCoalesced(): void {
+  const now = Date.now();
+  if (now - lastDiscoveryResetAt < DISCOVERY_RESET_COALESCE_MS) return;
+  if (readyPromise && !readySettled) return;
+  lastDiscoveryResetAt = now;
   readyPromise = null;
 }
 

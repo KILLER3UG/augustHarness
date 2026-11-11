@@ -249,6 +249,14 @@ function scheduleReconnect(): void {
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     started = false;
+    // An SSE drop says nothing about WHY, but the base was resolved once via
+    // whenReady — a backend that respawned on another port would keep every
+    // reconnect pointed at the dead one. Dropping the cached discovery makes
+    // the re-open below re-resolve (coalesced: this fires on every reconnect
+    // during a plain outage too).
+    void import('@/api/client')
+      .then(({ resetDiscoveryCoalesced }) => resetDiscoveryCoalesced())
+      .catch(() => undefined);
     startRealtimeBridge();
   }, 1500);
 }

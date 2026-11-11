@@ -2,6 +2,8 @@
  * Reads named SSE frames and dispatches them via streamEvents. */
 
 import type { WorkbenchEventHandlers, WorkbenchGuardMode, WorkbenchTurnUsage } from '@/types/workbench';
+import { resetDiscoveryCoalesced } from '@/api/client';
+import { isTransportError } from '@/lib/error-copy';
 import { clearStreamReconnecting, markStreamReconnecting } from '@/store/streamLink';
 import { dispatchWorkbenchEvent } from './streamEvents';
 
@@ -108,11 +110,17 @@ export async function streamWorkbenchChat(
   try {
     const receivedTerminalEvent = await readSseStream(reader, handlers, signal, 30_000);
     if (!receivedTerminalEvent) {
+      // The body died after the headers — the fetch-patch's transport reset
+      // never saw this failure, so a backend that MOVED mid-turn would keep
+      // every reconnect pointed at the dead port. Same trigger, same door.
+      resetDiscoveryCoalesced();
       handlers.onError?.({ message: 'Stream ended without completion event — response may be incomplete' });
     }
   } catch (e: unknown) {
     if (e instanceof DOMException && e.name === 'AbortError') throw e;
-    handlers.onError?.({ message: e instanceof Error ? e.message : 'Stream read error' });
+    const message = e instanceof Error ? e.message : 'Stream read error';
+    if (isTransportError(message)) resetDiscoveryCoalesced();
+    handlers.onError?.({ message });
   }
   // Events were consumed from the POST response body (legacy SSE path).
   // Tell the caller not to reconnect — events are already delivered.
@@ -445,6 +453,9 @@ export async function streamWorkbenchReconnect(
       }
 
       const delay = Math.min(maxBackoffMs, baseDelayMs * Math.pow(2, retryCount - 1) + Math.random() * 1000);
+      // A reconnect that failed at the transport level may be aiming at a port
+      // the supervisor no longer owns — let the next attempt re-discover.
+      if (isTransportError(e instanceof Error ? e.message : String(e))) resetDiscoveryCoalesced();
       const budgetLabel = maxRetries > 0 ? `attempt ${retryCount}/${maxRetries}` : `attempt ${retryCount} (unbounded)`;
       const errMsg =
         e instanceof Error
