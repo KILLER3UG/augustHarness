@@ -4,11 +4,12 @@ import { Button } from '@/components/ui/button';
 import { SignalIcon } from '@/components/ui/SignalIcon';
 
 /**
- * ThinkingDisclosure — auto-open while streaming, collapse when done
+ * ThinkingDisclosure — the body opens only when the user clicks it
  *
  * Collapsible "Thinking" section that:
- * - Auto-opens while streaming (pending=true)
- * - Auto-collapses when done
+ * - Never opens itself: the activity header answers "what is it doing";
+ *   the body waits for a click (it used to auto-open while streaming and
+ *   snap shut at the end, moving twice per turn on its own)
  * - Shows elapsed time inline while streaming
  * - Scroll-locks to bottom during live preview
  */
