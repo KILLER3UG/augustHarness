@@ -133,6 +133,30 @@ sentence (and the edit field re-encodes it on every save) —
 `memory_store.brain_browse` decodes a JSON *string* and leaves an object
 verbatim, because unwrapping one would drop `details` on the next save.
 
+## A dedup set may only outlive the bytes it dedups
+
+The memory tail and the relevant-skills tail are **request-scoped**: they are
+patched onto the turn's messages and `turn_close` strips the patched bytes at
+the end of the turn. They are not written to the transcript. A "told once"
+exclusion set that outlives the turn therefore suppresses re-telling content
+that exists **nowhere** — not in the transcript, not in the next tail — so the
+fact is simply gone until a compaction or a restart clears the set.
+
+This shipped once (`_seen_memory_keys` / `_seen_skill_hints` on the session) and
+was reverted: the dedup it carried was real, but its lifetime was wrong, and the
+failure mode was silent memory loss rather than a wrong answer. The dedup that
+survives is **per turn**, inside one build — the relevant-skills block and the
+memory lanes dedup against each other within a single render, and nothing is
+carried across turns.
+
+**Why:** the transcript is the durable record. A set keyed on "what this session
+was told" is only valid while those bytes are still in the context.
+
+**How to apply:** if the re-telling cost is worth addressing again, key the dedup
+on the *content identity* the build already has, and scope it to the turn by
+construction — return it from the turn context, do not hang it off the session
+object. A bare `set` attribute on the session is what invited the bug.
+
 ## The markdown mirror
 
 `<dataDir>/memory/` is a one-way, human-readable view: one `.md` per active fact

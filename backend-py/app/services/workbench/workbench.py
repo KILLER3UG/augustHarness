@@ -754,17 +754,18 @@ def _unfreezePromptIndexes(session: object) -> None:
     Both indexes are frozen per session so the provider's prefix cache stays
     byte-stable ("told once"). That freeze assumes the model keeps seeing the
     system prompt. Compaction rewrites the transcript and the model loses the
-    text it was told once, so the next build must read the store again — a new
-    session and a compaction are the only two moments re-telling is right.
+    text it was told once, so the next build must read the store again.
     Clearing when a compaction attempt starts is deliberate: a build that
     re-reads costs one prompt rebuild, while a stale index survives every
     later turn in the compacted context.
+
+    The two seen-sets that once rode here are gone: their tails are
+    request-scoped, so the dedup they carried is rebuilt fresh every turn and
+    there is nothing session-scoped left to clear.
     """
     for attr in (
         '_frozen_mem_index',
         '_frozen_project_index',
-        '_seen_memory_keys',
-        '_seen_skill_hints',
     ):
         try:
             setattr(session, attr, None)
@@ -3429,9 +3430,17 @@ async def _sendWorkbenchMessageStreamImpl(
                 _memoryBlock, _injectedFacts = '', []
             elif _memReadOn:
                 _recalledRows: list[dict[str, object]] = []
-                _seenMem = getattr(session, '_seen_memory_keys', None)
-                if not isinstance(_seenMem, set):
-                    _seenMem = set()
+                # Told once — PER TURN. The exclusion stops the same fact
+                # being rendered twice inside one turn (the relevant-skills
+                # block later in this build draws the same store). It must not
+                # outlive the turn: the memory tail is request-scoped and
+                # turn_close strips the patched bytes at close, so a
+                # session-scoped set suppressed re-telling content that was
+                # in neither the transcript nor the next tail — the fact was
+                # simply gone until a compaction or restart cleared the set.
+                # Nothing is carried across turns anymore; the renderer's
+                # exclude_keys stays for the lanes that dedup WITHIN one
+                # build (the delta and profile lanes below).
                 _memoryBlock, _injectedFacts = build_memory_block(
                     _userText,
                     workspace=_wsForTail,
@@ -3440,16 +3449,7 @@ async def _sendWorkbenchMessageStreamImpl(
                     # M-2: Bot home chats recall global ∪ own notes;
                     # every other session stays on the plain global corpus.
                     scope=_turnScope,
-                    # Told once: a fact this session already injected stays out
-                    # of later tails — its bytes are still in the transcript.
-                    # Reset by `_unfreezePromptIndexes` after a compaction.
-                    exclude_keys=_seenMem,
                 )
-                try:
-                    _seenMem.update(k for k, _title in _injectedFacts if k)
-                    session._seen_memory_keys = _seenMem  # type: ignore[attr-defined]
-                except Exception:
-                    pass
                 # C6 deterministic alias pre-read: substring-match the message
                 # against the fields a fact already carries (key/title/
                 # description — there is no aliases column), riding the same
@@ -3620,23 +3620,18 @@ async def _sendWorkbenchMessageStreamImpl(
             # written to the session. Unknown names drop silently at the
             # catalogue lookup, so `/totally-not-a-skill …` costs nothing here.
             _pinnedSkill = pinned_skill_token(_userText)
-            _seenSkills = getattr(session, '_seen_skill_hints', None)
-            if not isinstance(_seenSkills, set):
-                _seenSkills = set()
+            # Told once — PER TURN: the skill tail is request-scoped like the
+            # memory tail (turn_close strips both), so a session-scoped
+            # exclusion would hide a description whose bytes no longer exist
+            # anywhere in the context. Nothing is carried across turns; the
+            # alias hint lane below excludes what THIS build rendered
+            # (_skillsDetail), which is the only within-turn dedup needed.
             _skillsBlock, _skillsDetail = render_relevant_skills(
                 _userText,
                 _wsForTail or None,
                 _session_scope.bot_agent_id(_turnScope),
                 pinned=(_pinnedSkill,) if _pinnedSkill else (),
-                # Told once: a skill described earlier this session is not
-                # described again. Pinned `/name` requests bypass this.
-                exclude=_seenSkills,
             )
-            try:
-                _seenSkills.update(str(n) for n in (_skillsDetail or {}))
-                session._seen_skill_hints = _seenSkills  # type: ignore[attr-defined]
-            except Exception:
-                pass
             # C6 skill half: a name/keyword/trigger the message spells
             # verbatim gets a ONE-LINE hint pointing at load_skill — never a
             # body, never an auto-load. HINT-ONLY by contract, and the bytes

@@ -389,7 +389,8 @@ def format_skill_index(catalogue: list[dict[str, object]] | None = None) -> str:
     made the cacheable system-prompt prefix grow with the bundle (~90 entries
     ≈ 1k+ tokens every turn) even though discovery only needs names and
     grouping. Descriptions for the entries relevant to the current request
-    are injected per-turn in Tier 3 (``build_relevant_skills_block``);
+    are injected per-turn in Tier 3 (``render_relevant_skills`` — the one
+    entry point since the dead ``build_relevant_skills_block`` wrapper went);
     ``list_skills`` / ``search`` still return full descriptions on demand.
 
     A1: the NAME lines are bounded by the skills slice of the combined Tier-1
@@ -630,7 +631,7 @@ def skills_tools_allowed(allowed_tool_names: Iterable[str]) -> bool:
 _RELEVANT_SKILLS_TOP_K = 5
 _RELEVANT_SKILLS_CHAR_CAP = 1400
 # BM25 index cache for the per-turn relevant-skills block (identity-keyed,
-# see build_relevant_skills_block).
+# see render_relevant_skills).
 _skills_bm25_cache: dict[tuple[str, str], tuple[object, object, list[dict[str, object]]]] = {}
 _RELEVANT_SKILLS_MIN_QUERY = 8
 
@@ -788,11 +789,12 @@ def render_relevant_skills(
             for score, s in scored
         ]
         ranked.sort(key=lambda pair: pair[0], reverse=True)
-        # Told once: a skill this session already described stays out of later
-        # tails — its bytes are still in the transcript and the Tier-1 index
-        # still names it. Pinned names (an explicit `/skill`) bypass this: an
-        # explicit request is always answered. The caller resets the set when a
-        # compaction rewrites the transcript.
+        # Told once — PER TURN: a skill this build already described stays out
+        # of the build's other render paths. The exclusion is scoped to one
+        # build because the tail it rode is request-scoped (turn_close strips
+        # the patched bytes at close) — a longer-lived set would suppress a
+        # description whose bytes exist nowhere. Pinned names (an explicit
+        # `/skill`) bypass this: an explicit request is always answered.
         excluded = {str(n).lower() for n in (exclude or ())}
         for _score, s in ranked:
             if len(chosen) >= _RELEVANT_SKILLS_TOP_K:
