@@ -61,6 +61,8 @@ const GROUPS = {
     ['npm', ['run', 'check:docs'], root],
     ['npm', ['run', 'check:doc-links'], root],
     ['npm', ['run', 'check:tool-registration'], root],
+    ['npm', ['run', 'check:http-clients'], root],
+    ['npm', ['run', 'check:transcript-fields'], root],
   ],
   backend: [
     ['npm', ['run', 'check:api'], root],

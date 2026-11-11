@@ -49,6 +49,11 @@ const STRUCTURED_FIELDS = [
   'rating',
   'tools',
   'tool',
+  // The link between a standalone tool row and its assistant toolCall block —
+  // same key the restore list carries. A synced tool row that drops its join
+  // key survives the transcript round-trip but cannot rejoin its block after
+  // a reload, which is exactly what this sync exists to prevent.
+  'toolUseId',
   'attachments',
   'todos',
   'usage',

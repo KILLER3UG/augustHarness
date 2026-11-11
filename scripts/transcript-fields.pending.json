@@ -1,0 +1,7 @@
+{
+  "excluded": {
+    "blocks": "Server-derived from the model transcript (derive_blocks). The desktop reads blocks through readBlocks, never as a passthrough message field — restoring or syncing the derived form would double-source the timeline.",
+    "toolCalls": "Server-side carrier (alias tool_calls). The derived blocks already carry the tool info the UI renders; restoring it too would render each tool twice.",
+    "interrupted": "Server-written crash-recovery marker on user rows. The marker's own text carries the notice and no client field consumes the flag — restoring it would be a write-only field."
+  }
+}
