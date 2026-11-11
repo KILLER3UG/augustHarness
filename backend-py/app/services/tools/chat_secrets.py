@@ -74,11 +74,20 @@ def request(name: str, description: str, session_id: str) -> dict[str, object]:
         'createdAt': _now(),
     }
     requests[clean] = entry
-    # Bound the map: the oldest filled entries drop off.
+    # Bound the map. The oldest FILLED entries drop first — a filled form's
+    # card stays answerable via secret_check either way (the value is in the
+    # encrypted store, not here). When everything is pending — a model minting
+    # unique names — the oldest PENDING entry drops instead, so a runaway
+    # request_secret loop cannot grow the KV without bound; the unwritten
+    # forms simply disappear from the pending list, which is the honest
+    # outcome for a request nobody filled.
     while len(requests) > _MAX_PENDING:
         oldest = min(
-            (k for k, v in requests.items() if isinstance(v, dict) and v.get('status') == 'filled'),
-            key=lambda k: str(requests[k].get('createdAt', '')),
+            requests,
+            key=lambda k: (
+                0 if isinstance(requests[k], dict) and requests[k].get('status') == 'filled' else 1,
+                str(requests[k].get('createdAt', '')) if isinstance(requests[k], dict) else '',
+            ),
             default=None,
         )
         if oldest is None:
