@@ -138,10 +138,77 @@ def _step_3_local_provider_label() -> None:
         p.write_text(json.dumps(store, indent=2), encoding='utf-8')
 
 
+def _step_4_reclaim_invented_128k() -> None:
+    """v4 — the fetched 128k stamps that were never a fact are reclaimed.
+
+    Auto-discovery used to stamp ``contextWindow: 128000`` onto every added
+    model, and the resolver honoured stored values as user intent — so a
+    model August knew nothing about looked permanently 128k, whichever
+    default applied. The resolver carried a three-condition carve-out for
+    that shape (fetched + 128000 + no family heuristic); this step deletes
+    the invented value at the DATA layer instead, and the resolver's
+    permanent special case is gone with it.
+
+    Untouched, on purpose: a manual value (source='manual'), any non-128000
+    value, and a fetched 128000 on an id a family heuristic knows (gpt-4o,
+    deepseek — their 128k is the family's real answer, so reclaiming it
+    would change nothing and the entry stays as written).
+    """
+    import json
+    import os
+    import tempfile
+
+    from app.services.model_service import _familyContextWindow
+
+    p = Path(dataDir()) / 'providers.json'
+    if not p.exists():
+        return
+    try:
+        store = json.loads(p.read_text('utf-8'))
+    except Exception:  # noqa: BLE001 — a hand-edited file must not block boot
+        logger.warning('providers.json unreadable during migration v4', exc_info=True)
+        return
+    changed = False
+    for entry in store.get('providers', []) or []:
+        if not isinstance(entry, dict):
+            continue
+        for model in entry.get('models', []) or []:
+            if not isinstance(model, dict):
+                continue
+            if str(model.get('source', '')) != 'fetched':
+                continue
+            try:
+                window = int(str(model.get('contextWindow')))
+            except (TypeError, ValueError):
+                continue
+            if window != 128000:
+                continue
+            if _familyContextWindow(str(model.get('id', ''))) is not None:
+                continue
+            # Drop the invented value: the resolver falls through to
+            # profiles → live metadata → family → the current default.
+            model.pop('contextWindow', None)
+            changed = True
+    if changed:
+        # Atomic write — this step, unlike the shipped v2/v3, must tolerate
+        # its own partial effects (ladder rule 2), and a crash mid-write
+        # that truncated providers.json would be swallowed by the reader
+        # and stamped as migrated.
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix='.providers-v4-', suffix='.json')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+                json.dump(store, handle, indent=2)
+            os.replace(tmp, p)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+
 LADDER: list[tuple[int, str, Callable[[], None]]] = [
     (1, 'layout baseline: marker + runtimes/models/shared/bots dirs', _step_1_layout_baseline),
     (2, 'disable legacy per-GGUF providers (superseded by Local Models)', _step_2_single_local_provider),
     (3, 'rename the local provider label to LocalModels', _step_3_local_provider_label),
+    (4, 'reclaim invented fetched-128000 context windows (the 1M default)', _step_4_reclaim_invented_128k),
 ]
 
 

@@ -115,10 +115,7 @@ def _getContextWindow(
     """Resolve context window.
 
     Priority (user intent first — applies to every model, not one family):
-      1. Per-model entry from Model Providers UI (``providers.json``) — except a
-         FETCHED 128k on an id no family heuristic recognises: that number is
-         August's old default stamped onto an unknown model, not the provider's
-         word, so it falls through to the current default
+      1. Per-model entry from Model Providers UI (``providers.json``)
       2. modelProfiles exact → longest prefix (not ``*``)
       3. Explicit fallback (live ``/models`` metadata from the host)
       4. Family heuristic
@@ -132,22 +129,16 @@ def _getContextWindow(
             m = as_dict(m_raw)
             if as_str(m.get('id')) == modelId:
                 n = _context_from_model_entry(m)
+                # A stored contextWindow is the user's intent — whether it
+                # came from auto-discovery (source='fetched') or a manual
+                # edit (source='manual'). There is no carve-out here: the
+                # invented fetched-128000 stamps the old default left behind
+                # were reclaimed at the DATA layer (migration ladder v4), so
+                # the resolver no longer needs a permanent special case that
+                # also caught provider-declared 128000s it could not tell
+                # from the invented ones.
                 if n > 0:
-                    # A stored contextWindow is the user's intent — whether it
-                    # came from auto-discovery (source='fetched') or a manual
-                    # edit (source='manual'). Always honor it, EXCEPT for the
-                    # one value that was never a fact: 128k auto-stamped onto an
-                    # unknown id by the old default. Honouring that made every
-                    # unrecognised model look permanently 128k, whatever the
-                    # default said. Families keep their real windows below, so
-                    # gpt-4o/deepseek still read 128k.
-                    stale_default = (
-                        n == 128000
-                        and as_str(m.get('source')) == 'fetched'
-                        and _familyContextWindow(modelId) is None
-                    )
-                    if not stale_default:
-                        return n
+                    return n
                 break
 
         profiles = as_dict(
