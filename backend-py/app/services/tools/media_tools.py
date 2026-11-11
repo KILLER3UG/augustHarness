@@ -19,6 +19,7 @@ import json
 import logging
 from pathlib import Path
 
+from app.json_narrowing import extract_answer_text
 from app.services.sandbox.paths import bind_path
 from app.services.tools import simulide
 
@@ -276,31 +277,22 @@ async def _vision_describe(
     message = (
         (choices[0] or {}).get('message') if isinstance(choices, list) and choices else None
     ) or {}
-    content = message.get('content')
-    text_parts: list[str] = []
-    if isinstance(content, str) and content.strip():
-        text_parts.append(content)
-    elif isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get('type') == 'text':
-                text_parts.append(str(block.get('text', '')))
-    if not text_parts:
-        # The answer can be sitting in `reasoning` while `content` is null: a
-        # reasoning model writes its chain first and only then the reply, and a
-        # cap that runs out mid-chain leaves content empty. The transcript used
-        # to say "(empty vision response)" and hide a description the provider
-        # had already produced — the model then retried the same call.
-        reasoning = message.get('reasoning')
-        if isinstance(reasoning, str) and reasoning.strip():
-            return reasoning.strip()
-        # A 200 with no text at all is still a refusal the model must see: some
-        # gateways answer an unsupported image part with an empty choice or a
-        # refusal field rather than an error status.
-        return (
-            f'(the vision provider [{model}] returned HTTP {response.status} with no text content. '
-            f'Its response body follows verbatim:\n{_providerBodyText(response)})'
-        )
-    return '\n'.join(text_parts)
+    # One reader for every channel the answer can arrive in (content string,
+    # content block list, reasoning, reasoning_content). The transcript used to
+    # say "(empty vision response)" and hide a description the provider had
+    # already produced when it landed outside `content` — the model then retried
+    # the same call. The extractor is shared with every other consumer so a new
+    # spelling is one edit, not one more missed call.
+    answer = extract_answer_text(message)
+    if answer.strip():
+        return answer.strip()
+    # A 200 with no text at all is still a refusal the model must see: some
+    # gateways answer an unsupported image part with an empty choice or a
+    # refusal field rather than an error status.
+    return (
+        f'(the vision provider [{model}] returned HTTP {response.status} with no text content. '
+        f'Its response body follows verbatim:\n{_providerBodyText(response)})'
+    )
 
 
 async def analyze_media(

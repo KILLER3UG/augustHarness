@@ -16,7 +16,14 @@ import logging
 import uuid
 from typing import AbstractSet, Callable, cast
 
-from app.json_narrowing import as_bool, as_dict, as_int, as_list, as_str
+from app.json_narrowing import (
+    as_bool,
+    as_dict,
+    as_int,
+    as_list,
+    as_str,
+    extract_reasoning_text,
+)
 from app.services.tool_registry import ARG_SHAPE_EXCEPTIONS
 from app.services.tools.agent_registry import (
     _MAXAgentDepth,
@@ -1163,8 +1170,7 @@ async def executeSubAgent(
 
                 attach_openai_reasoning(
                     assistantMsg,
-                    as_str(response.get('thinking'), '')
-                    or as_str(msg.get('reasoning_content') or msg.get('reasoning'), ''),
+                    as_str(response.get('thinking'), '') or extract_reasoning_text(msg),
                 )
                 toolUses = [as_dict(tu) for tu in as_list(response.get('tool_uses'), [])]
             if textContent:

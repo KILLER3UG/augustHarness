@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.adapters.sse_format import write_sse_data_only, write_sse_event
+from app.json_narrowing import extract_reasoning_delta
 
 # Back-compat aliases (previous camelCase names on this module).
 writeSseEvent = write_sse_event
@@ -128,8 +129,8 @@ class OpenaiStreamAccumulator:
             content = delta.get('content', '')
             if content and isinstance(content, str):
                 self.content += content
-            reasoning = delta.get('reasoning') or delta.get('reasoning_content', '')
-            if reasoning and isinstance(reasoning, str):
+            reasoning = extract_reasoning_delta(delta)
+            if reasoning:
                 self.reasoning += reasoning
             tool_calls = delta.get('tool_calls', [])
             if isinstance(tool_calls, list):
@@ -422,8 +423,8 @@ class OpenaiToAnthropicStreamState:
             self.accumulated_text += content
 
         # Reasoning content → Anthropic thinking_delta
-        reasoning = delta.get('reasoning') or delta.get('reasoning_content', '')
-        if reasoning and isinstance(reasoning, str):
+        reasoning = extract_reasoning_delta(delta)
+        if reasoning:
             if self._text_block_started:
                 self._close_text_block(events)
             if not self._reasoning_block_started:

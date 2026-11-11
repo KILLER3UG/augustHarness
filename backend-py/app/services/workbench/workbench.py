@@ -27,7 +27,15 @@ import time
 import uuid
 from typing import Any, Callable, Coroutine, cast
 
-from app.json_narrowing import as_bool, as_dict, as_float, as_int, as_list, as_str
+from app.json_narrowing import (
+    as_bool,
+    as_dict,
+    as_float,
+    as_int,
+    as_list,
+    as_str,
+    extract_reasoning_text,
+)
 from app.models.config import DEFAULT_CONTEXT_WINDOW
 from app.services.tool_policy import is_mutating, is_shell_mutation
 from app.services.workbench import providers as _providers_mod
@@ -5051,8 +5059,8 @@ async def _sendWorkbenchMessageStreamImpl(
                 'tool_calls': cast('object', choiceMsg.get('tool_calls', [])),
             }
             textContent = as_str(response.get('text', ''))
-            thinkingContent = as_str(response.get('thinking', '')) or as_str(
-                choiceMsg.get('reasoning_content') or choiceMsg.get('reasoning'), ''
+            thinkingContent = as_str(response.get('thinking', '')) or extract_reasoning_text(
+                choiceMsg
             )
             from app.adapters.reasoning_policy import attach_openai_reasoning
 

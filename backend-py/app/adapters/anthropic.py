@@ -61,7 +61,7 @@ from app.adapters.tool_classification import (
     classifyAnthropicToolUses,
 )
 from app.adapters.upstream_errors import normalize_upstream_error
-from app.json_narrowing import as_dict, as_int, as_list, as_str
+from app.json_narrowing import as_dict, as_int, as_list, as_str, extract_reasoning_text
 from app.models import (
     AnthropicRequest,
     AnthropicResponse,
@@ -612,7 +612,7 @@ async def resolveManagedAnthropicToolUses(
             text = as_str(message.get('content'), '')
             if text:
                 contentBlocks.append({'type': 'text', 'text': text})
-            reasoning = as_str(message.get('reasoning'), '') or as_str(message.get('reasoning_content'), '')
+            reasoning = extract_reasoning_text(message)
             if reasoning:
                 contentBlocks.append({'type': 'thinking', 'text': reasoning})
             toolUses = []
@@ -1163,7 +1163,7 @@ def _translateOpenaiToAnthropicResponse(openaiResponse: dict[str, object], model
     text = as_str(message.get('content'), '')
     if text:
         contentList.append({'type': 'text', 'text': text})
-    reasoning = as_str(message.get('reasoning'), '') or as_str(message.get('reasoning_content'), '')
+    reasoning = extract_reasoning_text(message)
     if reasoning:
         contentList.append({'type': 'thinking', 'text': reasoning})
     # snakeToCamel at the call site renamed tool_calls → toolCalls and
@@ -1284,7 +1284,7 @@ def translateMessagesToAnthropic(messages: list[dict[str, object]]) -> list[dict
                 contentBlocks: list[dict[str, object]] = []
                 # Only emit a thinking block when we have an Anthropic signature —
                 # unsigned thinking is rejected by the Messages API.
-                reasoning = as_str(msg.get('reasoning'), '') or as_str(msg.get('reasoning_content'), '')
+                reasoning = extract_reasoning_text(msg)
                 signature = as_str(msg.get('thinking_signature') or msg.get('signature'), '')
                 if reasoning and signature:
                     contentBlocks.append(

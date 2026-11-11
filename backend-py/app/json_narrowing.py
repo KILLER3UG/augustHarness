@@ -93,6 +93,86 @@ def coerce_json_list(value: object) -> list[object] | str:
     return 'Error: expected a JSON array of objects for this parameter.'
 
 
+_ANSWER_KEYS = ('reasoning', 'reasoning_content')
+
+
+def extract_reasoning_text(message: object) -> str:
+    """The reasoning channel of an assistant message, either spelling.
+
+    The counterpart to :func:`extract_answer_text`: a consumer that emits the
+    reasoning as its OWN block (an Anthropic `thinking` block, a `reasoning`
+    output item) needs the channel alone, not "the answer whichever channel it
+    landed in". ``stream_state`` writes BOTH keys, so a reader that checks one
+    is wrong for the other model family — DeepSeek/Kimi read
+    ``reasoning_content``, other stacks read ``reasoning``.
+    """
+    record = as_dict(message, {})
+    for key in _ANSWER_KEYS:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ''
+
+
+def extract_reasoning_delta(delta: object) -> str:
+    """The reasoning carried by one STREAMING delta, either spelling.
+
+    A delta carries a fragment, not a whole message, so the `.strip()` truthiness
+    of :func:`extract_reasoning_text` is wrong here — a chunk of `" "` is real
+    content. The key order is the same and for the same reason: both spellings
+    exist on the wire and a reader that checks one is wrong for the other model
+    family.
+    """
+    record = as_dict(delta, {})
+    for key in _ANSWER_KEYS:
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ''
+
+
+def extract_answer_text(message: object) -> str:
+    """The text a model put in an assistant message, whichever channel it used.
+
+    The answer channel is ``content``, and a reasoning model may have moved the
+    answer into ``reasoning`` / ``reasoning_content``: it spends completion
+    tokens on the chain first, and a cap that runs out mid-chain leaves
+    ``content`` null while the answer is already in the reasoning channel.
+    Measured on a real vision call — ``content: null``, the description sitting
+    in ``reasoning`` — which a consumer that read ``content`` alone reported as
+    "(empty response)".
+
+    ``content`` may be a plain string or a list of blocks; the text blocks are
+    joined. The reasoning keys are a fallback, in the order the adapters write
+    them: ``stream_state`` sets BOTH spellings (DeepSeek/Kimi read
+    ``reasoning_content``, other stacks read ``reasoning``), so a consumer that
+    checks one is wrong for the other model.
+
+    Returns '' when there is no text anywhere. That is a real answer — "the
+    provider returned no text" is a refusal the caller must surface — not a
+    reason to fall back to a guess.
+    """
+    record = as_dict(message, {})
+    content = record.get('content')
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            blockDict = as_dict(block, {})
+            if blockDict.get('type') in (None, 'text'):
+                text = as_str(blockDict.get('text'), '')
+                if text.strip():
+                    parts.append(text)
+        if parts:
+            return '\n'.join(parts)
+    for key in _ANSWER_KEYS:
+        reasoning = record.get(key)
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+    return ''
+
+
 def coerce_json_dict(value: object) -> dict[str, object] | str:
     """Narrow a tool argument that must be a JSON object.
 

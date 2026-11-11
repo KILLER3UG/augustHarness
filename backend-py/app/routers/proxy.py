@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.adapters import anthropic as anthropicAdapter
 from app.adapters import openai as openaiAdapter
-from app.json_narrowing import as_dict, as_int, as_list, as_str
+from app.json_narrowing import as_dict, as_int, as_list, as_str, extract_reasoning_text
 from app.lib.gateway_auth import require_gateway_key
 from app.services import config_service
 from app.services import logger as trafficLogger
@@ -536,7 +536,7 @@ def _translateToResponsesFormat(chatCompletion: dict) -> dict:
     message = as_dict(choice.get('message'), {})
     usage = as_dict(chatCompletion.get('usage'), {})
     outputItems: list[dict[str, object]] = []
-    reasoning = as_str(message.get('reasoning')) or as_str(message.get('reasoning_content'), '')
+    reasoning = extract_reasoning_text(message)
     if reasoning:
         outputItems.append(
             {'id': f'item_{uuid.uuid4().hex[:8]}', 'type': 'reasoning', 'status': 'completed', 'content': reasoning}
