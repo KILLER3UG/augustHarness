@@ -1,12 +1,67 @@
 # Status — the current round
 
-Last updated: 2026-11-09 · App version: **0.24.1**
+Last updated: 2026-11-13 · App version: **0.24.1**
 
 This is the committed handoff. Read it before starting work; update it at the
 end of a round. Keep it to one page: what shipped, what is next, what is
 waiting on the owner, and how to resume.
 
-## This round — the 0.24.1 round: precomputed compaction, the Explore reference, no hostile env
+## This round — the brain record leaves SQLite, and the shell goes quiet
+
+- **The record is files.** `dataDir/memory/` — one markdown file per fact plus
+  `MEMORY.md` — is the system of record; transcripts are
+  `transcripts/<session>.jsonl`; ledgers are self-capping JSONL under
+  `telemetry/`. `memory_conn.py`, `memory_schema.py`, 53 SQL migrations and 18
+  one-off migration scripts are deleted (−12.6k lines); the
+  `memory_store` package's public signatures are unchanged, so ~90 call-site
+  importers needed nothing. A one-time importer
+  (`app/services/retired_sqlite.py`, read-only) exports every table, recovers
+  the owner's lost memories from `config.json`'s rollback log (19 facts; the
+  7 pytest-probe watermarks are skipped), writes the marker, and renames the
+  database to `august_brain.sqlite.retired` with its sidecars PAIRED
+  (`.retired-wal` — a stranded WAL is unrecoverable). Ran on the live data
+  2026-11-12: 21 sessions / 161 messages / 507,602 ledger rows exported.
+- **`remember` works.** The read-before-write preflight is gone and
+  auto-review vetoes only when it actually answers (unavailable/prose/timeout
+  = a missing opinion, the write lands; update/merge/reject naming a real
+  target still refuse). Measured before: 21 turns, `facts_injected` NULL in
+  all 21, zero writes through the door. After one day on the new door: 181
+  facts, all described.
+- **Recall is pull-only.** The BM25 auto-tail is gone; a turn gets the frozen
+  boot index (which now NAMES every fact a budget omits), the always-in
+  profile/preference lane, and a delta of facts written since the session
+  opened. BM25 survives as explicit `retrieve_relevant_facts` /
+  `find_similar_facts`. Aliases answer the model's wording.
+- **Transcript search is a derived index that cannot lie.**
+  `state/transcript-index.sqlite` (FTS5, trigram) is rebuilt on boot,
+  re-synced BEFORE every query, and hands back to the Python scan whenever it
+  cannot answer — absent, corrupt, or a term shorter than the trigram window.
+  The scan's own tie-break was backwards (oldest won); both paths now agree.
+- **The shell opens instantly.** The full-screen bootstrap gate is gone:
+  the workspace renders from frame one, a quiet `BackendStatusPill` reports
+  the real install phases (and keeps the recovery actions), and sends made
+  before readiness park in the offline queue and flush when `/api/health`
+  answers. `BackendBootstrapGate.tsx` and `LaunchConversation.tsx` are
+  deleted, not commented.
+- **Updates are download-automatic, restart-explicit.** Detection starts the
+  download in the background (no button); Settings shows progress, then
+  "Restart to apply". "Not now" is durable per version — the startup path
+  that cleared it is removed, so a declined update stays declined across
+  restarts and the staged installer sits inert; `launch_installer_and_exit`
+  is the only installer spawn, reachable only from the restart-now click.
+  The rail's Update button opens Settings instead of installing.
+- **The UI takes the Claude Desktop reference.** Warm near-black token family
+  with a sparing terracotta accent (`#d97757`), centered title with dropdown
+  chevron, a mono system HUD in the titlebar (fed by the existing health
+  poll — no new timers; CPU/°C/FPS print N/A rather than invent a feed),
+  composer pill, 70% user bubbles, collapsible rail sections, and the memory
+  grammar: "Recalled memory ▾" / "Added to memory ▾" cards, "Thought for 3s"
+  thinking headers.
+- **The backup's narrowed scope is a recorded owner decision** (record only;
+  transcripts/telemetry excluded — see `brain_backup.py` and
+  [memory.md](agent/memory.md)).
+
+## The 0.24.1 round: precomputed compaction, the Explore reference, no hostile env
 
 - **A hostile `NO_PROXY` can no longer take a feature offline.** A bracketed
   IPv6 (`[::1]`, which Windows bypass lists write) makes httpx refuse to
