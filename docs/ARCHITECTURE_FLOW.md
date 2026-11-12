@@ -312,11 +312,11 @@ flowchart TB
   and read it back through a different door and a raw JSON blob is a
   serialization bug, not a data bug.
 - `remember`/`list_facts`/`forget` are core tools (never hidden by progressive
-  disclosure) and `list_facts` is gated by `modelMemoryRead`. Since 2026-10-17
-  the read is also a **precondition**: `remember` refuses its first write of a
-  turn until memory was read that turn, and refuses a sentence already stored
-  under another key (naming it in `existingKey`). `list_facts` pages with
-  `offset`/`hasMore`/`total` and takes `include_retired`.
+  disclosure) and `list_facts` is gated by `modelMemoryRead`. A write is a file
+  write: `remember` refuses a sentence already stored under another key (naming
+  it in `existingKey`) and a new memory may be checked by the fresh-context
+  reviewer, but a reviewer that cannot answer does not refuse. `list_facts`
+  pages with `offset`/`hasMore`/`total` and takes `include_retired`.
 - `brain_query` can read the KV table (`store='memory'`, aliases `kv` /
   `memory_store` — `memory_store/brain.py:_BRAINStores`), and as of 2026-10-17
   `memory` is in the advertised store enum: the composer's Notes lane is

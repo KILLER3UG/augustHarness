@@ -110,31 +110,36 @@ one memory action that still waits for a human, because it removes rather than
 adds.
 
 The boot memory index is **frozen per session** to protect the provider prefix
-cache, so `<memory_policy>` tells the model to re-read `list_facts` after
-writing rather than trusting that index — keep the prompt text and that
-behaviour in step if either changes.
+cache, so `<memory_policy>` points the model at the `new in memory since this
+chat opened:` delta and `list_facts` for the rest rather than trusting that index
+alone — keep the prompt text and that behaviour in step if either changes.
 
 Sub-agents read and recall but never write; the parent turn is the only
 MODEL-facing memory write door (internal/UI routes also call `save_fact`).
 
-**That read is enforced, and the read is now complete.** `remember` refuses its
-first write in a turn until `list_facts` (or `brain_query` over a memory store)
-has run once that turn — only when the store actually holds something to check,
-and never when `modelMemoryRead` is off, since a gate the model cannot satisfy
-would make memory unwritable. A sentence already stored under a different key is
-refused with that key in the result (`existingKey`), because "update, don't
-duplicate" was advice, not a mechanism.
+**A write is a file write.** There is no read-before-write gate: Claude Code's
+auto-memory does not have one, and August's own copy of it refused the first
+write of every turn on a model that could not satisfy the JSON contract the
+reviewer wanted — which is how `remember` shipped dead on the 1.7B turns. The
+index is in context at session start, `new in memory since this chat opened:`
+carries later writes, and `list_facts` pages the rest; the prompt asks the model
+to check a key before adding a copy. A sentence already stored under a different
+key is still refused with that key in the result (`existingKey`), because
+"update, don't duplicate" needs a mechanism, not advice.
 
-**Before a NEW memory is written, a fresh-context reviewer approves it.** With
-`autoReview` on (default), `remember` — both scopes — launches one extra call to
-the session's model with no conversation and a snapshot of the library: every
-skill, the stored memory and the tool names. The reviewer answers `new`,
-`update`, `merge` or `reject`. An update names the existing entry (returned as
-`existingKey`); a skill or tool target is named instead of stored again; a
-merge names the items to combine; an unavailable reviewer refuses the write
-rather than approving it. Update writes (the key already exists) skip the gate.
-There is no similarity threshold: the decision is the reviewer's, and the
-targets it names are validated against the real library.
+**A NEW memory may be checked, but the check cannot veto by failing.** With
+`autoReview` on (default), `remember` — both scopes — launches one call to the
+session's model with no conversation and a snapshot of the library: every skill,
+the stored memory and the tool names. The reviewer answers `new`, `update`,
+`merge` or `reject`. An update names the existing entry (returned as
+`existingKey`); a skill or tool target is named instead of stored again; a merge
+names the items to combine. Those three are vetoes, because they name something
+real. An answer the reviewer could not produce — prose instead of JSON, a
+timeout, no reviewer configured — is a missing opinion, not a refusal: the write
+lands and the daily `memoryReview` pass still sees the row. Update writes (the
+key already exists) skip the check. There is no similarity threshold: the
+decision is the reviewer's, and the targets it names are validated against the
+real library.
 
 On the read side `list_facts` takes `offset` and reports `total`/`hasMore` — it
 used to be hard capped at the 50 newest rows, so a store the model could write

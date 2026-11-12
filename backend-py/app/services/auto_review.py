@@ -6,12 +6,19 @@ proposed write and the existing library — every skill, the stored memory, and
 the registered tools — and that call decides whether the write is new, an update
 to one existing item, a merge of several, or not worth keeping.
 
-Why this exists: memory had a read-before-write gate and a duplicate refusal,
-but skills had neither. The model could file a `skill_create` that shadowed a
+Why this exists: memory had a duplicate refusal but no cross-store check, and
+skills had neither. The model could file a `skill_create` that shadowed a
 bundled skill, and the distiller's judge saw only a truncated catalogue. The
 existing independent reviewer could not judge redundancy because it never saw
 the catalogue, and it required a DIFFERENT model — which an install with one
 configured model cannot satisfy.
+
+It is a veto only when it answers. `update`, `merge` and `reject` name
+something real; an answer it could not produce (prose, a timeout, no reviewer)
+is a missing opinion, not a refusal — the write proceeds and the daily review
+pass still sees the row. Failing closed there refused every write from a model
+that cannot hold the JSON contract, which is how `remember` shipped dead on the
+1.7B turns.
 
 No similarity threshold is consulted here. Lexical ranking only orders the
 snapshot (which bodies to include); the decision is the reviewer's. Targets it

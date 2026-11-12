@@ -62,18 +62,19 @@ its existing shape: 40 newest, sensitive and `person` rows excluded.
 
 **Write rules.**
 
-- `remember` refuses its first write in a turn until `list_facts` (or a memory
-  search) has run once that turn, and only when the store has something to
-  check; `modelMemoryRead` off disables that gate.
+- A write is a file write: no read-before-write gate. The boot index is in
+  context, `list_facts` pages the whole store, and the prompt asks the model to
+  check a key before adding a copy.
 - A sentence already stored under a different key is refused with the existing
   key named (`existingKey`).
-- A NEW memory (no existing key) is approved by a fresh-context reviewer
+- A NEW memory (no existing key) may be checked by a fresh-context reviewer
   (`autoReview`, default on): a separate call to the session's model with the
   whole library — every skill, the stored memory and the tool names. It returns
   `new` / `update` / `merge` / `reject`; update names the existing key, a skill
-  or tool target is named instead of restated, and an unavailable reviewer
-  refuses the write. Update writes skip the gate. No similarity threshold is
-  consulted; the named targets are validated against the library.
+  or tool target is named instead of restated. It vetoes only when it answers:
+  an unavailable reviewer (prose instead of JSON, a timeout, none configured)
+  does not refuse the write. Update writes skip the check. No similarity
+  threshold is consulted; the named targets are validated against the library.
 - A stale `if_version` returns `{ok: false, conflict: 'version', current}`.
 - `source` is stamped by the code path, never by the writer's claim. A stored
   `tag` (`stated` / `observed` / `inferred`) is server-derived; a model-claimed

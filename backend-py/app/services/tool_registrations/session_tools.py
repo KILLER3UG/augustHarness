@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -145,11 +146,6 @@ async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int
             except _json.JSONDecodeError:
                 pass
         result = _bq(store, query, filtersDict or None, as_int(limit, 10))
-        # Reading a memory store is a memory read — same gate as list_facts, so
-        # `brain_query(store=facts)` (the route the boot index points at) also
-        # satisfies `remember`'s read-before-write check.
-        if store in _MEMORY_BRAIN_STORES:
-            _markMemoryRead()
         return result
     except Exception as exc:
         return f'{{"error": "brain_query: {exc}"}}'
@@ -189,39 +185,14 @@ _REMEMBER_PER_TURN_LIMIT = 3
 # Per-turn counters keyed by workbench session id (ContextVar set by
 # _execute_tool); reset at turn start via reset_remember_turn_budget().
 _rememberTurnCounts: dict[str, int] = {}
-# Sessions that READ memory this turn (list_facts / brain_query over a memory
-# store). `remember` refuses the first write of a turn until this is set: the
-# store is small and durable, and a write made without looking at what is
-# already there is how a store fills with restatements of things it already
-# knows. Same lifecycle as the counter above — one turn, then forgotten.
-_memoryReadThisTurn: set[str] = set()
 
 
 def reset_remember_turn_budget(sessionId: str = '') -> None:
     """Reset the per-turn remember counter for a session (turn start)."""
     if not sessionId:
         _rememberTurnCounts.clear()
-        _memoryReadThisTurn.clear()
         return
     _rememberTurnCounts.pop(sessionId, None)
-    _memoryReadThisTurn.discard(sessionId)
-
-
-def _markMemoryRead() -> None:
-    """Record that this turn looked at stored memory."""
-    try:
-        _memoryReadThisTurn.add(_currentRememberSessionKey())
-    except Exception:
-        pass
-
-
-def memory_read_this_turn(sessionId: str = '') -> bool:
-    """True when a memory read already ran this turn for the session."""
-    try:
-        key = sessionId or _currentRememberSessionKey()
-    except Exception:
-        return False
-    return key in _memoryReadThisTurn
 
 
 def remember_used_this_turn(sessionId: str = '') -> bool:
@@ -397,74 +368,21 @@ def _duplicateFactKey(text: str, scope: str, own_key: str) -> str:
     return ''
 
 
-def _memoryPreflightRefusal(ws: str) -> str:
-    """The read-before-write gate for ``remember``.
-
-    Returns a refusal JSON string, or '' when the write may proceed. It fires
-    at most once per turn, only when the store actually holds something to
-    check, and never when model memory READS are disabled (a gate the model
-    cannot satisfy would make memory unwritable).
-
-    Why this exists: `remember` is the only door that can fill the always-in
-    profile lane, and a write made without reading is how a store accumulates
-    entries that restate what it already knows. The prompt already ASKS for the
-    check; this is the part that makes it happen.
-    """
-    import json as _json
-
-    from app.services import brain_config_service, memory_store
-
-    _masterRefusal = _memoryDisabledRefusal()
-    if _masterRefusal:
-        return _masterRefusal
-    try:
-        cfg = brain_config_service.getRuntimeConfig()
-    except Exception:
-        cfg = {}
-    if not bool(cfg.get('modelMemoryRead', True)):
-        return ''
-    if memory_read_this_turn():
-        return ''
-    from app.services import session_scope as _ss
-
-    try:
-        stored = memory_store.count_facts(scope=_ss.resolve_scope())
-    except Exception:
-        stored = 0
-    projectEntries = 0
-    if ws:
-        try:
-            from app.services import project_memory as _pm
-
-            projectEntries = len(_pm.read_entries(ws))
-        except Exception:
-            projectEntries = 0
-    if stored == 0 and projectEntries == 0:
-        # An empty store has nothing to check — the first memory is free.
-        return ''
-    total = stored + projectEntries
-    return _json.dumps(
-        {
-            'ok': False,
-            'policy': f'refused: memory already holds {total} '
-            f'{"entry" if total == 1 else "entries"}. Read it first — call '
-            'list_facts once this turn — then either update the entry that '
-            'covers this with its key, or save a genuinely new one. Do not '
-            'retry this exact call before reading; the gate is per turn and '
-            'lifts as soon as memory has been read.',
-        }
-    )
-
-
 async def _autoReviewRefusal(
     text: str, description: str, workspace: str, scope: str
 ) -> str:
-    """The fresh-context reviewer's gate for a NEW memory write.
+    """The fresh-context reviewer's check on a NEW memory write.
 
     Returns a JSON refusal string, or '' when the write may proceed. An update
-    (the key already exists) never reaches here — the gate is about additions.
-    The reviewer decides against the whole library; no similarity threshold is
-    consulted, and a result it could not produce fails closed.
+    (the key already exists) never reaches here — this is about additions. The
+    reviewer decides against the whole library; no similarity threshold is
+    consulted.
+
+    It is a veto only when it actually answered: `update`, `merge` and `reject`
+    name something real and refuse. An answer it could not produce — prose
+    instead of JSON, a timeout, no reviewer — is not a veto, because failing
+    closed there refuses every write from a model that cannot hold the JSON
+    contract, which is how `remember` shipped dead on the 1.7B turns.
     """
     import json as _json
 
@@ -490,15 +408,18 @@ async def _autoReviewRefusal(
     reason = str(review.get('reason') or '')
     targets = review.get('targets')
     named = auto_review.formatTargets(targets)
-    if decision == 'unavailable':
-        return _json.dumps(
-            {
-                'ok': False,
-                'policy': f'refused: auto-review unavailable ({reason or "no reviewer"}) — '
-                'no memory was written. Retry, or turn off auto-review in '
-                'Settings → Memory.',
-            }
+    if decision != 'update' and decision != 'merge' and decision != 'reject':
+        # The reviewer could not answer — prose instead of JSON, a timeout, no
+        # reviewer configured. That is a missing opinion, not a veto: a gate
+        # that fails closed here refuses every write from a model that cannot
+        # hold the JSON contract, which is how `remember` shipped dead on the
+        # 1.7B turns. The deterministic doors (junk bar, exact/near dedupe)
+        # already ran; the write proceeds and the model review pass still sees
+        # the row afterwards.
+        logging.getLogger(__name__).debug(
+            'auto-review unavailable for a memory write: %s', reason or decision
         )
+        return ''
     first = targets[0] if isinstance(targets, list) and targets else {}
     targetKind = str(first.get('kind') or '') if isinstance(first, dict) else ''
     targetName = str(first.get('name') or '') if isinstance(first, dict) else ''
@@ -701,12 +622,6 @@ async def _remember(
         )
     # ── Part 17 Phase A: project scope (md-file workspace memory) ──────────
     ws = _currentWorkspacePath()
-    # Read-before-write: the model must have looked at stored memory once this
-    # turn before adding to it (see _memoryPreflightRefusal). Applies to BOTH
-    # scopes — a project's md memory fills with restatements just as easily.
-    _preflight = _memoryPreflightRefusal(ws)
-    if _preflight:
-        return _preflight
     scopeNorm = (scope or '').strip().lower()
     if scopeNorm == 'project' or (not scopeNorm and ws):
         if not ws:
@@ -1398,10 +1313,8 @@ async def _list_facts(
                 'updated': r.get('updatedAt') or '',
             }
         )
-    # Reading memory is what lifts the read-before-write gate on `remember`,
-    # and the page's own arithmetic is what tells the model whether it has now
-    # seen the whole store.
-    _markMemoryRead()
+    # The page's own arithmetic is what tells the model whether it has now seen
+    # the whole store.
     storeRows = len(rows)
     return _json.dumps(
         {
@@ -2409,10 +2322,10 @@ def register() -> None:
         'remember',
         'Save one durable memory entry (the only model write door). Use for user-stated '
         'preferences, project constraints, and feedback that must outlive this session. '
-        'READ MEMORY FIRST: the first write of a turn is refused until list_facts (or '
-        'brain_query over a memory store) has run once, because a write made without looking '
-        'is how the store fills with restatements — and a sentence already stored under another '
-        'key is refused with that key, so update it instead. Pass a stable '
+        'The record is one markdown file per fact under the app data dir, with MEMORY.md as its '
+        'index — a write here is that file write, and the index is in context at session start. '
+        'Check a key before adding a second copy: a sentence already stored under another key is '
+        'refused with that key, so update it instead. Pass a stable '
         'key to update an existing entry rather than duplicate, and that entry\'s `updated` stamp as '
         '`if_version` so a stale read cannot overwrite a change it never saw. Give every entry a one-line '
         '`description` — it is the recall hook shown in the index. '

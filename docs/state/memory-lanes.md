@@ -58,11 +58,11 @@ setting, which is **armed by default** since 2026-10-24 (an explicit stored
 can never hide the lookup that `remember` depends on, and a downgraded weak model
 can still correct what it remembers.
 
-`remember` refuses its first write in a turn until `list_facts` or a memory
-search has run once. A sentence already stored under a different key is refused
-with that key named in the result. Subagents read and recall but never write;
-the parent turn is the only model-facing write door, and internal and UI routes
-also call the same store function directly.
+A write is a file write: `remember` refuses a sentence already stored under a
+different key, naming that key in the result. A new memory may be checked by the
+fresh-context reviewer, but a reviewer that cannot answer is not a veto. Subagents
+read and recall but never write; the parent turn is the only model-facing write
+door, and internal and UI routes also call the same store function directly.
 
 ## What survives a reset
 
