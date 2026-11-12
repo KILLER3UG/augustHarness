@@ -35,9 +35,15 @@ persisted `false` beats the new default.
 
 Three things are true regardless of that gate:
 
-- `kind='profile'` facts are an always-in lane (rendered first, ~600-char
-  budget, injected even with auto-inject off — this is what makes August
-  remember *who you are* without a keyword coincidence).
+- `kind='profile'` and `kind='preference'` facts are an always-in lane (rendered
+  first, ~600-char budget, injected even with auto-inject off — this is what
+  makes August remember *who you are* without a keyword coincidence, and it is
+  the same two files Claude keeps in context: `profile.md` and
+  `preferences.md`). The `remember` prompt names both kinds for exactly this
+  reason; a fact that describes the user and lands as `kind='fact'` has to win a
+  keyword match like everything else. The kind is also editable by hand: the
+  file IS the record, so `kind: profile` in the frontmatter plus an index
+  rebuild moves the fact into the lane.
 - A fact dropped for budget is **named** in a `recall partial:` line rather
   than vanishing.
 - `build_memory_delta_block` appends a plain `new in memory since this chat
