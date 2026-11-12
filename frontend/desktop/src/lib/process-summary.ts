@@ -128,6 +128,51 @@ export function distillThoughtLines(content: string): string[] {
   return steps.length > 0 ? steps.map((s) => s.summary) : ['Working through the details.'];
 }
 
+/** The collapsed thinking card's preview: a SUMMARY OF ALL THE THOUGHTS.
+ *
+ * The reference (Claude Desktop) never shows raw reasoning collapsed — it
+ * shows a stack of short lines, one per segment of the reasoning, covering
+ * the whole thought. This distils those lines: the block's own paragraph
+ * breaks are the segments, and each is distilled by the same
+ * `summarizeThoughtHeader` the single-row card used, so the vocabulary
+ * ("Weighing…", "Drafting…") is identical.
+ *
+ * A LONG block is bounded, and the bound is honest: `omitted` counts the
+ * segments the preview does not name, so the card can render a "+N more"
+ * receipt instead of pretending four lines were the whole thought. Adjacent
+ * identical summaries are dropped — repeated intent phrasing ("Let me
+ * check… Let me check…") must not read as two thoughts.
+ */
+export function distillThoughtSummaries(
+  content: string,
+  maxLines: number,
+): { lines: string[]; omitted: number } {
+  const text = content.trim();
+  if (!text) return { lines: [], omitted: 0 };
+  const cap = Math.max(1, Math.floor(maxLines));
+  // The model's own paragraph breaks are the segments. A block written as
+  // one unbroken stream is one segment — one honest line for it, same as
+  // the old single-row card.
+  const paragraphs = text
+    .split(/\n\s*\n+/)
+    .map((p) => p.replace(/\s+/g, ' ').trim())
+    .filter((p) => p.length >= 12);
+  const segments = paragraphs.length > 0 ? paragraphs : [text.replace(/\s+/g, ' ').trim()];
+
+  const lines: string[] = [];
+  let omitted = 0;
+  for (const segment of segments) {
+    const line = summarizeThoughtHeader(segment, false);
+    if (line === lines[lines.length - 1]) continue;
+    if (lines.length >= cap) {
+      omitted += 1;
+      continue;
+    }
+    lines.push(line);
+  }
+  return { lines, omitted };
+}
+
 export function buildProcessSummaryLine(thinkingParts: string[]): string | null {
   const joined = thinkingParts
     .map((t) =>

@@ -1795,30 +1795,41 @@ details[open] > summary .disclosure-chevron {
 .thought-steps {
   margin-block: 2px;
 }
-.thought-step-row {
-  min-width: 0;
-}
-.thought-step-row-head {
+/* The collapsed card is the SUMMARY OF ALL THE THOUGHTS: one quiet line per
+   segment of the reasoning, stacked inside the card's single disclosure —
+   never the raw chain. */
+.thought-step-head {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   width: 100%;
   padding: 7px 10px;
   text-align: left;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: color-mix(in srgb, var(--dt-muted-foreground) 82%, transparent);
   transition: color 0.15s ease;
 }
-.thought-step-row-head:hover {
+.thought-step-head:hover {
   color: var(--dt-foreground);
 }
-.thought-step-summary {
+.thought-summaries {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   /* A distilled sentence can carry an unbreakable token (a path, a hash)
      wider than the rail; without this the token paints past the container. */
   overflow-wrap: anywhere;
+}
+.thought-summary-line {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 82%, transparent);
+}
+/* The omission receipt — segments past the preview cap, named not hidden. */
+.thought-summary-more {
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 58%, transparent);
 }
 .thought-step-chevron {
   flex-shrink: 0;
@@ -1828,9 +1839,9 @@ details[open] > summary .disclosure-chevron {
   color: color-mix(in srgb, var(--dt-muted-foreground) 70%, transparent);
   transition: transform 0.18s ease;
 }
-/* ▸ closed, ▾ open — the reference's row chevron. */
+/* ▾ closed, ▴ open — the reference's card chevron. */
 .thought-step-chevron.is-open {
-  transform: rotate(90deg);
+  transform: rotate(180deg);
 }
 .thought-step-detail {
   padding: 0 10px 8px;

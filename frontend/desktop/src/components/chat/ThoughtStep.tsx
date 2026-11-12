@@ -3,13 +3,16 @@
  * process rail.
  *
  * Layout: a clock icon on the threaded rail line, and beside it the
- * reference's thinking card — ONE rounded container whose hairline-divided
- * rows are each a distilled "what the model is doing" sentence. A row expands
- * in place to reveal that stretch's reasoning and nothing else; expanding one
- * row never expands another, and a collapsed row never shows raw reasoning.
+ * reference's thinking card — ONE rounded container whose collapsed body is
+ * the SUMMARY OF ALL THE THOUGHTS: a quiet line per segment of the
+ * reasoning, distilled from the block's own paragraph breaks, never the raw
+ * chain. The card is one disclosure — one chevron, one region — and opening
+ * it reveals the block's full reasoning and nothing else. Nothing
+ * auto-expands on the user's behalf.
+ *
  * This is the same visual language as the tool pack (ActivitySummary's
- * `activity-card-box`: border + `divide-y`), so a thought block and a command
- * block read as one row anatomy.
+ * `activity-card-box`: border + quiet stack), so a thought block and a
+ * command block read as one row anatomy.
  *
  * The rail clock stays a static marker (the whole pack collapses via
  * ActivitySummary for compactness); a per-thought header would repeat the
@@ -19,29 +22,28 @@
  * Live vs settled (Claude-desktop activity rows, 2026-11-10): while the
  * thought is still streaming there is no settled sentence list to trace, so it
  * keeps the single rotating summary line (the shimmer follower) and shows no
- * disclosure — a chevron over nothing is a lie. It rests into the expandable
- * rows the moment it settles. Nothing auto-expands on the user's behalf.
+ * disclosure — a chevron over nothing is a lie. It rests into the summary
+ * card the moment it settles. Nothing auto-expands on the user's behalf.
  *
- * The operator can still opt out of the row layout entirely
+ * The operator can still opt out of the card layout entirely
  * (`august.collapseThinking = '0'`), which shows the raw prose clamped with a
- * "Show more" that unclamps it — the pre-row behaviour, kept for the plain
+ * "Show more" that unclamps it — the pre-card behaviour, kept for the plain
  * transcript the opt-out asks for.
  */
 
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Clock, Loader2 } from 'lucide-react';
+import { ChevronDown, Clock, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
-  distillThoughtSteps,
+  distillThoughtSummaries,
   splitThinkingTexts,
   summarizeThoughtHeader,
-  type ThoughtStepLine,
 } from '@/lib/process-summary';
 import {
   THOUGHT_CLAMP_LINES,
   THOUGHT_CLAMP_CHARS,
-  THOUGHT_SUMMARY_LINES_FULL,
+  THOUGHT_SUMMARY_PREVIEW_LINES,
 } from '@/lib/thought-presentation';
 import { Markdown } from '@/sections/chat/ChatMarkdown';
 
@@ -73,10 +75,11 @@ export function ThoughtStep({
   const text = content.trim();
   const proseRef = useRef<HTMLDivElement>(null);
   const [overflowing, setOverflowing] = useState(false);
-  // Which rows the user opened, keyed by row index. Independent per row: a
-  // toggle writes only its own key, so opening one row never opens a sibling.
-  // Nothing seeds it, so nothing auto-expands.
-  const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
+  // The card is ONE disclosure (the reference's): collapsed it shows the
+  // summary stack — a quiet line per segment of the reasoning, covering all
+  // the thoughts — and the user's click reveals the raw chain. Nothing seeds
+  // it open.
+  const [cardOpen, setCardOpen] = useState(false);
 
   // Measure the natural prose height against the clamp. The inner prose is
   // never the clip container, so its scrollHeight is the full height whether
@@ -109,17 +112,13 @@ export function ThoughtStep({
     return summarizeThoughtHeader(latest, isGenerating);
   }, [text, isGenerating]);
 
-  // The reference's thinking rows: ONE row per whole thought, each traced to
-  // that thought's own reasoning, so a row opens onto the complete thought
-  // rather than a sentence fragment. A second distinct thought adds a second
-  // row. A LIVE thought has no settled row list yet — it keeps the rotating
-  // line until it settles, so partial thoughts never churn the card.
-  const rows = useMemo<ThoughtStepLine[]>(() => {
-    if (isGenerating) return [];
-    const steps = distillThoughtSteps(text);
-    return steps.length > 0
-      ? steps
-      : [{ summary: summarizeThoughtHeader('', false), reasoning: text }];
+  // The reference's collapsed card: a summary line per segment of the
+  // reasoning — ALL the thoughts, never the raw chain. A LIVE thought has no
+  // settled segment list yet — it keeps the rotating line until it settles,
+  // so partial thoughts never churn the card.
+  const summaries = useMemo(() => {
+    if (isGenerating) return { lines: [], omitted: 0 };
+    return distillThoughtSummaries(text, THOUGHT_SUMMARY_PREVIEW_LINES);
   }, [text, isGenerating]);
 
   if (!text && !isGenerating) return null;
@@ -173,58 +172,61 @@ export function ThoughtStep({
               </span>
             </div>
           ) : (
-            /* Settled: the reference's activity card — one rounded container,
-               a hairline-divided row per whole thought, each expanding
-               that thought's reasoning in place. */
+            /* Settled: the reference's thinking card — ONE rounded container
+               whose collapsed body is the SUMMARY OF ALL THE THOUGHTS: a
+               quiet line per segment of the reasoning, never the raw chain.
+               One chevron, one disclosure; a long block's unshown segments
+               are counted in a "+N more" receipt instead of pretended away.
+               Opening reveals the block's full reasoning. */
             <div
               id={panelId}
-              className="thought-steps rounded-xl border border-border/40 bg-card/30 divide-y divide-border/20 text-xs overflow-hidden"
+              className="thought-steps rounded-xl border border-border/40 bg-card/30 text-xs overflow-hidden"
               data-slot="thought-steps"
+              data-open={cardOpen}
             >
-              {rows.slice(0, THOUGHT_SUMMARY_LINES_FULL).map((row, i) => {
-                const open = !!openRows[i];
-                const triggerId = `${panelId}-row-${i}-trigger`;
-                const regionId = `${panelId}-row-${i}-region`;
-                return (
-                  <div key={i} className="thought-step-row" data-open={open}>
-                    <Button
-                      variant="bare"
-                      type="button"
-                      id={triggerId}
-                      className="thought-step-row-head"
-                      onClick={() => setOpenRows((v) => ({ ...v, [i]: !v[i] }))}
-                      aria-expanded={open}
-                      aria-controls={regionId}
-                    >
-                      <span className="thought-step-summary">{row.summary}</span>
-                      <ChevronRight
-                        className={cn('thought-step-chevron', open && 'is-open')}
-                        aria-hidden
-                      />
-                    </Button>
-                    <div
-                      id={regionId}
-                      role="region"
-                      aria-labelledby={triggerId}
-                      hidden={!open}
-                      className="thought-step-detail"
-                    >
-                      {/* The row's own reasoning — the same bytes its summary
-                          was distilled from, and only this row's. The region
-                          stays mounted so `aria-controls` resolves while
-                          closed, but the body mounts lazily: a collapsed row
-                          carries no reasoning bytes in the DOM at all. Bounded
-                          with the transcript's clamp/scroll convention so a
-                          long stretch never blows up the rail. */}
-                      {open ? (
-                        <div className="thought-step-reasoning tool-result-scroll max-h-48 overflow-y-auto overscroll-contain">
-                          <Markdown content={row.reasoning} />
-                        </div>
-                      ) : null}
-                    </div>
+              <Button
+                variant="bare"
+                type="button"
+                className="thought-step-head"
+                onClick={() => setCardOpen((v) => !v)}
+                aria-expanded={cardOpen}
+                aria-controls={`${panelId}-chain`}
+              >
+                <span className="thought-summaries">
+                  {summaries.lines.map((line, i) => (
+                    <span key={i} className="thought-summary-line">
+                      {line}
+                    </span>
+                  ))}
+                  {summaries.omitted > 0 ? (
+                    <span className="thought-summary-more">
+                      +{summaries.omitted} more
+                    </span>
+                  ) : null}
+                </span>
+                <ChevronDown
+                  className={cn('thought-step-chevron', cardOpen && 'is-open')}
+                  aria-hidden
+                />
+              </Button>
+              <div
+                role="region"
+                aria-label="Reasoning"
+                hidden={!cardOpen}
+                className="thought-step-detail"
+              >
+                {/* The block's raw chain — the same bytes every summary line
+                    was distilled from. The region stays mounted so
+                    `aria-controls` resolves while closed, but the body mounts
+                    lazily: a collapsed card carries no reasoning bytes in the
+                    DOM at all. Bounded with the transcript's clamp/scroll
+                    convention so a long chain never blows up the rail. */}
+                {cardOpen ? (
+                  <div className="thought-step-reasoning tool-result-scroll max-h-48 overflow-y-auto overscroll-contain">
+                    <Markdown content={text} />
                   </div>
-                );
-              })}
+                ) : null}
+              </div>
             </div>
           )
         ) : (

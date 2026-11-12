@@ -31,6 +31,13 @@ export const THOUGHT_CLAMP_CHARS = 480;
  *  whole chain. */
 export const THOUGHT_SUMMARY_LINES_FULL = 60;
 
+/** Summary LINES the reference's collapsed thinking card shows — one line
+ *  per segment of the block's reasoning, covering ALL the thoughts, never
+ *  the raw reasoning itself. Claude's collapsed card stacks ~2-4 of these;
+ *  the card's one disclosure owns the full chain. Segments past the cap are
+ *  counted and named as a "+N more" receipt rather than pretended away. */
+export const THOUGHT_SUMMARY_PREVIEW_LINES = 4;
+
 /** "1m 06s" / "6s" — the elapsed formatter both variants render. */
 export function formatThoughtDuration(ms: number): string {
   const total = Math.max(0, Math.round(ms / 1000));
