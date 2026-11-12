@@ -617,6 +617,22 @@ def _fact_line(row: dict[str, object], *, entry_cap: int = _ENTRY_CHAR_CAP) -> s
     if len(body) > entry_cap:
         body = body[:entry_cap].rstrip() + '…'
     label = title or str(row.get('key') or '')
+    # The title is DERIVED from the body's first clause, so a title that
+    # OPENS the body renders it twice: "Frontend experience: Frontend
+    # experience: React, React Native/Expo, TypeScript, Tailwind". The
+    # title stops at the first sentence break, so it is usually a PREFIX of
+    # the body, not the whole of it — dropping the body there would leave
+    # the model with a label and none of the fact's content.
+    #
+    # Two cases, one rule: the REPEATED PREFIX is what goes. When the title
+    # covers the whole body the body is empty and the label alone is the
+    # fact; when the title is only the opening clause, the clause is
+    # struck from the body and the rest of the fact survives.
+    if body and label:
+        if label.lower() == body.lower():
+            body = ''
+        elif body.lower().startswith(label.lower()):
+            body = body[len(label) :].lstrip(' \t:;,-—') or body
     verified = bool(str(row.get('verified_at') or '').strip())
     mark = (
         ''

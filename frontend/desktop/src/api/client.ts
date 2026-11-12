@@ -374,21 +374,35 @@ async function discoverBaseUrl(): Promise<void> {
 }
 
 /** False while a discovery run is in flight. The coalesced reset refuses to
- *  orphan a running loop — the loop is already doing what the reset asks. */
+ *  orphan a running loop — the loop is already doing what the reset asks.
+ *
+ *  ``readySettled`` is only ever written by the run that OWNS the current
+ *  ``readyPromise``, checked against ``readyGeneration`` first. Without that
+ *  check an orphaned run still settled the CURRENT state: an unconditional
+ *  ``resetDiscovery()`` (the bootstrap gate polls it every second) nulled the
+ *  promise, and the old loop's ``.then``/``.catch`` then wrote
+ *  ``readySettled = true`` — making the next coalesced reset believe a live
+ *  run had settled and orphan it too. That is the churn the coalescing
+ *  exists to stop, so a run only settles state that is still its own. */
 let readySettled = true;
+let readyGeneration = 0;
 
 function ensureReady(): Promise<void> {
   if (!readyPromise) {
     readySettled = false;
+    const generation = ++readyGeneration;
     readyPromise = discoverBaseUrl().catch((err) => {
       // Do not cache the failure: the next caller (a later mount, a retry, the
       // gate's own health poll resolving) must get a fresh attempt.
-      readyPromise = null;
-      readySettled = true;
+      if (generation === readyGeneration) {
+        readyPromise = null;
+        readySettled = true;
+      }
       throw err;
     });
     void readyPromise.then(
       () => {
+        if (generation !== readyGeneration) return;
         readySettled = true;
       },
       () => undefined,
@@ -401,6 +415,10 @@ function ensureReady(): Promise<void> {
  *  gate when it observes the proxy come up after discovery gave up. */
 export function resetDiscovery(): void {
   readyPromise = null;
+  // Invalidate any in-flight run so its settlement cannot write the state of
+  // the run that replaces it.
+  readyGeneration += 1;
+  readySettled = true;
 }
 
 /** The transport-failure variant. Mid-stream drops, SSE reconnects and the
@@ -418,6 +436,11 @@ export function resetDiscoveryCoalesced(): void {
   if (readyPromise && !readySettled) return;
   lastDiscoveryResetAt = now;
   readyPromise = null;
+  // Same invalidation as the unconditional reset: this drops a SETTLED run,
+  // but a run that was in flight when it was dropped must not be allowed to
+  // write readySettled over the state of whatever runs next.
+  readyGeneration += 1;
+  readySettled = true;
 }
 
 let restartInFlight: Promise<boolean> | null = null;

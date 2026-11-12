@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from app.atomic_write import write_json_atomic
-from app.json_narrowing import as_str
+from app.json_narrowing import as_bool, as_str
 from app.lib.paths import dataPath
 
 # Cron parsing lives in automations_schedule (single implementation).
@@ -71,6 +71,87 @@ def _loadJobs() -> None:
         # fix). Previously the corrupt file stayed in place and the jobs were
         # invisible (the failed read repeated every boot).
         _backup_corrupt(p)
+    _collapseDuplicates()
+
+
+def _jobFingerprint(job: dict[str, object]) -> tuple[str, str, str]:
+    """What makes two legacy cron jobs the SAME job: name, schedule, command.
+
+    Not the id — two records with the same id ARE one job (the id is the
+    key). The fingerprint is the three fields that decide what the job
+    DOES: a copy of a job that shares all three fires at the same moment,
+    runs the same command, and produces the same run row.
+
+    ``enabled`` is deliberately NOT part of the identity. Two jobs that
+    differ only in enabled are still one job — one firing, one run row —
+    and a fingerprint that separated them would leave both behind and keep
+    the duplicate firing. The COLLAPSE resolves the difference instead (see
+    :func:`_collapseDuplicates`).
+    """
+    return (
+        str(job.get('name') or '').strip().lower(),
+        str(job.get('schedule') or '').strip(),
+        str(job.get('command') or '').strip(),
+    )
+
+
+def _collapseDuplicates() -> int:
+    """Drop duplicate legacy cron jobs, keeping the OLDEST of each group.
+
+    The live install carried 154 copies of one job ("camel-cron",
+    ``*/5 * * * *``, ``true``) — the fingerprint of a test that posted the
+    same job 154 times against the live store, the same leak class as the
+    pytest rows migration 037 purged. Every copy fired every 5 minutes and
+    every firing appended a run row, so one broken job wrote 44,352 rows a
+    day: 96.1% of them the SAME error, because "true" is not a command on
+    Windows and each failure stored ~296 bytes of stderr.
+
+    The file is the owner's, so the collapse is CONSERVATIVE: a group is
+    only collapsed when name, schedule AND command all match — two jobs
+    that differ in any of those are different jobs and both survive.
+
+    Within a group the OLDEST job is the survivor, because it is the first
+    one the owner created — EXCEPT that an enabled job beats a disabled
+    one. A create that asked for ``enabled=True`` must not be answered by
+    returning a disabled twin (which is what an age-only rule did: the
+    disabled copy won and the job silently never ran). Age breaks a tie
+    between jobs that agree on enabled.
+
+    Returns the number of jobs removed.
+    """
+    groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for job in _jobs.values():
+        groups.setdefault(_jobFingerprint(job), []).append(job)
+    removed = 0
+    for fingerprint, jobs in groups.items():
+        if len(jobs) < 2:
+            continue
+        # All three empty = a job with no name, no schedule and no command
+        # cannot be judged a duplicate of anything; leave it alone.
+        if not any(fingerprint):
+            continue
+        # Enabled first, then oldest (createdAt, then the id as the
+        # tiebreak), so the survivor is deterministic across boots.
+        jobs.sort(
+            key=lambda j: (
+                0 if as_bool(j.get('enabled'), True) else 1,
+                str(j.get('createdAt') or ''),
+                str(j.get('id') or ''),
+            )
+        )
+        for extra in jobs[1:]:
+            _jobs.pop(str(extra.get('id') or ''), None)
+            removed += 1
+    if removed:
+        logger.info(
+            'scheduler: collapsed %d duplicate legacy cron job(s) (same name, schedule and command)',
+            removed,
+        )
+        try:
+            _saveJobs()
+        except Exception:
+            logger.debug('scheduler: could not persist the collapsed job index', exc_info=True)
+    return removed
 
 
 def _saveJobs() -> None:
@@ -84,9 +165,32 @@ def listJobs() -> list[dict[str, object]]:
 
 
 def createJob(name: str, schedule: str, command: str, enabled: bool = True) -> dict[str, object]:
-    """Create a scheduled job."""
+    """Create a scheduled job.
+
+    An existing job with the SAME name, schedule and command is updated and
+    returned instead of a second copy being created. Two such jobs fire at
+    the same moment, run the same command, and write the same run row — the
+    live install carried 154 copies of one job that way, and each copy
+    wrote a run row every 5 minutes.
+
+    The dedupe is keyed on what the job DOES, so the requested ``enabled``
+    state is applied to the existing job rather than used to pick a
+    different one. Returning a disabled twin unchanged (or creating a second
+    copy) would both be wrong: the first makes an ``enabled=True`` request a
+    silent no-op, and the second is the duplication this exists to stop.
+    """
     import uuid
 
+    _loadJobs()
+    fingerprint = (str(name or '').strip().lower(), str(schedule or '').strip(), str(command or '').strip())
+    if any(fingerprint):
+        for existing in _jobs.values():
+            if _jobFingerprint(existing) != fingerprint:
+                continue
+            if as_bool(existing.get('enabled'), True) != bool(enabled):
+                existing['enabled'] = bool(enabled)
+                _saveJobs()
+            return existing
     jobId = f'sch_{uuid.uuid4().hex[:8]}'
     job = {
         'id': jobId,

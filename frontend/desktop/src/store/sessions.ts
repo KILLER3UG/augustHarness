@@ -551,14 +551,17 @@ export function deleteUncategorizedSessions(options?: {
   const updated = sessions.filter((session) => !deleteIdSet.has(session.id));
   useSessionsStore.setState({ sessions: updated });
   saveSessionsToStorage(updated);
+  // The per-session device-local state has to go with the row, and this used
+  // to hand-roll only the two transcript keys — so every bulk wipe left the
+  // session's review notes and its stream/transcript caches behind, and they
+  // were re-hydrated from localStorage on every start forever.
+  // `removeSessionLocally` already does all of it (transcript keys, draft,
+  // notes, status record, stream state, transcript sync). The rows are
+  // already gone from the store, so its own filter is a no-op — what the
+  // call is for is the per-id sweep, and one implementation means a bulk wipe
+  // now leaves exactly what a single delete leaves.
   for (const id of removeIds) {
-    try {
-      localStorage.removeItem(messagesStorageKey(id)!);
-      localStorage.removeItem(legacyMessagesStorageKey(id)!);
-      clearComposerDraft(id);
-    } catch {
-      /* ignore */
-    }
+    removeSessionLocally(id, { discardDraft: true });
   }
   void purgeBackendSession([...removeIds]);
   return toDelete.map((session) => session.id);
@@ -665,17 +668,18 @@ export function clearAllSessions(includeArchived: boolean = true) {
     toDelete.flatMap((s) => (s.workbenchSessionId ? [s.workbenchSessionId] : [])),
   );
 
-  // Clear all localStorage chat histories
-  toDelete.forEach((s) => {
-    localStorage.removeItem(messagesStorageKey(s.id)!);
-    localStorage.removeItem(legacyMessagesStorageKey(s.id)!);
-    clearComposerDraft(s.id);
-    if (s.workbenchSessionId) {
-      localStorage.removeItem(messagesStorageKey(s.workbenchSessionId)!);
-      localStorage.removeItem(legacyMessagesStorageKey(s.workbenchSessionId)!);
-      clearComposerDraft(s.workbenchSessionId);
+  // Clear the per-session device-local state for every chat being wiped. This
+  // used to hand-roll only the two transcript keys, so "wipe all chats" left
+  // every session's review notes, status record and stream cache behind and
+  // they were re-hydrated from localStorage on every start forever. Same
+  // sweep a single delete does — route through the one implementation. The
+  // store rows are already replaced below, so the filter inside is a no-op;
+  // the call is for the per-id cleanup.
+  for (const s of toDelete) {
+    for (const id of [s.id, s.workbenchSessionId].filter((x): x is string => !!x)) {
+      removeSessionLocally(id, { discardDraft: true });
     }
-  });
+  }
 
   const nextSessions = includeArchived ? [] : sessions.filter((s) => s.isArchived);
 

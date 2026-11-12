@@ -208,6 +208,36 @@ session summary also exposes `backgroundWork` while a task is running; the
 sidebar and quit guard treat that as active work without making the chat look
 like a live stream.
 
+## The legacy cron store holds one job per fingerprint
+
+`scheduled-jobs.json` is the legacy cron store. Two jobs with the same NAME,
+SCHEDULE and COMMAND are the same job: they fire at the same moment, run the
+same command, and write the same run row. So:
+
+- **Loading collapses them.** A group of identical jobs keeps the OLDEST
+  (the first the owner created) and the rest are dropped, and the collapse is
+  written back so the file itself shrinks.
+- **Creating one returns the existing one.** A create that would duplicate is
+  an update, not a new job.
+
+This is not cosmetic. The live install carried 154 copies of one job
+(`camel-cron`, `*/5 * * * *`, `true`) — the fingerprint of a test that posted
+the same job 154 times against the live store. Every copy fired every 5
+minutes and every firing appended a run row, so one broken job wrote 44,352
+rows a day: 96.1% of them the SAME error, because `true` is not a command on
+Windows and each failure stored ~296 bytes of stderr. That was 143 MB of the
+retired database, and the collapse is what stops it coming back.
+
+**The runs ledger self-caps by bytes, and the cap is a HIGH-waterMARK.** The
+ledger lives at `<dataDir>/telemetry/automation-runs.jsonl` and rotates to its
+ceiling (10 MB) on every append that crosses it. Trimming to exactly the
+ceiling leaves the file one row under it, so the very next append tips it over
+and the WHOLE file is rewritten again — measured at steady state: 271 ms per
+append, 200 minutes of CPU a day, all of it rewriting bytes that were about to
+be rewritten again. The ledger is therefore trimmed to the ceiling MINUS a
+reserve, so rotation happens once per reserve of ingest rather than once per
+row: 271 ms → 3.3 ms on the same workload.
+
 ## Plan-step commits and reviews
 
 The todo list remains the model's plan, but the host enriches it: stable

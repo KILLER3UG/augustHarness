@@ -5380,7 +5380,6 @@ export interface paths {
          * Search Sessions
          * @description Full-text search across conversation messages (C8).
          *
-         *     Uses the ``messages_fts`` FTS5 index (kept in sync by triggers).
          *     Returns per-session hits with the matching snippet, newest first.
          */
         get: operations["search_sessions_api_sessions_search_get"];

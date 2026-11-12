@@ -691,6 +691,20 @@ def _camelPatchToSnake(patch: dict[str, object]) -> dict[str, object]:
     return out
 
 
+# Per-key string ceilings. The default fits an enum, a model name or a short
+# label. A key whose value is a LIST OF PATHS needs more: see
+# ``externalSkillRoots`` below.
+_STR_MAX_CHARS_DEFAULT = 120
+_STR_MAX_CHARS: dict[str, int] = {
+    # A path list. Windows roots are long ("C:\Users\<name>\Documents\…"), and
+    # the point of the key is to name several, so the ceiling has to fit a
+    # realistic multi-root list rather than one entry. 2000 is ~10 full
+    # Windows paths plus separators — far above any real config, low enough
+    # that a paste accident is still caught.
+    'externalSkillRoots': 2000,
+}
+
+
 def validatePatch(patch: object) -> tuple[bool, str]:
     """Return (ok, error_message). Reject non-dicts, unknown keys, wrong types
     or out-of-range numeric values."""
@@ -706,8 +720,17 @@ def validatePatch(patch: object) -> tuple[bool, str]:
         elif kind == 'str':
             if not isinstance(value, str):
                 return (False, f'{key!r} must be a string (got {type(value).__name__})')
-            if len(value) > 120:
-                return (False, f'{key!r} must be at most 120 chars (got {len(value)})')
+            # A flat 120-char cap fits an enum or a model name, but
+            # `externalSkillRoots` is a LIST OF PATHS: two or three real
+            # Windows roots ("C:\Users\rober\Documents\skills",
+            # "D:\work\team-skills", …) pass 120 on their own, so the cap made
+            # the control unusable for the exact case it was added for — and
+            # a knob that refuses its own realistic input is the same lie as
+            # one with no control at all. The list gets its own, far larger
+            # budget; everything else keeps the tight one.
+            cap = _STR_MAX_CHARS.get(key, _STR_MAX_CHARS_DEFAULT)
+            if len(value) > cap:
+                return (False, f'{key!r} must be at most {cap} chars (got {len(value)})')
             if key == 'skillLearning' and value not in ('off', 'extract-only', 'propose', 'full'):
                 return (
                     False,

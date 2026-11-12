@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
 import time
@@ -38,6 +39,8 @@ MAX_CLIENT_MESSAGE_ID_CHARS = 200
 _SEARCH_CACHE: dict[str, tuple[tuple[int, int], float, list[dict[str, object]]]] = {}
 _SEARCH_CACHE_LOCK = threading.Lock()
 _SEARCH_CACHE_TTL_S = 5.0
+
+logger = logging.getLogger('august.memory_store.messages')
 
 
 def normalize_client_message_id(value: object) -> str | None:
@@ -396,21 +399,76 @@ def search_messages(
 ) -> list[dict[str, object]]:
     """Search every transcript for messages matching ``query``.
 
-    The messages_fts index died with SQLite; this is the plain-Python
-    replacement: case-insensitive substring per term, scored by how many
-    query terms are present, ties broken newest-first. One best hit per
-    session, in the same ``{sessionId, title, role, snippet, messageId}``
-    shape the old route returned.
+    Two interchangeable paths, same result shape:
+
+    * an FTS5 index (``transcript_index``) when ``sqlite3`` is usable — a
+      derived cache over the transcripts, rebuildable at any time;
+    * a plain-Python scan otherwise: case-insensitive substring per term,
+      scored by how many query terms are present, ties broken newest-first.
+
+    The scan is the reference implementation and the fallback. The index is an
+    optimisation, never a second record: it can be deleted, and if anything
+    about it is unusable the answer is the scan's.
     """
     terms = [t.lower() for t in query.split() if t.strip()]
     if not terms:
         return []
     sessions_meta = _sessions._load_session_rows()
+    cap = max(1, min(limit, 100))
+
+    indexed = _search_via_index(terms, cap, sessions_meta)
+    if indexed is not None:
+        return indexed
+    return _search_via_scan(terms, cap, sessions_meta)
+
+
+def _search_via_index(
+    terms: list[str],
+    cap: int,
+    sessions_meta: dict[str, dict[str, object]],
+) -> list[dict[str, object]] | None:
+    """The FTS5 path. ``None`` means the caller should scan."""
+    from app.services.memory_store import transcript_index
+
+    try:
+        hits = transcript_index.search_sessions_by_term(terms, limit=cap)
+    except Exception:  # noqa: BLE001 — the index is an optimisation, never a gate
+        # Any failure here — a blocked sqlite3, a corrupt file, a bad MATCH —
+        # must cost a slower search, never a missing result, so the scan
+        # takes over.
+        logger.debug('transcript index search failed; scanning', exc_info=True)
+        return None
+    if hits is None:
+        return None
+    out: list[dict[str, object]] = []
+    for _rank, _key, stored_sid, role, message_id, text in hits:
+        if not text:
+            continue
+        meta = sessions_meta.get(stored_sid) or {}
+        out.append(
+            {
+                'sessionId': stored_sid,
+                'title': as_str(meta.get('title'), '')
+                or 'Untitled conversation',
+                'role': role,
+                'snippet': _make_snippet(text, terms),
+                'messageId': message_id,
+            }
+        )
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _search_via_scan(
+    terms: list[str],
+    cap: int,
+    sessions_meta: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    """The reference implementation: read the transcripts and match."""
     try:
         transcript_dir = home(TRANSCRIPTS_DIR)
-        session_ids = sorted(
-            p.stem for p in transcript_dir.glob('*.jsonl')
-        )
+        session_ids = sorted(p.stem for p in transcript_dir.glob('*.jsonl'))
     except OSError:
         session_ids = []
 
@@ -428,6 +486,16 @@ def search_messages(
         best: dict[str, object] | None = None
         best_id = 0
         # Newest first: walk the file from the end.
+        #
+        # The tie-break is `>` and not `>=`. Walking BACKWARDS, `>=` replaced
+        # the winner on every equal score, so the LAST row walked won — the
+        # OLDEST of the tied messages — which is the opposite of what this
+        # comment says, the opposite of the SQL route it replaced
+        # (`ORDER BY m.id DESC`), and the opposite of the route's own frozen
+        # docstring ("newest first"). Measured: three equally-matching
+        # messages in one session returned the OLDEST (messageId=1) instead
+        # of the newest. With `>`, the first row of a tied score wins, and
+        # walking backwards that IS the newest.
         for row in reversed(rows):
             text = _searchable_text(row.get('content'))
             if not text:
@@ -436,7 +504,7 @@ def search_messages(
             score = sum(1 for t in terms if t in lowered)
             if score == 0:
                 continue
-            if best is None or score >= best_score:
+            if best is None or score > best_score:
                 best = row
                 best_score = score
                 best_id = as_int(row.get('id'), 0)
@@ -460,4 +528,4 @@ def search_messages(
         )
     # Most terms matched first, then the newest message.
     hits.sort(key=lambda h: (-h[0], -h[1]))
-    return [h[2] for h in hits[: max(1, min(limit, 100))]]
+    return [h[2] for h in hits[:cap]]

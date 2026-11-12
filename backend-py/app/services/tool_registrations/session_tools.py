@@ -368,6 +368,35 @@ def _duplicateFactKey(text: str, scope: str, own_key: str) -> str:
     return ''
 
 
+_logger = logging.getLogger(__name__)
+# Failure classes already reported at WARNING this process. Keyed by the class
+# string so a repeat is a debug line, not a second warning: the reviewer can be
+# unreachable on every one of a 1.7B model's turns, and a warning per turn is
+# a log flood, not a signal.
+_WARNED_AUTO_REVIEW: set[str] = set()
+
+
+def _auto_review_unavailable(reason: str, *, fact: str = '') -> None:
+    """Report a reviewer that could not answer, once per class.
+
+    The write proceeds (see ``_autoReviewRefusal``), so this is the ONLY trace
+    that the memory landed without an opinion. A debug-level line here would be
+    invisible at the default level and the fail-open would look exactly like an
+    approval.
+    """
+    cls = (reason or 'unknown').strip()[:120]
+    if cls in _WARNED_AUTO_REVIEW:
+        _logger.debug('auto-review unavailable for a memory write: %s', cls)
+        return
+    _WARNED_AUTO_REVIEW.add(cls)
+    _logger.warning(
+        'auto-review did not answer for a memory write — the write landed unreviewed: %s '
+        '(first %r)',
+        cls,
+        fact[:80],
+    )
+
+
 async def _autoReviewRefusal(
     text: str, description: str, workspace: str, scope: str
 ) -> str:
@@ -416,8 +445,15 @@ async def _autoReviewRefusal(
         # 1.7B turns. The deterministic doors (junk bar, exact/near dedupe)
         # already ran; the write proceeds and the model review pass still sees
         # the row afterwards.
-        logging.getLogger(__name__).debug(
-            'auto-review unavailable for a memory write: %s', reason or decision
+        #
+        # The FIRST failure of each class is a WARNING, not a debug line: a
+        # fail-open that logs at debug is indistinguishable from "the reviewer
+        # approved", which is the same defect db249af6 fixed in the llama
+        # health poll. Repeats stay at debug on the model's own cadence so a
+        # 1.7B turn cannot flood the log.
+        _auto_review_unavailable(
+            f'{decision or "no answer"}: {reason}' if reason else (decision or 'no answer'),
+            fact=text,
         )
         return ''
     first = targets[0] if isinstance(targets, list) and targets else {}
@@ -816,8 +852,16 @@ async def _remember(
             type='restore_memory_item',
             target=factKey,
             before=before,
+            # ``kind`` rides along because the snapshot IS the recovery
+            # source: a rollback entry that omits it restores the fact as
+            # kind='fact', and a kind='profile' fact restored that way drops
+            # out of the always-in lane it was written for. Measured on the
+            # live record: 19 recovered facts, zero profile, zero
+            # preference — the always-in block rendered empty on every turn
+            # because the lane the recovery could not see was empty.
             after={'key': factKey, 'value': value, 'category': cat, 'source': 'model',
-                   'title': factTitle, 'description': factDesc},
+                   'title': factTitle, 'description': factDesc,
+                   'kind': (factKind or '').strip().lower()},
         )
         _rollbackId = str((_entry or {}).get('id') or '')
     except Exception:
@@ -2404,7 +2448,7 @@ def register() -> None:
         'list_facts',
         'List durable long-term memory entries (key, title, category, source, updated). This is the '
         'FULL store, not a sample: page with `offset` and watch `hasMore`/`total`. Call it before '
-        '`remember` (update, don\'t duplicate — and the write door requires one read per turn) and '
+        'writing a memory you believe may already exist (update, don\'t duplicate) and '
         'before `forget` (to get the exact key). `include_retired` also shows entries consolidation '
         'parked. Optional filters: category (user | feedback | project | reference | general) '
         'and free-text query over keys/values.',

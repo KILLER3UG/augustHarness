@@ -59,15 +59,14 @@ class SessionPatch(CamelModel):
 
 @router.get('/search')
 async def search_sessions(q: str, limit: int = 20):
-    # Docstring stays frozen: it is part of docs/api/openapi.json, which does
-    # not move with this engine swap. The FTS5 index the old text names is
-    # gone — the implementation is the plain-Python term scorer in
-    # memory_store.messages (case-insensitive substring per term, scored by
-    # how many query terms are present, newest-first tiebreak), returning the
-    # SAME response shape.
+    # The response shape is part of docs/api/openapi.json, which does not move
+    # with the engine, so this docstring stays frozen on purpose. What changed
+    # underneath: the SQL engine's messages_fts is gone, and search now runs
+    # through memory_store.messages, which prefers a derived FTS5 index
+    # (memory_store.transcript_index, rebuildable from the transcripts) and
+    # falls back to a plain-Python scan when sqlite3 is unavailable.
     """Full-text search across conversation messages (C8).
 
-    Uses the ``messages_fts`` FTS5 index (kept in sync by triggers).
     Returns per-session hits with the matching snippet, newest first.
     """
     query = (q or '').strip()

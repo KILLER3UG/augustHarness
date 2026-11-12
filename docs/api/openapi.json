@@ -15222,7 +15222,7 @@
     },
     "/api/sessions/search": {
       "get": {
-        "description": "Full-text search across conversation messages (C8).\n\nUses the ``messages_fts`` FTS5 index (kept in sync by triggers).\nReturns per-session hits with the matching snippet, newest first.",
+        "description": "Full-text search across conversation messages (C8).\n\nReturns per-session hits with the matching snippet, newest first.",
         "operationId": "search_sessions_api_sessions_search_get",
         "parameters": [
           {

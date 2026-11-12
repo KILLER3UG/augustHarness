@@ -608,6 +608,12 @@ async def manage_memory(body: ActionBody):
                         'value': stored_value,
                         'category': body.category or 'general',
                         'source': source,
+                        # The snapshot IS the recovery source — a snapshot
+                        # without the kind restores the fact as kind='fact',
+                        # out of the always-in lane a profile fact was
+                        # written for.
+                        'kind': (body.kind or '').strip().lower(),
+                        'title': fact_title,
                     },
                 )
             except Exception:
@@ -639,7 +645,17 @@ async def manage_memory(body: ActionBody):
                 type='restore_memory_item',
                 target=key,
                 before=before,
-                after={'key': key, 'value': stored_value, 'category': body.category or 'general', 'source': source},
+                # The snapshot IS the recovery source — a snapshot without
+                # the kind restores the fact as kind='fact', out of the
+                # always-in lane a profile fact was written for.
+                after={
+                    'key': key,
+                    'value': stored_value,
+                    'category': body.category or 'general',
+                    'source': source,
+                    'kind': (body.kind or '').strip().lower(),
+                    'title': fact_title,
+                },
             )
         except Exception:
             pass
@@ -812,7 +828,17 @@ async def import_memory(body: MemoryImportBody):
                 type='restore_memory_item',
                 target=key,
                 before=before,
-                after={'key': key, 'value': valueIn, 'category': category, 'source': source},
+                # The snapshot IS the recovery source — a snapshot without
+                # the kind restores the fact as kind='fact', out of the
+                # always-in lane a profile fact was written for.
+                after={
+                    'key': key,
+                    'value': valueIn,
+                    'category': category,
+                    'source': source,
+                    'kind': fact_kind,
+                    'title': fact_title,
+                },
             )
         except Exception:
             pass

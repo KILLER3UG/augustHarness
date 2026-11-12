@@ -101,6 +101,35 @@ _FIXTURE_KEY_RE = re.compile(r'^facts:\d+$')
 _MARKER_NAME = 'sqlite-imported.json'
 _RETIRED_SUFFIX = '.retired'
 
+# Category → lane, for a recovery snapshot that predates the ``kind`` field.
+# The Claude export assigned the two together (``_lane_for`` in
+# ``memory_import``): profile.md → ('profile', 'user'),
+# preferences.md → ('preference', 'feedback'), areas/* → ('fact', 'project'),
+# topics/* → ('fact', 'reference'). So a snapshot that names one of these
+# categories was a lane fact and can be put back in its lane. A category
+# that is not here is a plain fact and stays one.
+_LANE_BY_CATEGORY: dict[str, str] = {
+    'user': 'profile',
+    'feedback': 'preference',
+}
+
+
+def _kind_was_guessed(existing: dict[str, Any] | None) -> bool:
+    """Was this row's kind a DEFAULT rather than a recorded one?
+
+    A row this recovery wrote carries ``source='rollback-recovery'``; its
+    kind was derived from the category because the snapshot had no lane
+    field. Trusting it would freeze that guess, so the recovery re-derives
+    it. A row from any other writer kept its kind for a reason and is
+    trusted.
+    """
+    if not existing:
+        return False
+    source = str(existing.get('source') or '')
+    if source != 'rollback-recovery':
+        return False
+    return str(existing.get('kind') or '') in ('', 'fact')
+
 # Table → (kind, name). kind 'jsonl' appends rows verbatim to a telemetry
 # ledger; 'json' writes a whole-file list; 'dict' writes an id-keyed object.
 _LEDGER_TABLES: dict[str, str] = {
@@ -473,14 +502,42 @@ def _recover_rollback_memories() -> int:
             logger.info('rollback recovery: skipping probe/fixture entry %r', target)
             continue
         existing = record.load_fact(target)
+        # The LANE is what decides whether a fact is injected without a
+        # search, and the snapshots the older writers recorded did not carry
+        # it. So a recovered fact arrived with kind='fact' and sat outside
+        # the always-in lane: measured on the live install, 19 recovered
+        # facts, ZERO profile and ZERO preference, so the always-in block
+        # rendered EMPTY on every turn — the exact "August does not
+        # remember me" failure the lane exists to prevent.
+        #
+        # The lane is recoverable from the CATEGORY, because the Claude
+        # import assigned both together (``_lane_for``: profile.md →
+        # ('profile', 'user'), preferences.md → ('preference', 'feedback')).
+        # A snapshot that names category='user' or 'feedback' was a lane
+        # fact; one that does not is a plain fact. This is a fallback for
+        # snapshots that predate the field, so it never overrides a kind
+        # the snapshot actually carries.
+        category = (
+            as_str(after.get('category') or '')
+            or (as_str(existing.get('category') if existing else '') or '')
+            or 'general'
+        )
+        kind = as_str(after.get('kind') or '') or (as_str(existing.get('kind') if existing else '') or '')
+        if not kind or _kind_was_guessed(existing):
+            # The snapshot's kind wins. When the snapshot has none, the
+            # EXISTING row's kind is used only if it was not itself a guess:
+            # a row this recovery wrote earlier carries source
+            # 'rollback-recovery' and a kind of 'fact' only because the
+            # snapshot had no lane — so it is re-derived, not trusted.
+            kind = _LANE_BY_CATEGORY.get(category.lower(), 'fact')
         row: dict[str, Any] = {
             'fact_key': target,
             'scope': as_str(existing.get('scope') if existing else '') or 'global',
             'fact_value': _json(value),
             'title': as_str(after.get('title') or '') or (as_str(existing.get('title') if existing else '') or ''),
-            'kind': as_str(after.get('kind') or '') or (as_str(existing.get('kind') if existing else '') or 'fact'),
+            'kind': kind,
             'description': as_str(after.get('description') or '') or (as_str(existing.get('description') if existing else '') or ''),
-            'category': as_str(after.get('category') or '') or (as_str(existing.get('category') if existing else '') or 'general'),
+            'category': category,
             'source': 'rollback-recovery',
             'tag': 'observed',
             'confidence': 1.0,
@@ -706,7 +763,19 @@ def run_sqlite_retirement() -> dict[str, object]:
         'SQLite retired: imported %s; rollback recovery restored %d fact(s)',
         counts, recovered,
     )
-    for src in (db, db.with_name(db.name + '-wal'), db.with_name(db.name + '-shm')):
+    for src in (
+        db,
+        db.with_name(db.name + '-wal'),
+        db.with_name(db.name + '-shm'),
+        # The pre-migration snapshot the OLD migration runner took. That
+        # runner is gone with the SQL engine, so nothing else will ever move
+        # or prune it: it sat on this install as a 216 MB orphan beside the
+        # database it was a snapshot of. It is renamed with the database so
+        # the whole retired set is one `.retired` family, and so the next
+        # snapshot the NEW code takes (there is none — the file store has no
+        # migrations) cannot be confused with it.
+        db.with_name(db.name + '.pre-migration'),
+    ):
         if not src.exists():
             continue
         try:

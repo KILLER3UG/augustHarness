@@ -42,9 +42,13 @@ The index is [docs/agent/README.md](docs/agent/README.md).
   automatic; the restart is the user's click.
 - **One memory store.** The record is `dataDir/memory/` — one markdown file per
   fact plus `MEMORY.md`. There is no vector store, no graph store, and no second
-  memory database; SQLite is retired and survives only as
+  memory database; SQLite is retired as *the memory record* and survives only as
   `august_brain.sqlite.retired`, read once by the importer
-  ([memory.md](docs/agent/memory.md)).
+  ([memory.md](docs/agent/memory.md)). A **derived, rebuildable** cache is not a
+  second store and does not weaken this: `state/transcript-index.sqlite` is an
+  FTS5 index over `transcripts/*.jsonl`, holds nothing the JSONL does not, is
+  rebuilt on boot, and search falls back to a scan when it is absent. Do not add
+  a derived cache that is authoritative for anything.
 - **No verifier gate.** Nothing withholds a final answer.
   `update_state(phase=…)` is progress tracking only.
 - **Provider base URLs are used exactly as pasted.** August appends only the

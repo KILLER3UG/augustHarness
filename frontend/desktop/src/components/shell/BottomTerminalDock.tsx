@@ -74,11 +74,12 @@ export function BottomTerminalDock({ onClose }: { onClose: () => void }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(DOCK_H_KEY, String(dockH));
-  }, [dockH]);
-
+  // No persist effect here on purpose. `useResizablePane` already writes
+  // DOCK_H_KEY, but only for a size the USER chose (its `userResizedRef`).
+  // This component used to run its own unconditional `setItem` on mount,
+  // which re-stamped the then-current default on every start — so a changed
+  // DEFAULT_DOCK_H could never reach an existing profile, and the pane the
+  // shared hook had just fixed stayed broken. The hook is the only writer.
 
   const { data, isLoading } = useQuery({
     queryKey: ['terminal-sessions'],

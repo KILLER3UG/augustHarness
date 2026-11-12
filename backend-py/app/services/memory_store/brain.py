@@ -950,13 +950,13 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
     # missing.
     from app.services.workbench.prompt_build import currentIndexBudget
 
-    capChars = currentIndexBudget()[0]
-    text = _fit_index_lines(lines, capChars, fact_keys=set(fact_keys))
+    cap_chars = currentIndexBudget()[0]
+    text = _fit_index_lines(lines, cap_chars, fact_keys=set(fact_keys))
     return text
 
 
 def _fit_index_lines(
-    lines: list[str], capChars: int, *, fact_keys: set[str] | None = None
+    lines: list[str], cap_chars: int, *, fact_keys: set[str] | None = None
 ) -> str:
     """Join the index lines into the cap, and NAME every fact it drops.
 
@@ -970,17 +970,17 @@ def _fit_index_lines(
     section header ("Notes:", "Recent events:") is not, and counting it
     would overstate what is missing.
     """
-    if capChars <= 0:
+    if cap_chars <= 0:
         return ''
     text = '\n'.join(lines)
-    if len(text) <= capChars:
+    if len(text) <= cap_chars:
         return text
     kept: list[str] = []
     used = 0
     dropped_facts: list[str] = []
     for line in lines:
         cost = len(line) + (1 if kept else 0)
-        if used + cost > capChars:
+        if used + cost > cap_chars:
             key = _index_line_key(line)
             if fact_keys is not None and key and key in fact_keys:
                 dropped_facts.append(key)
@@ -993,14 +993,14 @@ def _fit_index_lines(
         # dropped section is named so the model does not read the index as
         # the whole record.
         receipt = '  … a section of this index did not fit the budget'
-        while kept and used + len(receipt) > capChars:
+        while kept and used + len(receipt) > cap_chars:
             removed = kept.pop()
             used -= len(removed) + 1
         return '\n'.join([*kept, receipt])
     receipt = _index_omitted_receipt(dropped_facts)
     # The receipt must fit too. If it cannot, drop more facts to make room
     # for it — an honest short index beats a tidy one that hides facts.
-    while kept and used + len(receipt) > capChars:
+    while kept and used + len(receipt) > cap_chars:
         removed = kept.pop()
         used -= len(removed) + 1
         key = _index_line_key(removed)

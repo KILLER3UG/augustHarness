@@ -61,6 +61,17 @@ knob that always refuses is a lie), the descriptive fields stay writable, and
 the registry's own write stays open for the human door (`PUT /api/agents/{id}`,
 `actor='ui'`).
 
+**A feature flag with no code behind it is the same lie pointing the other
+way.** `auxiliary.cognitive.features` is served by `GET /api/config/cognitive`
+and merged by key, so a flag whose module was deleted keeps appearing — reading
+`true` — until something prunes it. The live install carried
+`vector_memory: true` and `graph_memory: true` for months after their stores
+were dropped, alongside `diff_learning`, `execution_state`, `scratchpad`,
+`skill_genesis` and `heuristics`. The dead keys are now named in
+`cognitive_config.DEAD_FEATURE_KEYS` and pruned from BOTH the public tree and
+the stored file, so a knob that claims to be on and is not there at all cannot
+be read as a live capability. A flag is only kept when something reads it.
+
 `delete_agent` routes through `roster.delete_bot` like the UI route always has:
 only that path refuses the default assistant Bot and cascades a deleted Bot's
 private footprint; a bare registry delete left the facts, DM rows, room

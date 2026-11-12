@@ -98,11 +98,21 @@ def request(name: str, description: str, session_id: str) -> dict[str, object]:
 
 
 def check(name: str) -> dict[str, object]:
-    """Status of one request — never the value."""
+    """Status of one request — never the value.
+
+    A FILLED entry whose request row was evicted by the map bound is still
+    answerable, because the value lives in the encrypted store and not in the
+    map: ``secret_check`` reports it filled from the store alone. Consulting
+    the map only would make an evicted-but-filled secret read as ``unknown``,
+    which contradicts the bound's own contract ("a filled form's card stays
+    answerable via secret_check either way") — and would tell the model a
+    secret it can use does not exist.
+    """
     clean = validate_name(name)
     entry = _load_requests().get(clean)
     if not isinstance(entry, dict):
-        return {'name': clean, 'status': 'unknown'}
+        stored = secret_store.getSecret(SECRET_PREFIX + clean) is not None
+        return {'name': clean, 'status': 'filled' if stored else 'unknown'}
     status = str(entry.get('status', 'pending'))
     if status == 'pending' and secret_store.getSecret(SECRET_PREFIX + clean) is not None:
         entry['status'] = 'filled'

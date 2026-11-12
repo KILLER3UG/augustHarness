@@ -437,7 +437,20 @@ def import_claude_export(path: str | Path, dry_run: bool = False) -> dict[str, A
                 type='restore_memory_item',
                 target=key,
                 before=before,
-                after={'key': key, 'value': entry['value'], 'source': SOURCE_PREFIX},
+                # ``kind`` and ``category`` ride along: the snapshot IS the
+                # recovery source, and a snapshot without them restores an
+                # imported profile.md bullet as a plain fact — out of the
+                # always-in lane, which is the whole point of importing it
+                # from profile.md in the first place.
+                after={
+                    'key': key,
+                    'value': entry['value'],
+                    'source': SOURCE_PREFIX,
+                    'kind': entry['kind'],
+                    'category': entry['category'],
+                    'title': title,
+                    'description': entry['description'],
+                },
             )
         except Exception:  # noqa: BLE001 — a missing rollback row must not fail the import
             logger.debug('memory import: rollback record failed for %s', key, exc_info=True)

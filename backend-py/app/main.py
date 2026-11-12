@@ -273,6 +273,16 @@ async def lifespan(app: FastAPI):
         rebuild_mirror()
     except Exception:
         logging.getLogger(__name__).debug('memory record index rebuild failed', exc_info=True)
+    try:
+        # The transcript search index is DERIVED from the transcripts, so a boot
+        # sync is enough: it re-reads only the files whose (size, mtime) moved
+        # and drops rows for transcripts that vanished. A first run builds it;
+        # a blocked sqlite3 makes this a no-op and search uses the scan.
+        from app.services.memory_store.transcript_index import sync as sync_transcript_index
+
+        sync_transcript_index()
+    except Exception:
+        logging.getLogger(__name__).debug('transcript index sync failed', exc_info=True)
     # Anything still marked active in `subagent_runs` belonged to the previous
     # process, so nothing will ever move it again — resolve it before the first
     # drawer poll renders a dead worker as one still thinking.

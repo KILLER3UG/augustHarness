@@ -285,13 +285,18 @@ def read_fact_file(path: Path) -> RecordRow | None:
     """Parse one record file back into a row dict (snake_case columns).
 
     Returns None when the file has no frontmatter — a stray .md in the
-    directory is not a fact, and deleting it is the human's call, not ours.
-    A fact file whose frontmatter is present but whose value is unparseable
-    still reads (the value text passes through verbatim, the same way a
-    non-JSON cell did in the SQL era).
+    directory is not a fact, and deleting it is the human's call, not ours
+    (:func:`rebuild_mirror` honours that: it never removes a file it cannot
+    parse). A fact file whose frontmatter is present but whose value is
+    unparseable still reads (the value text passes through verbatim, the same
+    way a non-JSON cell did in the SQL era).
     """
     try:
-        text = path.read_text(encoding='utf-8')
+        # ``utf-8-sig`` so a BOM does not defeat the anchor below: Notepad and
+        # PowerShell redirection both write one, and a BOM'd fact file used to
+        # read as "no frontmatter" and then be deleted at boot by
+        # rebuild_mirror's sweep. Without a BOM this is plain utf-8.
+        text = path.read_text(encoding='utf-8-sig')
     except OSError:
         return None
     match = _FRONTMATTER_RE.match(text)
@@ -503,24 +508,31 @@ def note_fact_changed(fact_key: str) -> None:
 def rebuild_mirror() -> int:
     """Boot-time index regeneration (the historical name is kept).
 
-    There is no derived copy to repair anymore — the record IS the files —
-    so this only rebuilds the index and sweeps a fact file whose key has
-    been renamed away from its stem (the hash-suffix stems make that a
-    hand-edit-only state). Returns the listed count.
+    There is no derived copy to repair anymore — the record IS the files — so
+    this rebuilds the index and NAMES a file the record cannot parse back to a
+    key (a stray .md, or a key rename the hash-suffix stems left behind).
+    Returns the listed count.
+
+    It never deletes. ``read_fact_file``'s contract is that an unparseable
+    file is "the human's call, not ours", and this used to break that promise
+    by unlinking exactly those files on every boot — a hand-written note, or a
+    fact file saved with a UTF-8 BOM, was destroyed at the next start. An
+    unreadable file is now reported at warning (once per boot) and left
+    exactly where it is.
     """
     try:
         rows = load_facts()
         roots = mirror_root()
         wanted = {fact_path(str(r.get('fact_key')), str(r.get('scope') or 'global')).name for r in rows}
         for child in roots.glob('*.md'):
-            if child.name == _INDEX_NAME:
+            if child.name == _INDEX_NAME or child.name in wanted:
                 continue
-            if child.name not in wanted:
-                # A file the record cannot parse back to a key (or that a key
-                # rename left behind) is not memory anyone can read — remove
-                # it so the directory stays exactly the record.
-                if read_fact_file(child) is None:
-                    child.unlink(missing_ok=True)
+            if read_fact_file(child) is None:
+                # Not a fact the record can read. Report it; do not remove it.
+                logger.warning(
+                    'record: %s is not a readable fact file (no frontmatter) — left in place',
+                    child.name,
+                )
         return rewrite_index()
     except OSError:
         logger.debug('record index rebuild failed', exc_info=True)

@@ -27,6 +27,31 @@ is (scope, key). `MEMORY.md` lists the active, unexpired, non-sensitive,
 non-person rows — the same exclusions the boot index applies. The record
 itself holds every row.
 
+## The transcript search index is derived
+
+Transcripts (`<dataDir>/transcripts/*.jsonl`) are the record for chat history.
+`state/transcript-index.sqlite` is a **rebuildable FTS5 index over them**, the
+same relationship `MEMORY.md` has to `memory/`: it holds no fact that is not
+derivable from the JSONL, so it is never a second copy to drift from. Three
+consequences are load-bearing:
+
+- **It can be deleted at any time** and the next boot rebuilds it
+  (`transcript_index.sync()` runs from the lifespan).
+- **It is schema-versioned and self-healing.** A file written by an older
+  schema is dropped, not read with columns it does not have; a file that is
+  not a database is discarded and rebuilt.
+- **It is optional.** If `sqlite3` cannot load — Windows Smart App Control
+  blocks `_sqlite3.pyd`, see `scripts/dev-app.mjs` — or anything about the
+  index fails, `search_messages` falls back to the plain-Python scan and the
+  product behaves exactly as it did before.
+
+Why it exists at all: the SQL engine's `messages_fts` died with SQLite, and the
+scan re-reads every transcript per query. That is fine at a dozen sessions and
+stops being fine at the "weeks of sessions" scale the session-search docs
+describe, because every keystroke in the search box pays for a full re-read.
+The index turns that into an indexed lookup. The scan is kept as the reference
+implementation, so the two can be compared and the fallback is always correct.
+
 ## The two automatic lanes, and the pull doors
 
 **Always-in profile/preference lane** — `kind='profile'` and `kind='preference'`
@@ -41,6 +66,18 @@ plus an index rebuild moves the fact into the lane. The lane keeps its existing
 prompt heading; what changed is what feeds it, not what it is called. A fact
 dropped for budget is **named** in a `recall partial:` line rather than
 vanishing.
+
+**The lane is only as good as the kind that feeds it.** A fact's lane is set by
+the writer, and every writer that takes a rollback snapshot records the kind
+with it — the snapshot IS the recovery source, so a snapshot without the kind
+restores the fact as `kind='fact'` and drops it out of the lane. For the
+one-time SQLite retirement the snapshots that survived were written before
+that field existed, so the importer re-derives the lane from the CATEGORY the
+Claude export assigned alongside it (`user` → profile, `feedback` →
+preference); a category that maps to no lane stays a plain fact. Measured on
+the live install before that: 19 recovered facts, ZERO profile, ZERO
+preference — the always-in block rendered EMPTY on every turn, which is the
+exact "August does not remember me" failure the lane exists to prevent.
 
 **Delta** — `build_memory_delta_block` appends a plain `new in memory since this
 chat opened:` section listing facts whose `updated` stamp is newer than the
@@ -81,6 +118,26 @@ aliases; a hand edit can add them to a file's frontmatter just the same.
 Scopes are `global` and `bot:<agentId>` only; `project:<path>` is refused at
 the write door on purpose, because workspace memory is the separate
 `.aug/memory` markdown layer that the tail already carries.
+
+## The boot index names what it does not carry
+
+The boot index is the PRIMARY door now — it is in the system prompt from
+session start, and the ranked tail is gone — so a fact that is missing from
+it is memory the harness cannot see. It is bounded by the memory slice of the
+Tier-1 index budget (2400 chars unscaled), and the bound is honoured two
+ways that both matter:
+
+- **The cut is at a LINE boundary.** A mid-line slice leaves half a hook
+  that reads like a complete fact — the exact lie the index exists to avoid.
+- **Every dropped fact is NAMED.** The receipt is
+  `… N more in the record, not in this index: <keys>` — a count AND the keys,
+  because a count alone leaves the model unable to ask for the missing one by
+  name. Measured on the live 19-fact record before this: 5 facts (every
+  identity fact among them) vanished silently and the index still claimed to
+  be complete.
+
+The receipt is what makes a SHORT index visibly short rather than quietly
+incomplete.
 
 ## Model-managed memory (CRUD is a set)
 

@@ -36,6 +36,38 @@ DEFAULT_FEATURES: dict[str, bool] = {
     'llm_compactor': False,
 }
 
+# Feature flags whose backing code is GONE. They are pruned from the stored
+# tree and from the public one, because a knob that reads True and does
+# nothing is a lie the UI then shows: "Vector / graph memory" and
+# "diff_learning" were advertised on this install while their modules
+# (``app/services/memory/vector_db.py``, ``graph_memory.py``) had been
+# deleted — the same breach as AGENTS.md's "a knob that always refuses is
+# a lie", in the opposite direction: a knob that claims to be ON and is
+# not there at all.
+#
+# Each one is here because its table or module was retired:
+#   vector_memory / graph_memory — the vector and graph stores, dropped in
+#     migration 025 and the modules deleted with them.
+#   diff_learning               — the diff-learning layer, no live reader.
+#   execution_state / scratchpad — moved OUT of the database into the
+#     session's own state blocks (migration 060), so the flags name a
+#     storage decision that no longer exists.
+#   skill_genesis               — the skill-genesis layer, no live reader.
+#   heuristics                  — ``learned_heuristics`` was retired
+#     2026-10-30 with no live writer; brain.py already dropped the
+#     ``brain_query(heuristics)`` hint that advertised it.
+DEAD_FEATURE_KEYS: frozenset[str] = frozenset(
+    {
+        'vector_memory',
+        'graph_memory',
+        'diff_learning',
+        'execution_state',
+        'scratchpad',
+        'skill_genesis',
+        'heuristics',
+    }
+)
+
 DEFAULT_ORCHESTRATOR: dict[str, object] = {}
 
 
@@ -74,6 +106,9 @@ def get_cognitive() -> dict[str, object]:
 
     boot = _merge_bool_map(DEFAULT_BOOT, nested_boot)
     features = _merge_bool_map(DEFAULT_FEATURES, nested_features)
+    # The dead flags never reach the public tree, whatever the file says.
+    for _dead in DEAD_FEATURE_KEYS:
+        features.pop(_dead, None)
     if 'environment_watcher' in boot and 'env_watcher' not in nested_features:
         features['env_watcher'] = boot['environment_watcher']
 
@@ -169,6 +204,12 @@ def ensure_defaults() -> dict[str, object]:
     # Keeps memories / skill genesis / etc. on for upgrades that add new flags.
     prev_features = as_dict(cognitive.get('features'), {})
     next_features = _merge_bool_map(DEFAULT_FEATURES, legacy_layers, prev_features)
+    # The dead flags are DROPPED from the file, not merely hidden from the
+    # API: a flag that reads True and does nothing is a lie the UI then
+    # shows, and leaving it on disk means the next reader of the file finds
+    # it and believes it.
+    for _dead in DEAD_FEATURE_KEYS:
+        next_features.pop(_dead, None)
     if 'features' not in cognitive or not isinstance(cognitive.get('features'), dict) or next_features != prev_features:
         cognitive['features'] = next_features
         dirty = True

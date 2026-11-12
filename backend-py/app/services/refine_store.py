@@ -826,31 +826,51 @@ def set_refine_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     return {'ok': True, 'refineConfig': normalized}
 
 
-def _resolve_review_model(cfg: dict[str, Any]) -> str:
-    """The reviewer model: explicit config, else the provider default."""
-    hint = as_str(cfg.get('reviewModel'), '')
+def _resolve_review_model(cfg: dict[str, Any]) -> tuple[str, str]:
+    """The reviewer as ``(provider_id, model_id)``, or ``('', '')``.
+
+    An explicit ``reviewModel`` is a CONFIG string a human typed, so it may be
+    ``"provider/model"`` — returned as ``('', hint)`` and split downstream by
+    :func:`review_gate.resolve_independent_reviewer`, the one place that knows
+    its provenance.
+
+    The fallback is the RESOLVED default: the provider's own id plus that
+    provider's ``defaultModel``. Returning the two as one joined string is what
+    silently killed the reviewer — a namespaced model id ("nvidia/xyz") was
+    re-split as a config hint, the "provider" did not exist, and every
+    auto-refine batch was discarded as "no reviewer model available" while
+    looking exactly like a configured-and-working reviewer.
+    """
+    hint = as_str(cfg.get('reviewModel'), '').strip()
     if hint:
-        return hint
+        return '', hint
     try:
         from app.providers import resolver as providerResolver
-        from app.services.workbench.providers import resolve_model
 
         provider = providerResolver.resolve('')
         if provider:
-            return as_str(resolve_model(provider), '')
+            provider_id = as_str(provider.get('id'), '').strip()
+            model_id = as_str(provider.get('defaultModel'), '').strip()
+            if provider_id and model_id:
+                return provider_id, model_id
+            if model_id:
+                # A model with no provider id of its own: the resolver can
+                # still place it, so pass it as a model on no named provider.
+                return '', model_id
     except Exception:
         pass
-    return ''
+    return '', ''
 
 
 async def _review_refine_batch(
     applied: list[dict[str, Any]],
     evidence: str,
-    review_model: str,
+    review: tuple[str, str],
     producer_model: str,
 ) -> tuple[bool, str]:
     """Independent cheap reviewer over the applied edits. Discard-default.
 
+    ``review`` is ``(provider_id, model)`` — see :func:`_resolve_review_model`.
     Returns (keep, reason). Any failure — no reviewer, same model as the
     producer (Part 10 standing rule), unreachable, unparseable answer —
     discards the batch.
@@ -862,7 +882,10 @@ async def _review_refine_batch(
     # fail-closed: no reviewer always comes with a reason.
     from app.services.review_gate import resolve_independent_reviewer
 
-    reviewer, refusal = resolve_independent_reviewer(producer_model, review_model)
+    reviewer_provider, reviewer_model = review
+    reviewer, refusal = resolve_independent_reviewer(
+        producer_model, reviewer_model, provider=reviewer_provider
+    )
     if reviewer is None:
         return False, f'{refusal} — discard-default'
     summary = '\n'.join(
@@ -922,8 +945,8 @@ async def auto_refine(
     if not applied:
         return {'status': 'no-edits', 'refineId': result.get('refineId'), 'result': result}
     producer_model = as_str(cfg.get('producerModel'), '')
-    review_model = _resolve_review_model(cfg)
-    keep, reason = await _review_refine_batch(applied, evidence, review_model, producer_model)
+    review = _resolve_review_model(cfg)
+    keep, reason = await _review_refine_batch(applied, evidence, review, producer_model)
     if keep:
         _append_ledger({
             'at': _now(),
