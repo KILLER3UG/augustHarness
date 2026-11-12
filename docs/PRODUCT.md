@@ -28,13 +28,14 @@ One person, on their own machine, who:
    catalogs come from providers, never from a hardcoded list.
 2. **A workbench that does work.** A streaming turn with a bounded tool loop,
    files, shell, browser, desktop automation, MCP, subagents and skills.
-3. **A brain that persists.** A local SQLite memory store, recall lanes, a
-   human-readable mirror, backups, and a learning loop that turns sessions into
-   reviewable lessons and procedures.
+3. **A brain that persists.** A local markdown memory record — one file per
+   fact plus an index — two automatic recall lanes, a human-readable mirror,
+   backups, and a learning loop that turns sessions into reviewable lessons and
+   procedures.
 
 ## Principles
 
-- **Local-first, user-owned.** The data directory holds the brain database,
+- **Local-first, user-owned.** The data directory holds the memory record,
   providers, sessions, backups and learned skills. Nothing leaves the machine
   except the model request the user asked for.
 - **Desktop is the product.** `web-dist/` is a build artifact. Verify behavior
@@ -68,14 +69,16 @@ higher than "it works".
   A fact that was edited shows **Previously:** the value it replaced.
 - **You can undo it.** A chat write surfaces as a receipt; the write is
   rollback-snapshotted; deleting and restoring are real doors, not promises.
-- **Recall is predictable.** Three lanes, each with a name:
-  - **Profile** — always in, on every turn, inside a small budget. This is why
-    August knows who you are without a keyword match.
-  - **Delta** — facts written or updated since this chat opened, appended to
-    the tail. A fact you just saved is visible on the next request.
-  - **Recall** — BM25 over the facts table, gated by `memoryAutoInject` (armed
-    by default; an explicit off is honoured). A fact dropped for budget is
-    named, never silently lost.
+- **Recall is predictable.** Two automatic lanes, each with a name, plus tools
+  the model calls when it wants more:
+  - **Profile** — `kind='profile'` and `kind='preference'` facts, always in, on
+    every turn, inside a small budget. This is why August knows who you are
+    without a keyword match.
+  - **Delta** — facts written or updated since this chat opened, appended to the
+    tail. A fact you just saved is visible on the next request.
+  - **Search** — pull-only: `brain_query` runs the ranked search and `list_facts`
+    pages the record. There is no per-turn ranked tail and no auto-inject
+    setting; a fact dropped for budget is named, never silently lost.
 - **The model follows the same rules you do.** It reads before it writes, it
   updates rather than duplicating, and it cannot write memory from a subagent.
 

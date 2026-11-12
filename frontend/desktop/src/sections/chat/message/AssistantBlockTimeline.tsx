@@ -516,7 +516,6 @@ export function AssistantBlockTimeline({
   let searchesCount = 0;
   let commandsCount = 0;
   let errorsCount = 0;
-  let memoriesCount = 0;
   let anyToolRunning = false;
   const filesTouched = new Set<string>();
   let seqStart = Number.POSITIVE_INFINITY;
@@ -548,11 +547,6 @@ export function AssistantBlockTimeline({
         seqStart = Math.min(seqStart, tool.startedAt);
         seqEnd = Math.max(seqEnd, tool.startedAt + (tool.duration ?? 0));
       }
-    }
-    if (block.type === 'recalledMemories' && block.memories) {
-      // Part 17 A.4: recall rows count as turn activity — keeps the pack
-      // mounted for a recall-only turn (no tools, no thinking).
-      memoriesCount += block.memories.length;
     }
   }
   // Coalesced consecutive thoughts count as one ThoughtStep in the UI.
@@ -1168,60 +1162,6 @@ export function AssistantBlockTimeline({
         continue;
       }
 
-      if (block.type === 'recalledMemories' && block.memories && block.memories.length > 0) {
-        // Part 17 A.4 (gap C-13): what the per-turn memory tail actually
-        // recalled this turn — one subtle chip; the rows expand on click.
-        // Global + project rows both ride here, scope-tagged.
-        const rows = block.memories;
-        const projectCount = rows.filter((m) => m.scope === 'project').length;
-        const label =
-          rows.length === 1
-            ? `Recalled: ${rows[0].key || rows[0].snippet || 'memory'}`
-            : `Recalled ${rows.length} memories${projectCount ? ` (${projectCount} project)` : ''}`;
-        tagged.push({
-          kind: 'block',
-          node: (
-            <Task
-              key={block.id || `recall_${ti}`}
-              defaultOpen={false}
-              data-testid="recalled-memories-block"
-              className="mx-3 my-1 block max-w-full rounded border border-border/60 bg-muted/40 px-2.5 py-1 text-2xs text-muted-foreground"
-            >
-              <TaskTrigger asChild>
-                <Button type="button" variant="ghost" size="sm" className="h-auto w-full gap-1.5 justify-start px-0 py-0 text-2xs font-normal">
-                  <ChevronDown className="disclosure-chevron shrink-0 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
-                  <span className="truncate">{label}</span>
-                </Button>
-              </TaskTrigger>
-              <TaskContent className="mt-1">
-              <ul className="space-y-1 pl-1">
-                {rows.map((m) => (
-                  <li key={m.id} className="flex items-start gap-1.5">
-                    <span
-                      className={
-                        m.scope === 'project'
-                          ? 'shrink-0 rounded bg-success/15 px-1 text-2xs uppercase tracking-wide text-success-fg'
-                          : 'shrink-0 rounded bg-info/15 px-1 text-2xs uppercase tracking-wide text-info'
-                      }
-                      title={m.scope === 'project' ? 'Project memory' : 'Global memory'}
-                    >
-                      {m.scope === 'project' ? 'proj' : 'glob'}
-                    </span>
-                    <span className="min-w-0 break-words">
-                      {m.key || m.category ? <span className="font-medium">{m.key || m.category}</span> : null}
-                      {m.snippet ? <span className="opacity-75"> — {m.snippet}</span> : null}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              </TaskContent>
-            </Task>
-          ),
-        });
-        ti++;
-        continue;
-      }
-
       // Non-process leftovers inside process list (ignore)
       ti++;
     }
@@ -1520,7 +1460,6 @@ export function AssistantBlockTimeline({
           searches={searchesCount}
           commands={commandsCount}
           errors={errorsCount}
-          memoriesCount={memoriesCount}
           summary={livePacked ? null : workPhrase || processSummary}
           live={livePacked}
           liveDetail={

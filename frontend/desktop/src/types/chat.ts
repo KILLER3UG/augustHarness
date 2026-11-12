@@ -67,7 +67,6 @@ export interface MessageBlock {
     | 'toolCall'
     | 'command'
     | 'finalOutput'
-    | 'recalledMemories'
     | 'memoryNotice'
     | 'phase'
     | 'error'
@@ -91,9 +90,6 @@ export interface MessageBlock {
   /** Set on toolCall blocks whose context represents a revised plan
    *  (august__submit_plan with isRevisedPlan=true). */
   isRevisedPlan?: boolean;
-  /** For type === 'recalledMemories': the auto-memory rows that
-   *  getRelevantMemories() prefetched into the system prompt this turn. */
-  memories?: RecalledMemoryItem[];
   /** For type === 'subagent': the worker's own transcript snapshot. Shape
    *  matches `SubagentBlockState` minus the live-only bookkeeping. */
   subagent?: SubagentSnapshot;
@@ -101,17 +97,6 @@ export interface MessageBlock {
    *  harness notice (old reducer collapsed warnings into the thinking pack).
    *  normalizeSystemBlocks() converts these to `type: 'system'` on load. */
   system?: boolean;
-}
-
-/** One auto-memory row surfaced by the `recalledMemories` SSE event. */
-export interface RecalledMemoryItem {
-  id: string;
-  key: string;
-  category: string;
-  snippet: string;
-  /** Part 17 A.4: 'global' (facts store) or 'project' (workspace md entry);
-   *  absent on legacy rows — treat missing as 'global'. */
-  scope?: string;
 }
 
 export interface MessageBlockToolCall {
@@ -411,7 +396,6 @@ export interface AppendBlockEvent {
     | 'command'
     | 'tool_progress'
     | 'toolResult'
-    | 'recalledMemories'
     | 'memoryUpdated'
     | 'executionState'
     | 'error'
@@ -456,8 +440,6 @@ export interface AppendBlockEvent {
   /** Loudness decided by the backend from the receipt's own marker
    *  (`tool_protocol.RECEIPT_TONE`). Missing renders red. */
   tone?: 'failure' | 'denial';
-  /** For type === 'recalledMemories': the recalled auto-memory rows. */
-  memories?: RecalledMemoryItem[];
   /**
    * Marks a `thinking` event as a system notice (warning / info / error)
    * rather than model reasoning. System notices become `type: 'system'`

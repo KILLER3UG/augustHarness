@@ -1,21 +1,23 @@
-"""M3: BM25 fact retrieval that actually injects (plan 2026-08-27 §3.4).
+"""Fact retrieval for the memory store.
 
-The old intake snippet listed ~250 tokens of fact *names*, keyword-blind.
-This module indexes the facts store (title + body) with the existing
-pure-Python BM25 and retrieves the top-k entries relevant to the current
-user message, rendered as a plain `Relevant memory:` section that is appended
-to the user message at the tail of the turn context — never into the system
-prompt, so the provider prefix cache stays stable (cache-stability rule, §8 Q14).
+Retrieval is PULL-ONLY. A turn automatically receives the frozen boot memory
+index (built in the workbench and already in the system prompt), the always-in
+``kind='profile'``/``kind='preference'`` lane (:func:`build_profile_block`), and
+the ``new in memory since this chat opened:`` delta
+(:func:`build_memory_delta_block`). Nothing else is auto-injected.
 
-No embeddings/vector store: BM25 over a few hundred facts is exact enough.
-Keyword recall is, however, the WRONG tool for one kind of fact: a profile
-entry about *who the user is* has no lexical overlap with the message that
-should have triggered it, so it competes for a BM25 slot it can never win and
-August "forgets" the user. That kind gets its own always-on lane —
-:func:`build_profile_block` — which reads the SAME cached corpus under the SAME
-visibility/scope rules with no query, and renders first inside
-:func:`build_memory_block`. Still one store, one scope resolver, one block
-cap.
+There is no automatic ranked recall lane. BM25 (:func:`retrieve_relevant_facts`,
+:func:`find_similar_facts`, ``brain_query(store='facts')``) still runs, but only
+inside an explicit model-initiated call. The retired per-turn ``Relevant
+memory:`` tail was a ranker with no precedent: Claude Code / Claude Desktop
+memory is a file directory plus an index the model reads, not a relevance
+ranker. Measured on the real 19-fact store, BM25 returned nothing for "what
+should I set my editor theme to" (the fact says "Prefers dark mode") and ranked
+the wrong fact first for "what am I doing my degree in". The index has no such
+failure mode.
+
+No embeddings/vector store: BM25 over a few hundred facts is exact enough for an
+explicit search.
 
 OQ4 (ruled 2026-09-04): August commits to NO vectors and reserves no schema
 for them — the decisive precedent is the orphaned ``vector_entries`` table
@@ -29,7 +31,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from contextvars import ContextVar
 from typing import Any
 
 from app.json_narrowing import as_int
@@ -38,8 +39,6 @@ from app.services.memory_store.rest import PROFILE_FACT_KIND
 from app.services.sensitive_topics import sensitiveMemoryReason
 from app.services.tools.retrieval import QUERY_STOPWORDS as _QUERY_STOPWORDS
 
-# ~400 tokens at ~4 chars/token.
-_BLOCK_CHAR_CAP = 1600
 # One entry's body never crowds out the rest.
 _ENTRY_CHAR_CAP = 300
 # Queries shorter than this get no BM25 injection (the intake
@@ -49,10 +48,8 @@ _MIN_QUERY_CHARS = 8
 # often-quoted stale facts stop crowding out fresh ones. '' last_used_at
 # (never used) gets NO decay; a fact earns its boost on first use.
 _DECAY_HALF_LIFE_DAYS = 30.0
-# The always-on profile lane's own budget. Deliberately well under HALF of
-# _BLOCK_CHAR_CAP: a large profile set must never starve keyword recall, so
-# ~150 tokens (600 chars) is all the lane may take, leaving ≥1000 chars of
-# the unchanged 1600-char block for BM25 facts + the project tail. This is the
+# The always-on profile lane's own budget: ~150 tokens (600 chars). A large
+# profile set must never crowd the rest of the turn's context, and this is the
 # lane's ONLY bound — a row-count cap would be a second budget, and it would
 # drop facts nobody ever named.
 _PROFILE_CHAR_CAP = 600
@@ -167,13 +164,13 @@ def _load_index(scope: str = 'global') -> dict[str, Any]:
             key = str(r.get('fact_key') or '')
             desc = ' '.join(str(r.get('description') or '').split())
             _sensitiveFlag = as_int(r.get('sensitive'), 0)
-            # Sensitive rows never ride the recall corpus — the tail, the
-            # always-on profile lane and the alias pre-read all read THIS
-            # list, and all three are surfaces an unrelated turn sees. The
-            # durable `sensitive` flag (056) catches rows whose detector
-            # wording has since changed; the live detector catches rows
-            # written before the flag or by a raw write path. Explicit reads
-            # stay unfiltered: a model or human who asks by name gets it.
+            # Sensitive rows never ride the recall corpus — the always-on
+            # profile lane and every explicit search read THIS list, and all of
+            # them are surfaces an unrelated turn sees. The durable
+            # `sensitive` flag (056) catches rows whose detector wording has
+            # since changed; the live detector catches rows written before the
+            # flag or by a raw write path. Explicit reads by key stay
+            # unfiltered: a model or human who asks by name gets it.
             if _sensitiveFlag or sensitiveMemoryReason(title, key, desc, body):
                 continue
             try:
@@ -220,9 +217,9 @@ def _load_index(scope: str = 'global') -> dict[str, Any]:
     except Exception as exc:
         # A transient failure (a malformed row, an unreadable file) must
         # NOT be cached as "there is no memory". The corpus cache is invalidated
-        # only by a fact write, so one bad moment used to disable BM25 recall
+        # only by a fact write, so one bad moment used to disable BM25 search
         # AND the always-on profile lane until the next write — silently, since
-        # build_memory_block just returns ''. Degrade for THIS call and let the
+        # build_profile_block just returns ''. Degrade for THIS call and let the
         # next one rebuild.
         logging.warning('fact index build failed; recall degraded for this call: %s', exc)
         return {'rows': [], 'tokens': [], 'bm25': None}
@@ -230,110 +227,6 @@ def _load_index(scope: str = 'global') -> dict[str, Any]:
     with _lock:
         _caches[scope] = index
     return index
-
-
-# C6: the deterministic pre-read attaches at most this many records. The
-# count bound is the spec's; the byte bound comes from the Tier-1 memory
-# slice at the call site, so no second budget exists for this lane.
-_ALIAS_PREREAD_MAX_FACTS = 2
-# A field shorter than this never matches: a 1-2 char key ("ml", "c") would
-# substring-fire on half of every message and the record it drags in is noise.
-_ALIAS_PREREAD_MIN_FIELD_CHARS = 3
-
-
-def alias_preread_facts(
-    text: str,
-    scope: str = 'global',
-    limit: int = _ALIAS_PREREAD_MAX_FACTS,
-    exclude_keys: frozenset[str] | set[str] | None = None,
-) -> list[dict[str, object]]:
-    """Deterministic alias pre-read (C6) over the cached fact corpus.
-
-    Substring-matches ``text`` against the fields a fact already carries —
-    ``key``, ``title``, ``description`` (facts have NO aliases column and
-    this adds none; a migration would be a schema change for a lane that
-    works on existing fields) — and returns at most ``limit`` rows, newest
-    first, each carrying the ``matched_field`` so the caller's block can be
-    audited. No BM25 and no LLM call, and NO added I/O on the turn path: the
-    per-scope corpus is the same cached index ``build_memory_block`` and the
-    profile lane load for this turn, so a call here is string scans over a
-    warm cache and never delays first token by a round-trip.
-
-    A matched row is dropped when its text trips ``sensitiveMemoryReason`` —
-    there is no ``sensitive`` column to filter on, so the read-time check
-    reuses the write-door detector and catches rows written before that rule
-    or by a door that does not run it. ``exclude_keys`` drops facts the turn
-    already rendered (the BM25 lane, the profile lane), so one fact is never
-    shown twice.
-    """
-    from app.services.sensitive_topics import sensitiveMemoryReason
-
-    q = ' '.join(str(text or '').split()).lower()
-    if not q:
-        return []
-    index = _load_index(scope)
-    skipped = {str(k or '').lower() for k in (exclude_keys or ())}
-    matched: list[dict[str, object]] = []
-    for row in sorted(
-        index.get('rows', []),
-        key=lambda r: str(r.get('updated_at') or ''),
-        reverse=True,
-    ):
-        if len(matched) >= limit:
-            break
-        key = str(row.get('key') or '')
-        if not key or key.lower() in skipped:
-            continue
-        title = str(row.get('title') or '').strip()
-        desc = ' '.join(str(row.get('description') or '').split())
-        body = str(row.get('body') or '').strip()
-        # The key's own segments are the aliases: keys are namespaced by
-        # convention (`bench:gpu-setup`, the `feedback:<topic>` shape
-        # <memory_policy> itself recommends), so a message that names the
-        # subject almost never contains the full key. Each segment (and its
-        # spaced form, for "gpu setup" prose) is an existing field's
-        # derivation, not a new column.
-        keyForms = {key.lower()}
-        for part in key.replace('/', ':').split(':'):
-            p = part.strip().lower()
-            if len(p) >= _ALIAS_PREREAD_MIN_FIELD_CHARS:
-                keyForms.add(p)
-                if ' ' not in p and '-' in p:
-                    keyForms.add(p.replace('-', ' '))
-        hit = next(
-            (
-                f
-                for f in (
-                    key,
-                    title,
-                    desc,
-                    *sorted(keyForms),
-                    *(
-                        str(a)
-                        for a in (row.get('aliases') or [])
-                        if len(str(a).strip()) >= _ALIAS_PREREAD_MIN_FIELD_CHARS
-                    ),
-                )
-                if len(f) >= _ALIAS_PREREAD_MIN_FIELD_CHARS and f.lower() in q
-            ),
-            '',
-        )
-        if not hit:
-            continue
-        if row.get('sensitive') or sensitiveMemoryReason(title, key, desc, body):
-            continue
-        matched.append(
-            {
-                'key': key,
-                'title': title,
-                'description': desc,
-                'body': body,
-                'category': str(row.get('category') or 'general'),
-                'scope': str(row.get('scope') or 'global'),
-                'matched_field': hit,
-            }
-        )
-    return matched
 
 
 def find_similar_facts(
@@ -536,36 +429,6 @@ def _disuse_for(keys: list[str]) -> dict[str, int]:
     return out
 
 
-def record_injection(keys: list[str]) -> int:
-    """Count ONE injection for each key (M-7).
-
-    Called where the block is actually injected into a turn, never where it
-    is merely rendered for a preview. The counter is the negative half of
-    the usage signal: ``use_count`` says a fact was useful, this says a fact
-    was SHOWN and (maybe) never used.
-    """
-    from datetime import datetime, timezone
-
-    uniq = [k for k in dict.fromkeys(keys) if k][:50]
-    if not uniq:
-        return 0
-    touched = 0
-    try:
-        stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-        wanted = set(uniq)
-        for row in record.load_facts():
-            if str(row.get('fact_key') or '') not in wanted:
-                continue
-            row['injected_count'] = as_int(row.get('injected_count'), 0) + 1
-            row['last_injected_at'] = stamp
-            record.write_fact_file(row)
-            touched += 1
-    except Exception as exc:
-        logging.debug('injection counter write failed: %s', exc)
-        return 0
-    return touched
-
-
 def _disuse_constants() -> tuple[float, int, int]:
     """``(weight, cap, rescue)`` of the disuse penalty, from brain-config.
 
@@ -722,7 +585,7 @@ def retrieve_relevant_facts(
     return [dict(row) for _, row in boosted[: max(1, k)]]
 
 
-# ── shared rendering (one shape for both recall lanes) ──────────────────────
+# ── shared rendering (profile lane + delta) ─────────────────────────────────
 
 
 _DISTILLED_SOURCE = 'harness'
@@ -732,65 +595,11 @@ _DISTILLED_MARK = '[distilled] '
 # decides what a query means (see ``tools/retrieval.QUERY_STOPWORDS``).
 
 
-memoryStateOverride: ContextVar[str] = ContextVar('memory_state_override', default='')
-
-_MEMORY_STATE_VALUES = ('', 'on', 'off')
-
-
-def resolve_memory_auto_inject() -> bool:
-    """The one answer to "should the recalled-facts lane ride this turn?".
-
-    Two callers used to each write `bool(cfg.get('memoryAutoInject', False))` and
-    then branch to the same two builders — so any per-run override had to be
-    threaded through both, and the second one (the subagent path) is exactly the
-    kind of reader a first implementation forgets. One resolver, one branch.
-
-    The override wins over the stored config, and an empty override means
-    "inherit", so a process that never sets it behaves exactly as before. This is
-    the same shape as `contextWindowOverride`: the value is resolved from
-    config, not from a session field, so a ContextVar is the only seam that
-    reaches every reader without one.
-    """
-    state = memoryStateOverride.get()
-    if state == 'on':
-        return True
-    if state == 'off':
-        return False
-    from app.services import brain_config_service as _bc
-
-    try:
-        cfg = _bc.getRuntimeConfig()
-    except Exception:
-        cfg = {}
-    if not bool(cfg.get('memoryEnabled', True)):
-        return False
-    return bool(cfg.get('memoryAutoInject', False))
-
-
-def build_memory_context_for_turn(
-    query: str,
-    *,
-    workspace: str = '',
-    scope: str = 'global',
-) -> tuple[str, list[tuple[str, str]]]:
-    """Render the per-turn memory tail under the resolved gate.
-
-    `Relevant memory:` (BM25) when auto-inject is on; the always-in profile lane
-    when it is off. This is the branch both readers used to duplicate.
-    """
-    if resolve_memory_auto_inject():
-        return build_memory_block(
-            (query or '').strip(), workspace=workspace, scope=scope, record=False
-        )
-    block, rows = build_profile_memory_block(scope=scope)
-    return block, [(str(r.get('key') or ''), str(r.get('title') or '')) for r in rows]
-
-
 def _fact_line(row: dict[str, object], *, entry_cap: int = _ENTRY_CHAR_CAP) -> str:
     """Render one corpus row as its ``- title: body`` line.
 
-    Used by BOTH lanes (profile + BM25) so the two can never drift in shape,
-    and so one long body never crowds out its neighbours.
+    Used by BOTH automatic lanes (profile + delta) so the two can never drift
+    in shape, and so one long body never crowds out its neighbours.
 
     Marking is skipped when a person has confirmed the row. `verified_at` is set
     by exactly three human/UI doors and was read by NOTHING — the column existed,
@@ -821,20 +630,6 @@ def _fact_line(row: dict[str, object], *, entry_cap: int = _ENTRY_CHAR_CAP) -> s
 def _row_identity(row: dict[str, object]) -> tuple[str, str]:
     """``(key, title)`` — the pair usage feedback and the receipt both speak."""
     return (str(row.get('key') or ''), str(row.get('title') or '').strip())
-
-
-def _recalled_row(row: dict[str, object]) -> dict[str, object]:
-    """The chat-UI ``recalledMemories`` shape for one injected fact row.
-
-    Same four keys the BM25 lane has always emitted (no new field: the
-    transcript chip and the recall metrics read these by name).
-    """
-    return {
-        'key': str(row.get('key')),
-        'category': str(row.get('category') or 'general'),
-        'snippet': str(row.get('body') or '')[:120],
-        'scope': str(row.get('scope') or 'global'),
-    }
 
 
 def _fit_lines(
@@ -931,20 +726,16 @@ def build_profile_block(
     ``global ∪ bot:<id>`` visibility, no second store, no second scope
     resolver — ordered by the existing recency/usage signals
     (:func:`_rank_profile_rows`) and bounded by its own explicit
-    ``budget_chars``, which is deliberately far below ``_BLOCK_CHAR_CAP`` so
-    the lane can never starve keyword recall. A profile fact that does not fit
-    is NAMED in the returned text, never silently dropped — and when a budget
-    is too small to carry both the bound and that receipt, the receipt wins
-    (an honest over-long lane beats a tidy one that hides facts).
+    ``budget_chars``. A profile fact that does not fit is NAMED in the returned
+    text, never silently dropped — and when a budget is too small to carry both
+    the bound and that receipt, the receipt wins (an honest over-long lane
+    beats a tidy one that hides facts).
 
     Returns ``(lane_text, rows)`` where ``rows`` are the structured corpus
     entries actually included (``key``/``title``/``body``/``kind``/
     ``category``/``scope``), so the caller can fold them into its own
-    injected/usage/recalled lists without re-deriving anything. ``('', [])``
-    when the store holds no profile facts.
-
-    Usable on its own: a caller that keeps per-turn keyword auto-injection off
-    can still carry the user profile every turn.
+    injected/usage lists without re-deriving anything. ``('', [])`` when the
+    store holds no profile facts.
     """
     index = _load_index(scope)
     corpus = index.get('rows') or []
@@ -988,12 +779,10 @@ def build_profile_memory_block(
 ) -> tuple[str, list[dict[str, object]]]:
     """The profile lane as a ready-to-inject tail section.
 
-    ``build_profile_block`` returns lane *content*, because
-    :func:`build_memory_block` composes it inside a section it heads itself. A
-    caller that skips keyword auto-injection and injects the lane alone needs
-    the same plain header, or the model reads durable memory as part of the
-    user's sentence. One place defines that header; both off-gate callers use
-    it.
+    ``build_profile_block`` returns lane *content*; this wraps it in the plain
+    header a standalone tail section needs, so the model reads durable memory as
+    its own section rather than as part of the user's sentence. One place
+    defines that header.
     """
     # The tail is a plain section, not an XML envelope: no model is trained on
     # `<memory>`, so the tag bought tokens and could invite the model to read
@@ -1003,187 +792,6 @@ def build_profile_memory_block(
     if not lane:
         return '', rows
     return f'Relevant memory:\n{lane}', rows
-
-
-def build_memory_block(
-    query: str,
-    k: int = 5,
-    workspace: str = '',
-    recalled: list[dict[str, object]] | None = None,
-    prior_turn: str = '',
-    scope: str = 'global',
-    *,
-    record: bool = True,
-    exclude_keys: set[str] | None = None,
-) -> tuple[str, list[tuple[str, str]]]:
-    """Render the memory injection section for one turn.
-
-    Returns ``(block, injected)`` where ``injected`` is a list of
-    ``(fact_key, title)`` pairs actually included — the turn-end usage
-    feedback scans the assistant reply for these. Empty block when nothing
-    relevant exists or the query is too short (the always-on profile lane is
-    the one exception: it ships regardless of the query).
-
-    Part 17 Phase A: with a ``workspace`` the block also carries the
-    project's md-file entries as a tagged `project:` section (one tail,
-    several tagged sections). Project entries do NOT join ``injected``
-    (they have no facts-store key for usage feedback). When ``recalled``
-    is a list, the rows actually injected (global + project) are appended
-    to it as ``{key, category, snippet, scope}`` dicts — the chat UI's
-    recalledMemories event payload (Phase A.4/C-13).
-
-    Phase D item 2: ``prior_turn`` (the previous user message) expands the
-    facts query — see :func:`retrieve_relevant_facts`.
-
-    M-2 (Part 21): ``scope`` selects the facts corpus union for this turn —
-    a Bot Chat passes ``'bot:<agentId>'`` so its memory section carries
-    global ∪ own notes; regular sessions keep 'global'.
-
-    Profile lane (2026-09-15): :func:`build_profile_block` is called first and
-    its always-included ``kind='profile'`` section renders at the TOP of the
-    block, before the BM25 matches — a fact about who the user is is recalled
-    with zero lexical overlap with the message. The lane pays for itself out of
-    the same unchanged ``_BLOCK_CHAR_CAP``, a fact it already shipped is never
-    rendered twice, and facts dropped for budget are NAMED in a bounded
-    ``recall partial:`` line instead of vanishing. With a corpus that holds no
-    profile facts the output is what it has always been.
-
-    Budget honesty note: the per-turn keyword auto-injection is the caller's
-    gate (``memoryAutoInject``); a caller that keeps it off can still render
-    the always-on lane by calling :func:`build_profile_block` directly.
-
-    M-7: ``record`` counts ONE injection for each fact this block actually
-    shipped, which is the negative half of the usage signal (a fact that is
-    injected again and again and never quoted must sink). A caller that is
-    only RENDERING the block (the Settings preview) passes ``record=False``:
-    a preview is not an injection, and counting it would penalise facts for
-    being looked at.
-
-    Only the KEYWORD lane is counted. The profile lane is injected on every
-    turn by design and is not ranked by BM25 (it is excluded from the
-    corpus), so a counter on it would measure "always shown" and mean
-    nothing.
-    """
-    profileLane, profileRows = build_profile_block(scope=scope)
-    laneKeys = {str(r.get('key') or '') for r in profileRows}
-    # Exclude the always-in lane from the CORPUS, not from the result. Filtering
-    # after the fact meant every profile fact that ranked into the top k
-    # consumed a slot and was then thrown away, so the keyword lane received
-    # k minus however many profile facts happened to match. The richer a user's
-    # profile set grew, the thinner their keyword recall became — and nothing
-    # reported it, because the budget was spent on a lane that is injected
-    # regardless.
-    facts = retrieve_relevant_facts(
-        query,
-        k=k,
-        prior_turn=prior_turn,
-        scope=scope,
-        # `exclude_keys` is the told-once lane: a fact this session already
-        # rendered does not need the bytes again — the model still has it in
-        # the transcript. The caller resets the set when a compaction rewrites
-        # that transcript.
-        exclude_keys=laneKeys | {str(x) for x in (exclude_keys or ())},
-    )
-    projectSection = ''
-    projectRows: list[dict[str, object]] = []
-    if workspace:
-        try:
-            from app.services import project_memory as _pm
-
-            # ONE search pass — the ranked entries feed both the
-            # tail section and the recalled rows (they used to re-run the
-            # identical md-read + BM25 scan twice per turn).
-            ranked = _pm.search_entries(workspace, query, k=3)
-            projectSection = _pm.build_project_memory_tail(
-                workspace, query, ranked_entries=ranked
-            )
-            if projectSection and recalled is not None:
-                for e in ranked:
-                    projectRows.append(
-                        {
-                            'key': f'project:{e.title}',
-                            'category': 'project',
-                            'snippet': e.body[:120],
-                            'scope': 'project',
-                        }
-                    )
-        except Exception:
-            logging.debug('project memory tail build failed', exc_info=True)
-    if not facts and not projectSection and not profileLane:
-        return '', []
-    lines: list[str] = ['Relevant memory:']
-    # One-line key index up front (Claude listing pattern): the model can
-    # target remember/forget by exact key without a list_facts round-trip.
-    keys = [
-        key
-        for key in [str(r.get('key') or '') for r in profileRows]
-        + [str(f.get('key') or '') for f in facts]
-        if key.strip()
-    ]
-    if keys:
-        lines.append('index: [' + ', '.join(keys) + ']')
-    # The lane renders FIRST, then keyword recall after it — and it is charged
-    # against the same (unchanged) block cap, so a big profile set costs the
-    # BM25 lane only its own _PROFILE_CHAR_CAP slice, never the whole block.
-    budget = _BLOCK_CHAR_CAP - (len(profileLane) + 1 if profileLane else 0)
-    factLines, includedFacts, omittedFacts = _fit_lines(facts, budget)
-    if omittedFacts:
-        # Re-pack once, reserving the receipt's FULL cap (unlike the lane,
-        # which only reserves its minimum): the block has room to spare, and
-        # paying up front keeps the whole memory section inside the
-        # unchanged _BLOCK_CHAR_CAP.
-        factLines, includedFacts, omittedFacts = _fit_lines(
-            facts, max(0, budget - _OMITTED_RECEIPT_CHAR_CAP)
-        )
-    budget -= sum(len(line) for line in factLines)
-    if profileLane:
-        lines.append(profileLane)
-    lines.extend(factLines)
-    injected: list[tuple[str, str]] = [_row_identity(r) for r in profileRows]
-    injected.extend(_row_identity(f) for f in includedFacts)
-    if record and includedFacts:
-        # M-7: the injection counter, for the ranked lane only.
-        try:
-            record_injection([str(f.get('key') or '') for f in includedFacts])
-        except Exception:
-            logging.debug('injection counter write failed', exc_info=True)
-    if projectSection and (
-        budget - len(projectSection) >= 0 or (not factLines and not profileLane)
-    ):
-        # Project entries share the remaining tail budget; a section that
-        # would overflow is dropped whole (never half-truncated).
-        lines.append(projectSection)
-        budget -= len(projectSection)
-    if not factLines and not projectSection and not profileLane:
-        return '', []
-    if omittedFacts:
-        # Budget honesty (the 1600 cap is unchanged — say what it cost, and
-        # pay for the receipt out of it): without this line the model reads a
-        # partial recall as the whole store and concludes the missing facts
-        # do not exist.
-        lines.append(
-            _omitted_receipt(omittedFacts, _OMITTED_RECEIPT_CHAR_CAP, label='recall partial')
-        )
-    lines.append(
-        'These are stored facts relevant to this message; cite them, update one by passing its key '
-        'to remember, or remove a stale one with forget.'
-    )
-    if recalled is not None:
-        # Lane rows first (they render first). Bounded to HALF the recall width,
-        # not all of it: bounding profile rows at k while filling the same k+3
-        # list with them first left the keyword lane three rows no matter how
-        # many facts it had — the same starvation the corpus-level exclusion
-        # removed, one layer over in the metrics/UI list. Half of k is a floor
-        # for the keyword lane that no profile set can eat, and with no profile
-        # facts present the output is unchanged.
-        for row in profileRows[: max(1, int(k) // 2)]:
-            recalled.append(_recalled_row(row))
-        recalled.extend(projectRows)
-        for f in facts:
-            if len(recalled) >= k + 3:
-                break
-            recalled.append(_recalled_row(f))
-    return '\n'.join(lines), injected
 
 
 def build_memory_delta_block(
@@ -1300,21 +908,25 @@ def _sqlite_utc(raw: str) -> str:
 
 
 def memory_context_preview(
-    query: str = '', workspace: str = '', scope: str = 'global'
+    query: str = '',
+    workspace: str = '',
+    scope: str = 'global',
+    session_started_at: str = '',
 ) -> dict[str, object]:
-    """Render the durable-memory text a turn receives for one query.
+    """Render the durable-memory text a turn receives.
 
     The Memory settings page lists stored ROWS; this returns the rendered
     SECTION — the same bytes :mod:`app.services.workbench.workbench` injects,
-    produced by the same builders under the same gates (``memoryAutoInject``
-    picks the relevance section vs the profile lane alone). Re-formatting rows
+    produced by the same builders. Retrieval is pull-only now, so the automatic
+    turn text is the always-in profile lane plus the `new in memory since this
+    chat opened` delta; there is no ranked tail to preview. Re-formatting rows
     into a prettier view here would make Settings a second authority on what
     the model sees, which is the one thing a preview must not be.
 
-    Deliberately absent: the per-session `new in memory since this chat opened`
-    lane. It is a projection over writes made since a session opened, and a
-    preview has no session — the same reason the boot index below is described
-    as what a NEW session starts with.
+    The delta is a projection over writes made since a session opened, and a
+    preview has no session unless the caller passes ``session_started_at``. With
+    the default empty stamp :func:`build_memory_delta_block` refuses (it must
+    not dump the whole store), so the preview shows the profile lane alone.
 
     ``bootIndex`` and ``projectBlock`` are the session-start pair. Both are
     frozen per session in a live chat, so this is what a NEW session would
@@ -1322,12 +934,6 @@ def memory_context_preview(
     because the tool-gating that suppresses the index lives in one other place
     (``workbench`` builds it only when the memory read tools are offered).
     """
-    autoInject = resolve_memory_auto_inject()
-    # Still read the config directly for the one value this preview REPORTS
-    # rather than gates on. Removing it with the auto-inject branch left these
-    # two references to `cfg` unbound — mypy caught it, and this function is a
-    # preview surface, so a runtime NameError here would have shown up as a
-    # blank panel rather than a crash.
     from app.services import brain_config_service as _bc
 
     try:
@@ -1335,17 +941,17 @@ def memory_context_preview(
     except Exception:
         cfg = {}
 
-    turnBlock: str
-    injected: list[tuple[str, str]]
-    if autoInject:
-        turnBlock, injected = build_memory_block(
-            (query or '').strip(), workspace=workspace, scope=scope, record=False
-        )
-    else:
-        turnBlock, laneRows = build_profile_memory_block(scope=scope)
-        injected = [
-            (str(r.get('key') or ''), str(r.get('title') or '')) for r in laneRows
-        ]
+    turnBlock, laneRows = build_profile_memory_block(scope=scope)
+    injected = [
+        (str(r.get('key') or ''), str(r.get('title') or '')) for r in laneRows
+    ]
+    deltaBlock = build_memory_delta_block(
+        session_started_at=session_started_at,
+        scope=scope,
+        exclude_keys={k for k, _ in injected},
+    )
+    if deltaBlock:
+        turnBlock = f'{turnBlock}\n\n{deltaBlock}' if turnBlock else deltaBlock
 
     bootIndex = ''
     projectBlock = ''
@@ -1367,122 +973,9 @@ def memory_context_preview(
         'query': (query or '').strip(),
         'workspace': workspace,
         'scope': scope,
-        'autoInject': autoInject,
         'modelMemoryRead': bool(cfg.get('modelMemoryRead', True)),
         'turnBlock': turnBlock,
         'bootIndex': bootIndex,
         'projectBlock': projectBlock,
         'injectedFacts': [{'key': k, 'title': t} for k, t in injected if k or t],
-        'recallQuality': recall_quality(days=30),
-    }
-
-
-# ── recall quality (roadmap #13) ────────────────────────────────────────────
-
-
-def recall_quality(days: int = 30) -> dict[str, object]:
-    """precision@k for the keyword lane, from data the store already writes.
-
-    Every constant in this module — ``k=5``, the 0.05 boost weight, the 0.5
-    prior-turn weight, ``_DECAY_HALF_LIFE_DAYS``, the char caps — was tuned by
-    intuition, because nothing anywhere recorded whether a recalled fact was the
-    one the model then acted on. The raw material has been written all along:
-    migration 050 persists ``facts_injected`` per turn, and the ``facts`` table
-    has carried ``use_count``/``last_used_at`` for longer. Neither was read for
-    evaluation.
-
-    A fact counts as a HIT when the model came back to it after it was injected
-    — its ``use_count`` advanced past the usage recorded at injection time, or
-    ``last_used_at`` is newer than the turn. That is an approximation and is
-    labelled as one: it credits a fact the model re-recalled or wrote, which is
-    the same signal the usage boost already learns from, so the two are
-    consistent rather than independent. The number is a floor on recall
-    quality, not a proof of it.
-
-    ``null`` for a value with no denominator, never 0 — "no measurements" and
-    "measured, no hits" are different facts and only the second may move a
-    constant.
-    """
-    # `int(days or 30)` would turn an explicit 0 into 30 — the `value or
-    # default` trap this repo already has a rule about. 0 is a request, and the
-    # clamp turns it into the smallest legal window.
-    windowDays = max(1, min(int(days) if days is not None else 30, 90))
-    empty: dict[str, object] = {
-        'days': windowDays,
-        'turns': 0,
-        'injected': 0,
-        'hits': None,
-        'precisionAtK': None,
-        'byFact': [],
-    }
-    try:
-        from app.services.memory_store import tables
-
-        outcome_rows = tables.ledger_rows(tables.turn_outcomes_file())
-    except Exception as exc:
-        logging.debug('recall quality aggregate failed: %s', exc)
-        return empty
-
-    rows: list[dict[str, object]] = []
-    from datetime import datetime, timedelta, timezone
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=windowDays)
-    for r in outcome_rows:
-        # The turn-outcomes ledger is the transcript domain's runtime home;
-        # this read is tolerant of both key spellings (the one-time SQLite
-        # import writes the camelCase wire rows, the runtime writer may
-        # carry either).
-        ts_raw = str(r.get('ts') or r.get('createdAt') or r.get('created_at') or '')
-        injected_raw = r.get('factsInjected', r.get('facts_injected'))
-        if not ts_raw:
-            continue
-        try:
-            stamp = datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            continue
-        if stamp < cutoff:
-            continue
-        if injected_raw in (None, ''):
-            continue
-        rows.append({'facts_injected': injected_raw})
-
-    keys: list[str] = []
-    for r in rows:
-        raw = r['facts_injected']
-        try:
-            parsed = json.loads(str(raw)) if isinstance(raw, str) else raw
-        except (TypeError, ValueError):
-            continue
-        if isinstance(parsed, list):
-            keys.extend(str(k) for k in parsed if str(k or '').strip())
-    keys = list(dict.fromkeys(keys))  # a key injected twice is one key to judge
-    if not keys:
-        return empty
-
-    try:
-        used = {
-            key: (as_int(row.get('use_count'), 0), str(row.get('last_used_at') or ''))
-            for key, row in _rows_by_key().items()
-            if key in set(keys)
-        }
-    except Exception as exc:
-        logging.debug('recall quality usage fetch failed: %s', exc)
-        return empty
-    # Present in the corpus at all. A key that has since been forgotten is
-    # neither a hit nor a miss we can judge — it left the index entirely.
-    judged = [k for k in keys if k in used]
-    hits = [k for k in judged if used[k][0] > 0]
-    nJudged = len(judged)
-    return {
-        'days': windowDays,
-        'turns': len(rows),
-        'injected': len(keys),
-        'hits': len(hits) if nJudged else None,
-        'precisionAtK': round(len(hits) / nJudged, 3) if nJudged else None,
-        'byFact': [
-            {'key': k, 'useCount': used[k][0], 'hit': k in set(hits)}
-            for k in sorted(judged, key=lambda k: -used[k][0])[:20]
-        ],
     }

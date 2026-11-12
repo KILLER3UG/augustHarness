@@ -36,28 +36,29 @@ with `offset`/`total`/`hasMore` and `include_retired`), `forget`, and
 `brain_query` (including the `facts` and `memory` stores). All are core tools
 and in the bare-tool allow list.
 
-**Three lanes, not one mechanism.**
+**Two automatic lanes, plus pull-only doors.**
 
-- **Profile** — `kind='profile'` facts, always rendered first, inside a
-  ~600-char budget, even when automatic recall is off.
+- **Profile** — `kind='profile'` and `kind='preference'` facts, always rendered
+  first, inside a ~600-char budget. No keyword match and no setting to arm; this
+  is why an identity fact is never at the mercy of a query.
 - **Delta** — facts whose `updated_at` is newer than the session's creation
   stamp, appended to the tail as `new in memory since this chat opened:`.
-- **Recall** — BM25 over `facts`, gated by `memoryAutoInject` (**armed by
-  default** since 2026-10-24; an explicit stored `false` wins). A fact dropped
-  for budget is named in a `recall partial:` line.
+- **Search** — pull-only: `brain_query(store='facts')` runs the ranked search and
+  `list_facts` pages the record. There is no per-turn ranked tail and no
+  `memoryAutoInject` key (deleted from the brain config). A fact dropped for
+  budget is named in a `recall partial:` line.
 
-**Told once, and re-told only when the context is rebuilt.** The boot memory
-index is frozen per session, and the per-turn tails skip anything this session
-already rendered (`_seen_memory_keys`, `_seen_skill_hints`) — the bytes are still
-in the transcript, so repeating them spends context for nothing. A compaction
-rewrites the transcript; both the frozen indexes and the seen-sets are cleared
-there, so the next build re-reads. A fresh session and a compaction are the only
-two moments re-telling is right.
+**Nothing is de-duplicated across turns.** The automatic lanes are request-scoped:
+they are patched onto the turn's messages and `turn_close` strips the patched
+bytes, so they are not written to the transcript. A "told once" set that outlives
+the turn would suppress content that exists nowhere — not in the transcript, not
+in the next tail. The dedup that survives is inside one build, and nothing is
+carried across turns.
 
 **The boot index is scoped.** `memoryIndexCategories` (default
 `user,feedback,project,reference`) limits which fact categories the index lists.
 A `general` fact stays reachable through `list_facts(category=…)`, `brain_query`
-and per-turn recall, which this key does not filter. The selection itself keeps
+and an explicit search, which this key does not filter. The selection itself keeps
 its existing shape: 40 newest, sensitive and `person` rows excluded.
 
 **Write rules.**
@@ -135,23 +136,16 @@ hint-only line when the user's message names a skill.
 | Subagent memory reads are blocked | Product ruling | Stricter than the spec's read-only; opening reads is a one-line deny-set change and an owner decision. |
 | Mirror has no ingest-back, no per-scope mirrors, no watch mode | Deliberate | The mirror is a view, not a second write path. |
 | Save-chip usage is unmeasured | Unknown | The chip shipped; whether users reach for it has not been measured. |
-| `_recalled_row` emits four keys only (`key`, `category`, `snippet`, `scope`) | Limit | The chat chip cannot show which lane matched or when the fact was last injected. |
 
 ## 6. The UX backlog (next work)
 
 These are product improvements, not code defects, except where noted.
 
-1. **Make recall legible.** The chip should say which lane matched (profile,
-   delta, recall, alias), which field matched, and when the fact was last
-   injected. `matched_field` already exists on the alias path;
-   `injected_count` / `last_injected_at` exist on the row; `_recalled_row`
-   intentionally emits only four keys, so this is a contract addition with a
-   migration-free wire change.
-2. **Make a skill's state visible.** The skill detail should show the full
+1. **Make a skill's state visible.** The skill detail should show the full
    trigger, usage count, last used, version history, and — when a skill is
    hidden — the exact gate that hid it (platform, missing tool, disabled,
    retired). A silent absence reads as a bug.
-3. **`list_skills` renders the full trigger — DONE (2026-10-29).** The 60-char
+2. **`list_skills` renders the full trigger — DONE (2026-10-29).** The 60-char
    cut deleted the "when NOT to fire" half of the description, so the listing
    advertised the skill while hiding the rule for using it.
 4. **Diff an install against an existing skill.** The preview/confirm door

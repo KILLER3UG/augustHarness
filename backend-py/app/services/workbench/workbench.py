@@ -807,7 +807,6 @@ def buildSystemPrompt(
     """
     from app.services.workbench import prompt_segments_cache as _seg_cache
 
-    session._last_recalled_memories = None
     session._last_context_snapshot = None
     is_worker = int(getattr(session, 'subagent_depth', 0) or 0) > 0
     # One budget for both Tier-1 index surfaces (skills name index + memory boot
@@ -998,33 +997,18 @@ def buildSystemPrompt(
             'stores: facts=durable memory (titled entries), memory=kv notes, timeline=episodic, '
             'sessions=past chats.'
         )
-        try:
-            from app.services import brain_config_service as _bc
-
-            # Per-turn auto-injection is its OWN flag (default off): the
-            # relevance-matched memory tail rides the latest message only
-            # when set. The boot index below is NOT gated by it (ZCode-parity
-            # 044: the memory index is always in context at session start,
-            # like this environment's MEMORY.md); modelMemoryRead still gates
-            # the read tool itself, which is what advertises memoryTools.
-            memReadOn = bool(_bc.getRuntimeConfig().get('memoryAutoInject', False))
-        except Exception:
-            memReadOn = False
-        if memReadOn:
-            memParts = [
-                '- Memory: relevant stored facts auto-inject each turn (a "Relevant memory:" '
-                'section appended to the latest user message); pull deeper context on demand via '
-                + ', '.join(memoryTools) + '. ' + storeHint
-            ]
-        else:
-            # memoryAutoInject off: no per-turn memory tail — the model
-            # pulls relevant facts on demand via the read tools (gated by
-            # modelMemoryRead, independent of auto-injection). The boot index
-            # still names what exists.
-            memParts = [
-                '- Memory: auto-injection is OFF (memoryAutoInject); pull stored context '
-                'on demand via ' + ', '.join(memoryTools) + '. ' + storeHint
-            ]
+        # Retrieval is pull-only: the boot index below is always in context, so
+        # the model sees what exists and fetches detail through the read tools.
+        # There is no per-turn ranked recall tail — an automatic ranker has no
+        # precedent in Claude Code / Claude Desktop memory (a directory plus an
+        # index), and BM25 missed obvious matches on the real store. Recall runs
+        # only inside an explicit call.
+        memParts = [
+            '- Memory: the index below lists what is stored; pull deeper context on demand via '
+            + ', '.join(memoryTools)
+            + '. '
+            + storeHint
+        ]
         # Boot index (B3, ZCode-parity 044): one line per stored fact —
         # title (key) — recall hook — so the model always knows what it
         # remembers and can read/update/forget by key without a list_facts
@@ -2669,8 +2653,7 @@ def _coreToolNames() -> set[str]:
     counterfactual half of the decision ledger, and a tool definition costs
     prompt bytes on every turn. Promoting it into the core set is opt-in via
     ``decisionJournal`` (default off), because that changes what a provider
-    sees and therefore the prefix cache — the same reason the memory tail's
-    ``memoryAutoInject`` default exists.
+    sees and therefore the prefix cache.
     """
     from app.services.tools.model_tools import HARNESS_CORE_TOOLS
 
@@ -3347,10 +3330,23 @@ async def _sendWorkbenchMessageStreamImpl(
             currentMessages = list(session.messages)
     except Exception:
         currentMessages = list(session.messages)
-    # M3 memory injection + Tier-3 relevant skills (M6 item 6):
-    # BM25-retrieve the facts and skill descriptions relevant to the current
-    # user message and append them to it — the tail of the turn context. Never
-    # in the SYSTEM prompt (the provider prefix cache stays stable, Q14).
+    # Memory lanes + Tier-3 relevant skills (M6 item 6): the always-in profile
+    # lane, the new-since-session-opened delta, and the skill descriptions
+    # relevant to the current user message are appended to the latest user
+    # message — the tail of the turn context. Never in the SYSTEM prompt (the
+    # provider prefix cache stays stable, Q14).
+    #
+    # Retrieval is PULL-ONLY. A turn automatically receives the frozen boot
+    # memory index (already in the system prompt), the always-in
+    # profile/preference lane, and the delta — nothing else. The automatic BM25
+    # "Relevant memory:" tail is gone: Claude Code / Claude Desktop memory has
+    # no ranker (a file directory plus an index the model reads), and BM25
+    # missed real matches on the 19-fact store ("what should I set my editor
+    # theme to" returned nothing for the fact "Prefers dark mode"; "what am I
+    # doing my degree in" ranked the wrong fact first). Ranking runs only inside
+    # an explicit list_facts / brain_query / retrieve_relevant_facts /
+    # find_similar_facts call.
+    #
     # 5.4 honesty note: the tail-patched last-user message IS
     # persisted into history by the step-boundary barrier flush (it rides an
     # older message, so it stays cache-stable), but each turn re-injects a
@@ -3374,29 +3370,18 @@ async def _sendWorkbenchMessageStreamImpl(
         from app.services import session_scope as _session_scope
         from app.services.capabilities_prompt import pinned_skill_token, render_relevant_skills
         from app.services.memory_store.fact_retrieval import (
-            build_memory_block,
             build_memory_delta_block,
             build_profile_memory_block,
-            resolve_memory_auto_inject,
         )
 
         try:
             from app.services import brain_config_service as _bc
 
-            # Per-turn recall is gated by `memoryAutoInject`, armed by default
-            # since 2026-10-24 (it shipped off). Resolved through the one helper
-            # rather than read off the config here: this line used to call
-            # `getRuntimeConfig().get('memoryAutoInject')` directly, so a per-run
-            # override set anywhere else could not reach the main turn — the
-            # `--memory-state off` arm measured identical prompts for exactly
-            # this reason. One resolver, three readers.
-            _memReadOn = resolve_memory_auto_inject()
+            # Master memory switch only: off means no profile lane and no delta.
+            # The ranked recall tail it used to gate is gone.
             _memEnabled = bool(_bc.getRuntimeConfig().get('memoryEnabled', True))
         except Exception:
-            _memReadOn = False
             _memEnabled = True
-        if not _memEnabled:
-            _memReadOn = False
         _lastUserIdx = next(
             (
                 i
@@ -3414,177 +3399,25 @@ async def _sendWorkbenchMessageStreamImpl(
             # it would silently never fire on exactly the turns that carry
             # the most context.
             _aliasText = _tc.messageText(_userMsg.get('content'))
-            # Phase D item 2: query expansion — the previous user
-            # turn joins the facts query at half weight so follow-ups
-            # ("and the second one?") still recall their antecedent fact.
-            _priorTurn = ''
-            for _pi in range(_lastUserIdx - 1, -1, -1):
-                _pm2 = currentMessages[_pi]
-                if isinstance(_pm2, dict) and _pm2.get('role') == 'user':
-                    _priorTurn = as_str(_pm2.get('content'), '')
-                    break
-            # M-2: one scope resolution per turn feeds both the
-            # facts corpus union and the skills catalogue (bot private root).
+            # M-2: one scope resolution per turn feeds the facts corpus union
+            # and the skills catalogue (bot private root).
             _turnScope = _session_scope.resolve_scope(session)
-            # With a non-home workspace the memory tail
-            # also carries the project's md-file entries (tagged section).
-            # Hoisted above the read gate so the skills block (which shares
-            # the workspace scope) can't NameError when memory read is off.
+            # Skills share the workspace scope; hoisted above the memory gate so
+            # the skills block can't NameError when memory is off.
             _wsForTail = session.workspacePath if session.workspacePath else ''
             _injectedFacts: list[tuple[str, str]]
             if not _memEnabled:
-                # The master switch: off means no recall, no profile lane and
-                # no new-fact delta — the model sees no memory at all.
+                # The master switch: off means no profile lane and no new-fact
+                # delta — the model sees no automatic memory at all.
                 _memoryBlock, _injectedFacts = '', []
-            elif _memReadOn:
-                _recalledRows: list[dict[str, object]] = []
-                # Told once — PER TURN. The exclusion stops the same fact
-                # being rendered twice inside one turn (the relevant-skills
-                # block later in this build draws the same store). It must not
-                # outlive the turn: the memory tail is request-scoped and
-                # turn_close strips the patched bytes at close, so a
-                # session-scoped set suppressed re-telling content that was
-                # in neither the transcript nor the next tail — the fact was
-                # simply gone until a compaction or restart cleared the set.
-                # Nothing is carried across turns anymore; the renderer's
-                # exclude_keys stays for the lanes that dedup WITHIN one
-                # build (the delta and profile lanes below).
-                _memoryBlock, _injectedFacts = build_memory_block(
-                    _userText,
-                    workspace=_wsForTail,
-                    recalled=_recalledRows,
-                    prior_turn=_priorTurn,
-                    # M-2: Bot home chats recall global ∪ own notes;
-                    # every other session stays on the plain global corpus.
-                    scope=_turnScope,
-                )
-                # C6 deterministic alias pre-read: substring-match the message
-                # against the fields a fact already carries (key/title/
-                # description — there is no aliases column), riding the same
-                # cached corpus the BM25 lane just loaded, so it adds no I/O
-                # and no LLM call. BM25 stays the ranker; this lane catches
-                # the exact name the user typed that tokenization splits or
-                # scores below the gate. At most 2 records, sensitive-shaped
-                # rows skipped at read time, and every attached byte draws on
-                # the SAME Tier-1 memory slice that budgets the boot index —
-                # no second budget, or A1 would be decorative. Gated by
-                # memoryAutoInject like the lane beside it: a user who turned
-                # per-turn injection off opted out of tail memory entirely.
-                try:
-                    from app.services.memory_store.fact_retrieval import (
-                        alias_preread_facts,
-                    )
-
-                    _aliasRows = alias_preread_facts(
-                        _aliasText,
-                        scope=_turnScope,
-                        exclude_keys={str(k) for k, _ in (_injectedFacts or [])},
-                    )
-                except Exception:
-                    logger.debug('alias pre-read failed', exc_info=True)
-                    _aliasRows = []
-                if _aliasRows:
-                    _aliasLines = ['Aliased memory (deterministic match, not search):']
-                    _aliasBudget = currentIndexBudget()[0]
-                    for _ar in _aliasRows:
-                        _label = str(_ar.get('title') or '') or str(_ar.get('key') or '')
-                        _body = str(_ar.get('body') or '')
-                        _arKey = str(_ar.get('key') or '')
-                        _line = f'- {_label} ({_arKey})'
-                        if _body:
-                            _line += f' — {_body}'
-                        if _aliasBudget - len(_line) < 0:
-                            break
-                        _aliasBudget -= len(_line) + 1
-                        _aliasLines.append(_line)
-                        _recalledRows.append(
-                            {
-                                'key': str(_ar.get('key') or ''),
-                                'category': str(_ar.get('category') or 'general'),
-                                'snippet': _body[:120],
-                                'scope': str(_ar.get('scope') or 'global'),
-                            }
-                        )
-                        _injectedFacts.append(
-                            (str(_ar.get('key') or ''), str(_ar.get('title') or ''))
-                        )
-                    if len(_aliasLines) > 1:
-                        _aliasBlock = '\n'.join(_aliasLines)
-                        _memoryBlock = (
-                            f'{_memoryBlock}\n\n{_aliasBlock}'
-                            if _memoryBlock
-                            else _aliasBlock
-                        )
-                # Phase D item 4: recall metrics — one internal_state
-                # counter row per turn (before/after instrument for every
-                # retrieval change). Best-effort, never blocking.
-                try:
-                    from app.services.memory_store.kv import set_internal_state
-
-                    _metrics = {
-                        'globalFactsRecalled': sum(
-                            1 for r in _recalledRows if r.get('scope') == 'global'
-                        ),
-                        'projectEntriesRecalled': sum(
-                            1 for r in _recalledRows if r.get('scope') == 'project'
-                        ),
-                        'memoryBlockChars': len(_memoryBlock or ''),
-                        'skillsBlockChars': 0,
-                    }
-                    set_internal_state(
-                        'memory:recall:last_turn', json.dumps(_metrics)
-                    )
-                    try:
-                        from app.services.memory_store.kv import get_internal_state
-
-                        _totals = json.loads(
-                            str(get_internal_state('memory:recall:totals') or '{}')
-                        )
-                        if isinstance(_totals, dict):
-                            _totals['turns'] = int(_totals.get('turns') or 0) + 1
-                            _totals['globalFactsRecalled'] = int(
-                                _totals.get('globalFactsRecalled') or 0
-                            ) + _metrics['globalFactsRecalled']
-                            _totals['projectEntriesRecalled'] = int(
-                                _totals.get('projectEntriesRecalled') or 0
-                            ) + _metrics['projectEntriesRecalled']
-                            set_internal_state(
-                                'memory:recall:totals', json.dumps(_totals)
-                            )
-                    except Exception:
-                        pass
-                except Exception:
-                    logger.debug('recall metrics write failed', exc_info=True)
-                # The typed-but-unrendered recalledMemories
-                # event — what memory this turn actually recalled, for the
-                # transcript's recall chip. One event per turn, non-blocking.
-                if emit and _recalledRows:
-                    try:
-                        emit(
-                            {
-                                'type': 'recalledMemories',
-                                'sessionId': sessionId,
-                                'memories': _recalledRows,
-                            }
-                        )
-                    except Exception:
-                        logger.debug('recalledMemories emit failed', exc_info=True)
             else:
-                # The identity lane is not keyword recall, so it is not this
-                # gate's decision: `memoryAutoInject` controls whether to fish
-                # for facts matching this message, not whether August knows who
-                # it is talking to. Emptying the block here is what made the
-                # app read as amnesiac while the user's profile sat stored and
-                # active. Same corpus, same scope rule, its own bounded budget;
-                # no metrics row and no recall chip, because nothing was
-                # retrieved by relevance.
+                # The always-in identity lane: kind='profile'/'preference' facts
+                # for the caller's scope, with no query and no ranker. Same
+                # corpus and scope rule as explicit search; its own bounded
+                # budget. The facts it ships are recorded so the delta lane skips
+                # them and the turn-end usage feedback can see them.
                 try:
                     _memoryBlock, _laneRows = build_profile_memory_block(scope=_turnScope)
-                    # ``session._injected_facts`` is a list of (key, title)
-                    # pairs, unpacked as such by the turn-end usage bump
-                    # (turn_close.py). The lane returns full rows for the recall
-                    # chip, so narrow them here rather than teach the consumer
-                    # a second shape.
                     _injectedFacts = [
                         (str(r.get('key') or ''), str(r.get('title') or ''))
                         for r in _laneRows
@@ -3594,12 +3427,11 @@ async def _sendWorkbenchMessageStreamImpl(
                     _memoryBlock, _injectedFacts = '', []
             # A fact written after this session opened is visible on the NEXT
             # request without the model having to call list_facts (the boot
-            # index is frozen per session, and memoryAutoInject is off by
-            # default). It rides the tail — stripped before persistence — so
-            # the cached system prefix is untouched, and it is a live
-            # projection over facts.updated_at, not a cursor or second store.
-            # Keys the recall lane already rendered are skipped, so one write
-            # is never shown twice.
+            # index is frozen per session). It rides the tail — stripped before
+            # persistence — so the cached system prefix is untouched, and it is
+            # a live projection over facts.updated_at, not a cursor or second
+            # store. Keys the profile lane already rendered are skipped, so one
+            # write is never shown twice.
             try:
                 _deltaBlock = (
                     build_memory_delta_block(
@@ -3645,8 +3477,8 @@ async def _sendWorkbenchMessageStreamImpl(
             # body, never an auto-load. HINT-ONLY by contract, and the bytes
             # draw on the skills slice of the same Tier-1 budget. Skills the
             # tail already rendered (or the user pinned) are excluded, so one
-            # skill is never shown twice. Ungated by memoryAutoInject: the
-            # skills tail has no opt-out switch of its own to honour.
+            # skill is never shown twice. Independent of the memory switch: the
+            # skills tail has no opt-out of its own to honour.
             try:
                 from app.services import skill_service as _c6_svc
                 from app.services.capabilities_prompt import alias_preread_skills
@@ -3771,10 +3603,10 @@ async def _sendWorkbenchMessageStreamImpl(
             # Audit D1: the detail keys ARE the injected skill names — they ride
             # the turn row so per-skill effect can be measured. Deliberately
             # NOT nested under `if _memoryBlock:`: the skills lane is rendered
-            # independently of the memory lane, and memoryAutoInject is OFF by
-            # default, so gating the credit on a non-empty memory block left
-            # skills_injected permanently NULL — the skill-lift and
-            # brain-config readers were learning from an empty population.
+            # independently of the memory lane, so gating the credit on a
+            # non-empty memory block would leave skills_injected NULL whenever
+            # the profile lane is empty — the skill-lift and brain-config
+            # readers would learn from an empty population.
             if _skillsDetail:
                 _skillsInjectedNames = list(_skillsDetail.keys())
             if _memoryBlock:

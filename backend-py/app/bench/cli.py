@@ -70,20 +70,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument('--run-id', default='', help='run id (generated when empty)')
     parser.add_argument(
-        '--memory-state',
-        choices=('inherit', 'on', 'off'),
-        default='inherit',
-        help=(
-            'force the recalled-facts lane for this run instead of inheriting the '
-            'stored `memoryAutoInject`. This is the arm of a paired lift: run the '
-            'same task and script twice, on and off, and the only thing that '
-            'differs is the memory tail. Requires an isolated HARNESS_DATA_DIR when '
-            'combined with --memory-corpus, and it ASSERTS the arm took effect — '
-            'a run where `on` produced no recall block exits 43 rather than '
-            'reporting a lift of zero.'
-        ),
-    )
-    parser.add_argument(
         '--memory-corpus',
         default='',
         help=(
@@ -154,7 +140,6 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         context_window=args.context_window,
         script_path=args.script,
-        memory_state='' if args.memory_state == 'inherit' else args.memory_state,
         memory_corpus=args.memory_corpus,
     )
     if args.output_schema:
@@ -180,19 +165,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_INPUT
-    if opts.memory_corpus and not opts.memory_state:
-        print(
-            'august-bench: --memory-corpus without --memory-state cannot show a '
-            'lift; pass --memory-state on and off for the two arms.',
-            file=sys.stderr,
-        )
-        return EXIT_INPUT
     token = _apply_context_window_override(opts.context_window)
     if token is not None:
         print(f'august-bench: context window overridden to {opts.context_window} tokens', file=sys.stderr)
-    mem_token = _apply_memory_state_override(opts.memory_state)
-    if mem_token is not None:
-        print(f'august-bench: memory state forced to {opts.memory_state}', file=sys.stderr)
     try:
         return asyncio.run(run_bench(opts))
     except KeyboardInterrupt:
@@ -203,25 +178,6 @@ def main(argv: list[str] | None = None) -> int:
             from app.services.workbench.context import contextWindowOverride
 
             contextWindowOverride.reset(token)
-        if mem_token is not None:
-            from app.services.memory_store.fact_retrieval import memoryStateOverride
-
-            memoryStateOverride.reset(mem_token)
-
-
-def _apply_memory_state_override(state: str) -> Token[str] | None:
-    """Publish the forced memory arm for the whole run, or None when inheriting.
-
-    Same shape as `_apply_context_window_override`: a ContextVar, set before
-    `asyncio.run` copies the context into the run's task, and reset in the
-    `finally` so a long-lived process that runs the bench twice does not carry
-    the first run's arm into the second.
-    """
-    from app.services.memory_store.fact_retrieval import memoryStateOverride
-
-    if state not in ('on', 'off'):
-        return None
-    return memoryStateOverride.set(state)
 
 
 def _apply_context_window_override(tokens: int) -> Token[int] | None:

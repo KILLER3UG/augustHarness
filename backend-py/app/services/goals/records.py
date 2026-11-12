@@ -52,7 +52,7 @@ VERDICTS = ('confirmed', 'refuted', 'partial')
 #: door and the docs refuse the same list instead of each inventing one.
 SYSTEM_KEYS = (
     'workbenchToolRounds', 'budgetSoftUsd', 'budgetSoftTokens', 'budgetWallClockSec',
-    'memoryEnabled', 'modelMemoryRead', 'memoryAutoInject', 'skillEnforcement',
+    'memoryEnabled', 'modelMemoryRead', 'skillEnforcement',
 )
 
 

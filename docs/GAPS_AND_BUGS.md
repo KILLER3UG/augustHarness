@@ -87,8 +87,11 @@ against the working tree. The pattern: **`AGENTS.md`, `CONFIGURATION.md` and
   `HARNESS_ANTHROPIC_CACHE`, `HARNESS_QUOTA_OBSERVATION_TTL_S`, the
   `cognitive_config` group, `HARNESS_{GHDL,MODELSIM,FIRMWARE_MCU}`, …).
   `.env.example` shares only 2 of ~30 runtime vars with `CONFIGURATION.md`.
-- `memoryAutoInject` — default OFF, the gate `AGENTS.md` calls load-bearing — is
-  absent from `CONFIGURATION.md`'s key list.
+- `memoryAutoInject` — default OFF, the gate `AGENTS.md` called load-bearing — was
+  absent from `CONFIGURATION.md`'s key list. **Closed 2026-11-12 by deletion: the
+  key is gone from the backend config, so there is nothing left to document.**
+  Recall is the boot index, the always-in profile/preference lane and the delta,
+  with `list_facts` / `brain_query` as pull-only doors.
 - Dual naming, mobile docs, gateway platform UI: unchanged from below.
 
 ---

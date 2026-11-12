@@ -97,9 +97,9 @@ export interface SettingsSection {
    *  (Hermes/DeepSeek parity — 2026-10-03). */
   settingHints?: string[];
   /** Search-only synonyms for a control whose familiar name differs from the
-   *  label (e.g. the brain-config key `memoryAutoInject` for "Auto-recall
-   *  memories each session"). Never rendered — display stays the human
-   *  label, matching stays what people actually type. */
+   *  label (e.g. the brain-config key `factBudget` for "Store budget").
+   *  Never rendered — display stays the human label, matching stays what
+   *  people actually type. */
   settingAliases?: string[];
   keywords: string[];
   /** Old tab keys that should now open this section. */
@@ -460,7 +460,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
       'Search memory',
       'Import memory from other AI providers',
       'Memory enabled — reads, writes and injection',
-      'Auto-inject relevant memories each turn',
       'Tell August what to remember',
     ],
     settingAliases: [
@@ -517,9 +516,6 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
       'Run consolidation',
     ],
     settingAliases: [
-      'memory auto inject',
-      'auto-inject memories',
-      'memoryAutoInject',
       'memory review',
       'conversation review',
       'model memory read',

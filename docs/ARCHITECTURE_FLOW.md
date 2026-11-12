@@ -136,8 +136,9 @@ flowchart TB
 - The provider tool array is a **session** value, not a per-turn one:
   `_sessionToolDefsCacheKey` (`workbench.py:1392`) keys the final disclosed and
   filtered array on the base set, model profile, context window and session
-  gates. The BM25 query chooses membership on the first build and is
-  deliberately not part of the key; `_applySessionStableOrder`
+  gates. The query is not part of the key: no turn-level ranking decides which
+  tools the model is offered, so there is nothing per-turn to key on;
+  `_applySessionStableOrder`
   (`loop/surface.py:224`) keeps a name's slot when the set changes. A changed
   set or gate still misses and rebuilds.
 
@@ -242,19 +243,19 @@ flowchart TB
 
   subgraph tail["The memory tail attached to a turn"]
     direction TB
-    GATE{"brain_config memoryAutoInject<br/>app/services/brain_config_service.py<br/>ARMED BY DEFAULT"}
-    BM["fact_retrieval.py:build_memory_block :667<br/>BM25 over facts — only when invoked"]
-    PROF["build_profile_block — ALWAYS-ON lane<br/>rendered even with auto-inject off"]
-    DELTA["fact_retrieval.py:build_memory_delta_block :958<br/>facts updated after session.createdAt<br/>fixed-width microseconds, live projection"]
-    MERGE["merge: profile lane first, then recalled facts, then delta"]
+    PROF["build_profile_block — ALWAYS-ON lane<br/>kind='profile' + kind='preference'<br/>~600-char budget, rendered first"]
+    DELTA["fact_retrieval.py:build_memory_delta_block :813<br/>facts updated after session.createdAt<br/>fixed-width microseconds, live projection"]
+    MERGE["merge: profile lane first, then delta"]
     PART["_omitted_receipt — names what budget dropped<br/>recall partial"]
-    INJ["workbench.py:3062 / 3085<br/>tail patched into the user message<br/>_injected_facts"]
+    INJ["workbench.py:3421 / 3438<br/>tail patched into the user message<br/>_injected_facts recorded at :3614"]
   end
 
-  GATE -->|"on"| BM --> MERGE
   PROF --> MERGE
   DELTA --> MERGE
   MERGE --> PART --> INJ
+
+  SEARCH["brain_query(store='facts')<br/>retrieve_relevant_facts(min_query_chars=1)<br/>the ONLY ranked door — the model asks"]
+  SEARCH -.->|"explicit search"| FACTS
 
   subgraph crud["Model-facing memory CRUD — core tools"]
     direction TB
@@ -293,16 +294,21 @@ flowchart TB
 
 **Not what it looks like**
 
-- `memoryAutoInject` is **armed by default** (it shipped off; see
-  `AGENTS.md` "Durable memory"), but that gate only governs the
-  recalled-facts lane: `build_profile_block` (the `kind='profile'` facts) is
-  rendered on every turn regardless. That is what makes August remember *who
-  you are* without a keyword coincidence.
-- Recalled facts are attached to the **user message** at
-  `workbench.py:3188`/`:3283` (`_injected_facts`), not to the system prompt.
-- The delta lane (`build_memory_delta_block`, `fact_retrieval.py:958`) is a
+- There is **no `memoryAutoInject` gate**: the key is deleted from the brain
+  config, so nothing arms or disarms the turn tail. What rides a turn is the
+  profile/preference lane (`build_profile_block`) and the delta
+  (`build_memory_delta_block`); ranking is a pull the model performs through
+  `brain_query(store='facts')`. `build_memory_block` is gone with the tail:
+  BM25 survives only inside `retrieve_relevant_facts` /
+  `find_similar_facts`, the two explicit-search and near-duplicate callers —
+  measured on the real 19-fact store the ranker missed "Prefers dark mode" for
+  "what should I set my editor theme to" entirely.
+- The automatic facts are attached to the **user message** at
+  `workbench.py:3421`/`:3438` (patched at `:3603`, recorded at `:3614` as
+  `_injected_facts`), not to the system prompt.
+- The delta lane (`build_memory_delta_block`, `fact_retrieval.py:813`) is a
   live projection over `facts.updated_at`, not a cursor: an UPDATE is
-  delivered like a new write, a retired row is excluded, and keys the recall
+  delivered like a new write, a retired row is excluded, and keys the profile
   lane already showed are skipped. It used to compare a second-resolution
   `updated_at` against a microsecond session stamp, which hid writes made in
   the session's opening second. Fact writers now stamp

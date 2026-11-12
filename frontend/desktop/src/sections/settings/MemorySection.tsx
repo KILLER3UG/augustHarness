@@ -81,7 +81,7 @@ interface StorePage {
 
 interface BrainConfigResponse {
   source?: string;
-  config?: { memoryEnabled?: boolean; modelMemoryRead?: boolean; memoryAutoInject?: boolean; memoryReview?: boolean; autoReview?: boolean; modelMemoryWrites?: boolean; memorySensitiveTopics?: boolean } & Record<string, unknown>;
+  config?: { memoryEnabled?: boolean; modelMemoryRead?: boolean; memoryReview?: boolean; autoReview?: boolean; modelMemoryWrites?: boolean; memorySensitiveTopics?: boolean } & Record<string, unknown>;
   defaults?: Record<string, unknown>;
 }
 
@@ -1592,13 +1592,6 @@ export function MemorySection({ active }: { active: { id: string } }) {
           label="Model can read memories on demand"
           disabled={configQ.isLoading || configMut.isPending || cfg?.memoryEnabled === false}
           data-testid="memory-model-read-toggle"
-        />
-        <SettingsToggle
-          checked={Boolean(cfg?.memoryAutoInject ?? false)}
-          onCheckedChange={(next) => configMut.mutate({ memoryAutoInject: next })}
-          label="Auto-inject relevant memories each turn"
-          disabled={configQ.isLoading || configMut.isPending || cfg?.memoryEnabled === false}
-          data-testid="memory-auto-inject-toggle"
         />
         <SettingsToggle
           checked={Boolean(cfg?.modelMemoryWrites)}

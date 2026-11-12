@@ -677,7 +677,6 @@ def run_overflow_bench(contextWindow: int) -> list[dict[str, Any]]:
 
 ABLATION_IDS = (
     'memory-write-fails-closed',
-    'memory-recall',
     'skill-create',
     'skill-edit',
     'support-files',
@@ -693,10 +692,6 @@ def run_ablation(only: set[str] | None) -> list[dict[str, Any]]:
     from app.services.harness_mode import (
         PLANNER_ALLOWED_TOOLS,
         filter_planner_tools,
-    )
-    from app.services.memory_store.fact_retrieval import (
-        build_memory_context_for_turn,
-        memoryStateOverride,
     )
     from app.services.tool_policy import is_mutating
 
@@ -736,40 +731,7 @@ def run_ablation(only: set[str] | None) -> list[dict[str, Any]]:
             directAdded == 1 and doorAdded == 0 and doorRefused,
         )
 
-    # 2. The per-turn memory tail is the lane the switch drives:
-    #    `build_memory_context_for_turn` renders BM25-relevant memory when
-    #    auto-inject is on, and falls back to the always-in PROFILE lane when it
-    #    is off. A plain fact is therefore reachable only in the on arm — the
-    #    static memory index (keys/titles) is in the prompt either way and is not
-    #    what this switch controls.
-    if wanted('memory-recall'):
-        memory_store.save_fact(
-            'ablation.marker',
-            'The ablation marker is ORCHID-47.',
-            kind='fact',
-            title='Ablation marker',
-            description='ablation marker',
-        )
-        token = memoryStateOverride.set('on')
-        try:
-            onBlock, onRows = build_memory_context_for_turn('ablation marker ORCHID')
-        finally:
-            memoryStateOverride.reset(token)
-        token = memoryStateOverride.set('off')
-        try:
-            offBlock, offRows = build_memory_context_for_turn('ablation marker ORCHID')
-        finally:
-            memoryStateOverride.reset(token)
-        marker = 'ORCHID-47'
-        add(
-            'memory-recall',
-            'auto-inject renders relevant memory; off falls back to profiles only',
-            f'{"present" if marker in onBlock else "absent"} ({len(onRows)} rows)',
-            f'{"present" if marker in offBlock else "absent"} ({len(offRows)} rows)',
-            marker in onBlock and marker not in offBlock,
-        )
-
-    # 3. Skill create lands on disk and in the list; a path-shaped name is
+    # 2. Skill create lands on disk and in the list; a path-shaped name is
     #    refused by the same door.
     createdPath = ''
     if wanted('skill-create'):
@@ -800,7 +762,7 @@ def run_ablation(only: set[str] | None) -> list[dict[str, Any]]:
             lands and bool(refusedName),
         )
 
-    # 4. Editing an existing skill changes the body on disk and leaves a
+    # 3. Editing an existing skill changes the body on disk and leaves a
     #    version snapshot; editing a name that does not exist is refused.
     if wanted('skill-edit'):
         updated = ''
@@ -827,7 +789,7 @@ def run_ablation(only: set[str] | None) -> list[dict[str, Any]]:
             'v2' in updated and snapshot > 0 and missingRefused,
         )
 
-    # 5. Support files: a plain note is accepted; traversal and shell content
+    # 4. Support files: a plain note is accepted; traversal and shell content
     #    are refused by the same validator the write door uses.
     if wanted('support-files'):
         okAccepted = 0
@@ -859,7 +821,7 @@ def run_ablation(only: set[str] | None) -> list[dict[str, Any]]:
             okAccepted == 1 and len(refusals) == 3,
         )
 
-    # 6. Plan mode's tool surface excludes every mutating door, and the same
+    # 5. Plan mode's tool surface excludes every mutating door, and the same
     #    tools survive the normal filter — the difference is the guard.
     if wanted('plan-mode-read-only'):
         fakeTools: list[dict[str, object]] = [

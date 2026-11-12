@@ -283,11 +283,7 @@ export type WorkbenchEvent =
   | { type: 'btw'; data: WorkbenchBtwResult }
   | { type: 'compaction'; data: { headCount?: number; tailCount?: number; compressedCount: number; originalTokens: number; compressedTokens: number; underThreshold?: boolean; threshold?: number; contextWindow?: number; relief?: string; pinnedCount?: number; replayedCount?: number } }
   | { type: 'done'; data: { usage?: WorkbenchTurnUsage } }
-  | { type: 'error'; data: { message: string } }
-  | {
-      type: 'recalledMemories';
-      data: { items: Array<{ id: string; key: string; category: string; snippet: string }> };
-    };
+  | { type: 'error'; data: { message: string } };
 
 export interface WorkbenchEventHandlers {
   onThinking?: (data: { content: string }) => void;
@@ -518,18 +514,6 @@ export interface WorkbenchEventHandlers {
     content?: string;
     key?: string;
   }) => void;
-  /** Recalled memory rows: what the per-turn memory tail
-   *  actually injected this turn — global facts + project md entries.
-   *  Rendered as one collapsed recall chip per turn; never blocking. */
-  onRecalledMemories?: (data: {
-    sessionId?: string;
-    memories?: Array<{
-      key?: string;
-      category?: string;
-      snippet?: string;
-      scope?: string;
-    }>;
-  }) => void;
   /** /circuit workbench toggled — the desktop opens/closes the Circuit
    *  panel in the right drawer and shows the ack notice. */
   onCircuitMode?: (data: {
@@ -569,7 +553,6 @@ export interface WorkbenchEventHandlers {
       profileSummaryUsed?: boolean;
       heuristicsUsed?: number;
       addedMemories?: number;
-      recalledMemories?: Array<{ key?: string; category?: string; snippet?: string }>;
       currentContextUsed?: boolean;
       activeProjects?: number;
       coreFactsUsed?: boolean;

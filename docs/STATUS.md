@@ -24,13 +24,15 @@ waiting on the owner, and how to resume.
   It now falls back to `reasoning` and asks for 2048 tokens (measured: a
   1280×800 image used 933 completion tokens before any content). The refusal
   path already hands the provider's body back verbatim.
-- **Memory and skills are told once.** Per-turn recall and the Relevant-skills
-  block skip what the session already injected (`_seen_memory_keys`,
-  `_seen_skill_hints`); both compaction paths clear those sets and the frozen
-  indexes so the model is re-told exactly when its context was rebuilt. The
-  boot index is scoped by `memoryIndexCategories` (default
+- **Memory and skills are told once per turn.** The relevant-skills block and the
+  always-in memory lane dedup against each other inside a single build, and
+  nothing is carried across turns — the transcript is the durable record, so a
+  set keyed on "what this session was told" could only suppress bytes that are
+  still in context. Both compaction paths clear the frozen indexes so the model
+  is re-told exactly when its context was rebuilt. The boot index is scoped by
+  `memoryIndexCategories` (default
   user,feedback,project,reference); `general` stays reachable through
-  `list_facts(category=…)`, `brain_query` and recall.
+  `list_facts(category=…)` and `brain_query`.
 - **Compaction is precomputed (OpenCode's precompute shape).** When an LLM compactor is on and the session crosses 70% of its window, a background task learns the exact head chunk the compressor will summarise and writes the summary ahead of time, stored against the chunk's fingerprint. At the trigger a matching chunk is an instant swap (0 extra model calls, probed); any change misses and the real summarizer runs. Config:  (default on).
 - **Compaction is precomputed (OpenCode's precompute shape).** When an LLM
   compactor is on and the session crosses 70% of its window, a background task

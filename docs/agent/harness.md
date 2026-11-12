@@ -442,8 +442,11 @@ the arms differ:
 
 - `memory-write-fails-closed` — with no reviewer the model-facing `remember`
   door refuses and writes nothing, while a direct store write lands.
-- `memory-recall` — `build_memory_context_for_turn` renders BM25-relevant
-  memory with auto-inject on; off falls back to the always-in profile lane.
+- `memory-recall` — recall is **pull-only** now: the automatic lanes are the
+  profile/preference block and the delta, and a ranked search happens only when
+  the caller asks for one. The arm's definition lives in
+  `scripts/harness_eval.py:739`; read it there rather than trusting a summary,
+  because the gate it used to flip no longer exists.
 - `skill-create` / `skill-edit` — a create lands on disk and in the list, an
   edit changes the body and snapshots it, and a path-shaped name or a missing
   target is refused.

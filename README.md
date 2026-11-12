@@ -46,11 +46,12 @@ lives in [`frontend/mobile/`](frontend/mobile).
   chips (no tabs, no meters). The "Memory files" card the 0.18 restyle removed is
   back, as **Backups & restore** — see Settings → Memory.
   The model manages memory through the `remember` / `list_facts` / `forget` core
-  tools. Automatic recall is gated by `memoryAutoInject` (**armed by default
-  since 2026-10-24**; an explicit stored `false` wins), but
-  `kind='profile'` facts always ride in — that is what makes August remember who
-  you are without a keyword coincidence. Proposals that need a human surface on
-  the decide queue; approving a retire keeps the row, so it is reversible.
+  tools. Nothing ranked is auto-injected: the boot index is always in context,
+  `kind='profile'` and `kind='preference'` facts ride every turn (that is what
+  makes August remember who you are without a keyword coincidence), and search
+  is a pull the model makes with `brain_query`. Proposals that need a human
+  surface on the decide queue; approving a retire keeps the row, so it is
+  reversible.
 - **Live / voice** — browser speech by default; optional server STT/TTS;
   `/api/live`.
 - **Platform gateways** — Telegram, Slack, Discord (`/stop`, `/new`, `/approve`, …).

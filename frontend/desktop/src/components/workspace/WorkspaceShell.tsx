@@ -157,7 +157,7 @@ export function WorkspaceShell({
     };
     // Setting-level matching: the individual control labels each section
     // owns (registry `settingHints`), plus search-only aliases for names
-    // people actually type (the brain-config key `memoryAutoInject` lives in
+    // people actually type (the brain-config key `factBudget` lives in
     // `settingAliases`), so the query finds the SETTING, not just the page it
     // lives on.
     const hintMatch = (s: (typeof decorated)[number]): boolean => {
@@ -193,8 +193,8 @@ export function WorkspaceShell({
   // The page is a route now; the sidebar and the titlebar are the way out.
   // The old Escape/click-outside dismiss belonged to the dialog.
 
-  /** The CONTROL a query matched inside this section, if any: "auto inject" →
-   *  Memory → "Auto-recall memories…". Only meaningful while filtering. */
+  /** The CONTROL a query matched inside this section, if any: "fact budget" →
+   *  Memory tools → "Store budget". Only meaningful while filtering. */
   const hitHintFor = (s: (typeof decorated)[number]): string | undefined => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (!tokens.length) return undefined;

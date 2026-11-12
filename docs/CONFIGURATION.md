@@ -280,14 +280,19 @@ What is real:
   is already stored under another key, naming that key. `list_facts` pages with `offset`
   and reports `total`/`hasMore`; `include_retired: true` also lists the rows
   consolidation parked, which recall skips.
-- **Automatic recall** is the BM25 `Relevant memory:` tail, gated by brain-config
-  `memoryAutoInject` (**default `true`** since 0.18.20; it shipped OFF and was
-  armed after measuring the write door that feeds it). Independently of that gate,
-  `kind='profile'` facts ride an always-in lane (~600-char budget) — that is what
-  makes August remember who you are without a keyword coincidence. A fact dropped
-  for budget is *named* in a `recall partial:` line rather than vanishing.
-  The boot memory index is frozen per session to protect the provider prefix
-  cache, so re-read `list_facts` after writing rather than trusting it.
+- **Automatic recall** is not a gate any more. Two lanes ride every turn without
+  a setting: `kind='profile'` **and** `kind='preference'` facts (~600-char
+  budget, rendered first — what makes August remember who you are without a
+  keyword coincidence) and the `new in memory since this chat opened:` delta,
+  which lists facts whose `updated` stamp is newer than the session's creation
+  stamp. Everything else is **pull-only**: the ranked search runs when the model
+  calls `brain_query(store='facts')`, and `list_facts` pages the record with
+  `offset` / `total` / `hasMore`. There is no `memoryAutoInject` key: it was
+  deleted from the brain config, so a config file or script that still names it
+  is writing a key nothing reads. A fact dropped for budget is *named* in a
+  `recall partial:` line rather than vanishing. The boot memory index is frozen
+  per session to protect the provider prefix cache, so re-read `list_facts`
+  after writing rather than trusting it.
 - **Consolidation** is one scheduled job, not a multi-job daemon:
   `GET /api/brain/consolidation/log` and `POST /api/brain/consolidation/run`
   (explicit runs apply immediately).

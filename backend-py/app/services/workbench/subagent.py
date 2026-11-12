@@ -387,24 +387,20 @@ def subagent_memory_block(session: object, goal: str, workspace: str | None) -> 
     """Durable memory for a worker, or '' when there is nothing to say.
 
     A sub-agent can run for twenty minutes knowing nothing about the person it
-    works for: the `<memory>` tail was parent-only, so identity-level facts had
-    to be re-typed into every goal string. Same corpus, same resolved scope and
-    same gate as the parent turn — `build_memory_block` already renders the
-    always-on profile lane first, and that lane ships even when keyword
-    auto-injection is off. Writes stay blocked in here on purpose: the parent
-    turn is the single door that mutates durable memory.
+    works for, so it carries the always-in identity lane: the same
+    ``kind='profile'``/``kind='preference'`` facts the parent turn sees, under
+    the same resolved scope. Retrieval itself is pull-only, so the worker pulls
+    anything else through the read tools. Writes stay blocked in here on
+    purpose: the parent turn is the single door that mutates durable memory.
     """
     try:
         from app.services import session_scope as scope_mod
         from app.services.memory_store.fact_retrieval import (
-            build_memory_context_for_turn,
+            build_profile_memory_block,
         )
 
         resolved = scope_mod.resolve_scope(session)
-        # One resolver for the gate, shared with the main turn's reader, so a
-        # per-run `--memory-state` override cannot apply to one path and be
-        # silently ignored by the other.
-        block, _ = build_memory_context_for_turn(goal, workspace=workspace or '', scope=resolved)
+        block, _rows = build_profile_memory_block(scope=resolved)
         return block
     except Exception:
         logger.debug('subagent memory build failed', exc_info=True)

@@ -375,22 +375,6 @@ export function dispatchWorkbenchEvent(
         key: typeof p?.key === 'string' ? p.key : undefined,
       });
       break;
-    case 'recalledMemories': {
-      // Part 17 A.4: rows the per-turn memory tail injected this turn.
-      const rows = Array.isArray(p?.memories)
-        ? (p.memories as Array<Record<string, unknown>>).map((m) => ({
-            key: typeof m.key === 'string' ? m.key : undefined,
-            category: typeof m.category === 'string' ? m.category : undefined,
-            snippet: typeof m.snippet === 'string' ? m.snippet : undefined,
-            scope: typeof m.scope === 'string' ? m.scope : undefined,
-          }))
-        : undefined;
-      handlers.onRecalledMemories?.({
-        sessionId: typeof p?.sessionId === 'string' ? p.sessionId : undefined,
-        memories: rows && rows.length > 0 ? rows : undefined,
-      });
-      break;
-    }
     case 'circuitMode':
       handlers.onCircuitMode?.({
         active: p?.active === true,

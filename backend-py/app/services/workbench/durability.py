@@ -32,13 +32,13 @@ BARRIER_MODEL_DISPATCH = 'model-dispatch'
 BARRIER_TOOL_SIDE_EFFECT = 'tool-side-effect'
 BARRIER_STEP_BOUNDARY = 'step-boundary'
 
-# The per-turn tail sections (the `Relevant memory:` section, the `Relevant
-# skills:` section, `<session_state>`, `<memory_nudge>`, `<workspace_map>`) are
-# patched onto the last user message for THIS request only — they must not ride
-# in persisted history (bloat, stale state the model may later trust, phantom
-# mining episodes: the miner's injection filter is prefix-only and
-# <memory_nudge> contains correction vocabulary). Marked at patch time; stripped
-# before every persist.
+# The per-turn tail sections (the `Relevant memory:` profile lane, the
+# `Relevant skills:` section, `<session_state>`, `<memory_nudge>`,
+# `<workspace_map>`) are patched onto the last user message for THIS request
+# only — they must not ride in persisted history (bloat, stale state the model
+# may later trust, phantom mining episodes: the miner's injection filter is
+# prefix-only and <memory_nudge> contains correction vocabulary). Marked at
+# patch time; stripped before every persist.
 _TAIL_PATCH_FLAG = '_tailPatched'
 # The pre-tail content length, recorded by the patcher as the authoritative
 # boundary. The marker scan below is only a fallback for messages patched by an
@@ -48,7 +48,7 @@ _TAIL_MARKERS = (
     # The memory and skills sections are plain headed now, not enveloped, so the
     # fallback boundary names the headers. WITHOUT these two the fallback was
     # dead for the largest part of the tail: a message that lost `_tailFrom`
-    # persisted its memory recall and its skill list into history permanently,
+    # persisted its profile lane and its skill list into history permanently,
     # because the tag strings below stopped appearing in anything we inject.
     '\n\nRelevant memory:',
     '\n\nRelevant skills:',
@@ -89,11 +89,13 @@ _ECHO_FENCE_RE = re.compile(
     re.DOTALL,
 )
 # The plain-headed sections, paired with the LAST line of each. A header alone
-# is not an echo — someone asking "what does my Relevant memory: section say?"
+# is not an echo — someone asking "what does my Relevant skills: section say?"
 # must keep their words — so BOTH ends have to appear before anything is
-# removed, the same conservatism the fenced form above already carries.
+# removed, the same conservatism the fenced form above already carries. The
+# memory section is NOT here: its ranked-tail footer ("or remove a stale one
+# with forget.") is gone with that lane, and the profile lane's header alone
+# must not be scrubbed out of a user's prose.
 _ECHO_SECTIONS: tuple[tuple[str, str], ...] = (
-    ('Relevant memory:', 'or remove a stale one with forget.'),
     ('Relevant skills:', 'Load one with load_skill(name) if it fits the request.'),
 )
 # Three or more blank lines where a fence used to be.

@@ -20,7 +20,6 @@ from app.services.memory_store.brain import (
     count_user_notes,
 )
 from app.services.memory_store.fact_retrieval import (
-    build_memory_block,
     build_memory_delta_block,
     build_profile_block,
 )
@@ -110,7 +109,6 @@ __all__ = [
     'update_fact_value',
     'touch_fact_usage',
     'PROFILE_FACT_KIND',
-    'build_memory_block',
     'build_memory_delta_block',
     'build_profile_block',
     'save_proposal',

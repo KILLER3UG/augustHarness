@@ -1151,22 +1151,6 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       });
       scheduleUpdate();
     },
-    onRecalledMemories: ({ memories }) => {
-      // Part 17 A.4: what the per-turn memory tail injected — one
-      // collapsed recall chip per turn (the reducer skips empty rows).
-      if (!memories || memories.length === 0) return;
-      streamBlocks = appendBlockEvent(streamBlocks, {
-        type: 'recalledMemories',
-        memories: memories.map((m, i) => ({
-          id: `recall_${Date.now()}_${i}`,
-          key: m.key || '',
-          category: m.category || 'general',
-          snippet: m.snippet || '',
-          ...(m.scope ? { scope: m.scope } : {}),
-        })),
-      });
-      scheduleUpdate();
-    },
     onCircuitMode: ({ active, message }) => {
       // /circuit gate ack: pop (or close) the Circuit panel in the right
       // drawer and surface the notice inline as a system block.

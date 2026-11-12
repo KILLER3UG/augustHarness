@@ -440,12 +440,14 @@ What exists instead:
 - The model manages memory through **tools**: `remember` (write/update by key),
   `list_facts`, `forget`. These are core tools, so progressive disclosure can
   never hide them and a downgraded model can still correct what it remembers.
-- Automatic recall is the BM25 `Relevant memory:` tail, gated by brain-config
-  **`memoryAutoInject` (default OFF)**. Recall happens when the model calls
-  `brain_query`.
-- `kind='profile'` facts are an **always-in lane** regardless of that gate
-  (rendered first, ~600-char budget). That is what makes August remember who you
-  are without a keyword coincidence.
+- Automatic recall is **two lanes plus a pull door**, with no setting to arm:
+  `kind='profile'` and `kind='preference'` facts ride every turn (~600-char
+  budget, rendered first — that is what makes August remember who you are without
+  a keyword coincidence), and the `new in memory since this chat opened:` delta
+  lists facts written since the session began. A ranked search happens only when
+  the model itself calls `brain_query(store='facts')`; `list_facts` pages the
+  rest. `memoryAutoInject` no longer exists — a config or bookmark that names it
+  is writing a key nothing reads.
 - Reviewing what is stored is **Settings → Memory**, one flat chronological list
   across kinds. The "Memory files" card the 0.18 restyle removed was re-added as
   **Backups & restore**: it runs the backups, integrity check and staged restore.

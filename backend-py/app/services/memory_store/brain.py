@@ -801,6 +801,12 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
     from app.services.session_scope import GLOBAL_SCOPE, normalize_scope
 
     lines: list[str] = []
+    # Fact lines and their keys, tracked apart from the section headers.
+    # The header ("Facts:", "Notes:", "Recent events:") is not a fact, so a
+    # receipt that says "N more" must count FACTS — a count that included
+    # headers would overstate what is missing.
+    fact_lines: list[str] = []
+    fact_keys: list[str] = []
     s = normalize_scope(scope)
     _cats = [c.strip().lower() for c in str(categories or '').split(',') if c.strip()]
     try:
@@ -854,6 +860,8 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
                 if isinstance(_aliases, list) and _aliases:
                     line += ' [aliases: ' + ', '.join(str(a) for a in _aliases[:4]) + ']'
                 lines.append(line)
+                fact_lines.append(line)
+                fact_keys.append(str(r.get('fact_key') or ''))
             try:
                 total = sum(
                     1
@@ -918,17 +926,120 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
     # The cap is the memory slice of the combined Tier-1 index budget (A1) —
     # read off the context var the prompt build published, so a small-window
     # model gets a smaller boot index and the unscaled 2400 when no build is
-    # running. Cut at a LINE boundary: a mid-line slice leaves half a hook
-    # that reads like a complete fact — the exact lie this index exists to
-    # avoid.
+    # running.
+    #
+    # Two rules the cut must honour, and the pre-refactor code honoured
+    # NEITHER:
+    #
+    # 1. CUT AT A LINE BOUNDARY. A mid-line slice leaves half a hook that
+    #    reads like a complete fact — the exact lie this index exists to
+    #    avoid. The old cut took ``text.rfind('\n', 0, capChars)``, which
+    #    lands mid-LINE whenever the boundary falls inside a fact's hook,
+    #    and the surviving line ended in a dangling ``… switched to
+    #    text-only a``.
+    # 2. NAME WHAT WAS DROPPED. The old code computed the receipt
+    #    ("+N more") from the ROW count against a 40-row list, then applied
+    #    the char cap AFTER — so a fact dropped by the character budget
+    #    vanished with no receipt at all. Measured on the recovered
+    #    19-fact record: 5 of 19 facts (including every identity fact)
+    #    disappeared silently, and the index still claimed to be complete.
+    #    The model was told a shorter list was the whole store.
+    #
+    # The index is the primary door now — the ranked tail is gone — so a
+    # silent drop here is memory the harness cannot see and cannot say is
+    # missing.
     from app.services.workbench.prompt_build import currentIndexBudget
 
     capChars = currentIndexBudget()[0]
-    text = '\n'.join(lines)
-    if len(text) > capChars:
-        cut = text.rfind('\n', 0, capChars)
-        text = text[:cut] if cut > 0 else text[:capChars]
+    text = _fit_index_lines(lines, capChars, fact_keys=set(fact_keys))
     return text
+
+
+def _fit_index_lines(
+    lines: list[str], capChars: int, *, fact_keys: set[str] | None = None
+) -> str:
+    """Join the index lines into the cap, and NAME every fact it drops.
+
+    Drops whole lines only, and appends a receipt naming how many facts the
+    character budget did not fit — so a short index is visibly short
+    instead of quietly incomplete. The receipt names COUNT and KEYS: a
+    count alone leaves the model unable to ask for the missing one by name.
+
+    ``fact_keys`` is the set of keys the index's FACT lines carry. A dropped
+    line whose key is in that set is a fact the model cannot see; a dropped
+    section header ("Notes:", "Recent events:") is not, and counting it
+    would overstate what is missing.
+    """
+    if capChars <= 0:
+        return ''
+    text = '\n'.join(lines)
+    if len(text) <= capChars:
+        return text
+    kept: list[str] = []
+    used = 0
+    dropped_facts: list[str] = []
+    for line in lines:
+        cost = len(line) + (1 if kept else 0)
+        if used + cost > capChars:
+            key = _index_line_key(line)
+            if fact_keys is not None and key and key in fact_keys:
+                dropped_facts.append(key)
+            continue
+        kept.append(line)
+        used += cost
+    if not dropped_facts:
+        # Only a header or a non-fact line was dropped. The index is still
+        # honest about the FACTS it carries, so no receipt is owed — but the
+        # dropped section is named so the model does not read the index as
+        # the whole record.
+        receipt = '  … a section of this index did not fit the budget'
+        while kept and used + len(receipt) > capChars:
+            removed = kept.pop()
+            used -= len(removed) + 1
+        return '\n'.join([*kept, receipt])
+    receipt = _index_omitted_receipt(dropped_facts)
+    # The receipt must fit too. If it cannot, drop more facts to make room
+    # for it — an honest short index beats a tidy one that hides facts.
+    while kept and used + len(receipt) > capChars:
+        removed = kept.pop()
+        used -= len(removed) + 1
+        key = _index_line_key(removed)
+        if key and key in (fact_keys or set()):
+            dropped_facts.append(key)
+        receipt = _index_omitted_receipt(dropped_facts)
+    return '\n'.join([*kept, receipt])
+
+
+def _index_omitted_receipt(dropped_facts: list[str]) -> str:
+    """The line that names the facts the index could not carry.
+
+    Count AND keys: the model must be able to ask for a missing fact by
+    name, which is the whole point of naming it.
+    """
+    named = ', '.join(dropped_facts[:6])
+    more = f' (+{len(dropped_facts) - 6} more)' if len(dropped_facts) > 6 else ''
+    return (
+        f'  … {len(dropped_facts)} more in the record, not in this index: '
+        f'{named}{more}'
+    )
+
+
+def _index_line_key(line: str) -> str:
+    """The fact key an index line names, or '' when the line names none.
+
+    The line shape is ``  - title (key) — hook``. The key is the FIRST
+    parenthesised run after the dash: a title may itself contain brackets,
+    so taking the LAST one would read the hook's parentheses as the key.
+    """
+    if not line.startswith('  - '):
+        return ''
+    open_at = line.find('(')
+    if open_at < 0:
+        return ''
+    close_at = line.find(')', open_at)
+    if close_at < 0:
+        return ''
+    return line[open_at + 1 : close_at].strip()
 
 
 # Per-store writable field whitelists for brain_update_row (B5). Stores absent

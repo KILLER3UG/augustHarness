@@ -1,7 +1,12 @@
 # Memory
 
-Stored memory reaches a turn through three lanes, and only one of them is a
-keyword search. Confusing them is the usual reason a "why did it not remember"
+Stored memory reaches a turn through **two automatic lanes** — the always-in
+`kind='profile'` / `kind='preference'` block, and the
+`new in memory since this chat opened:` delta — plus the boot memory index that
+sits in the system prompt from session start. Everything else is **pull-only**:
+the model searches the record with `brain_query` and pages it with `list_facts`.
+There is no per-turn ranked tail and no `memoryAutoInject` setting; confusing the
+automatic lanes with a search is the usual reason a "why did it not remember"
 investigation goes wrong. The model-facing tools are `remember`, `list_facts`,
 `forget` and `brain_query`; the store is the markdown record under
 `<dataDir>/memory/`.
@@ -11,7 +16,7 @@ investigation goes wrong. The model-facing tools are `remember`, `list_facts`,
 The SQL engine is retired. One `.md` file per fact (frontmatter over a
 JSON-encoded body) plus a `MEMORY.md` index, both written and read by
 `memory_store.mirror`; every CRUD door (`rest.save_fact` and friends) writes
-the file directly, and every read door (recall, BM25, the boot index,
+the file directly, and every read door (search, BM25, the boot index,
 `brain_query`, the Memory page) reads the files back. There is no second copy
 to drift from. A file you delete is a forgotten memory; an edit you make is
 the memory.
@@ -22,51 +27,56 @@ is (scope, key). `MEMORY.md` lists the active, unexpired, non-sensitive,
 non-person rows — the same exclusions the boot index applies. The record
 itself holds every row.
 
-## The three lanes
+## The two automatic lanes, and the pull doors
 
-**Durable memory** — the `Relevant memory:` tail is BM25 over the record
-(in-memory Python index over the parsed files), gated by brain-config
-`memoryAutoInject` (**ARMED BY DEFAULT since 2026-10-24**; it was OFF, which
-was a trust decision rather than a measured one — the write door that feeds
-this lane, `memoryIsJunk`, refuses 0 of 14 durable rules and catches 5 of 5
-junk cases, so the content is already filtered). An install that turned it off
-keeps it off: verified through the real `PUT /api/brain/config` door, a
-persisted `false` beats the new default.
+**Always-in profile/preference lane** — `kind='profile'` and `kind='preference'`
+facts are rendered first, inside a ~600-char budget, on every turn. There is no
+keyword match and no setting to arm, which is what makes August remember *who you
+are* without a coincidence — and it is the same two files Claude keeps in
+context: `profile.md` and `preferences.md`. The `remember` prompt names both
+kinds for exactly this reason; a fact that describes the user and lands as
+`kind='fact'` is reachable only through an explicit search. The kind is also
+editable by hand: the file IS the record, so `kind: profile` in the frontmatter
+plus an index rebuild moves the fact into the lane. The lane keeps its existing
+prompt heading; what changed is what feeds it, not what it is called. A fact
+dropped for budget is **named** in a `recall partial:` line rather than
+vanishing.
 
-Three things are true regardless of that gate:
-
-- `kind='profile'` and `kind='preference'` facts are an always-in lane (rendered
-  first, ~600-char budget, injected even with auto-inject off — this is what
-  makes August remember *who you are* without a keyword coincidence, and it is
-  the same two files Claude keeps in context: `profile.md` and
-  `preferences.md`). The `remember` prompt names both kinds for exactly this
-  reason; a fact that describes the user and lands as `kind='fact'` has to win a
-  keyword match like everything else. The kind is also editable by hand: the
-  file IS the record, so `kind: profile` in the frontmatter plus an index
-  rebuild moves the fact into the lane.
-- A fact dropped for budget is **named** in a `recall partial:` line rather
-  than vanishing.
-- `build_memory_delta_block` appends a plain `new in memory since this chat
-  opened:` section listing facts whose `updated` stamp is newer than the
-  session's own creation stamp — so a fact written by `remember` is visible on
-  the NEXT request without the model having to call `list_facts` first.
+**Delta** — `build_memory_delta_block` appends a plain `new in memory since this
+chat opened:` section listing facts whose `updated` stamp is newer than the
+session's own creation stamp — so a fact written by `remember` is visible on the
+NEXT request without the model having to call `list_facts` first.
 
 The delta is a **projection over the record, not a cursor and not a second
 store**: an UPDATE to an existing key is delivered like a new write, a retired
-row cannot resurface, keys the recall lane already showed are skipped, and an
+row cannot resurface, keys the profile lane already showed are skipped, and an
 unparseable session stamp returns NOTHING rather than dumping the whole store
 into the tail. It rides the tail (stripped before persistence), so the cached
 prefix is untouched; `memory_context_preview` deliberately omits it, because a
 preview has no session.
 
-A keyword ranker can only match words the memory contains, and a model writes
-the words it chose, not the words the user will ask with. The corpus is title +
-description + aliases + key + body for that reason, and `aliases` is the
-compensating mechanism: measured on the recovered record, "Prefers dark mode"
-with aliases `[theme, appearance, editor theme]` answers "what should I set my
-editor theme to" (and "light mode"), while the same fact without them returns
-nothing. The `remember` prompt asks for aliases; a hand edit can add them to a
-file's frontmatter just the same.
+**Everything else is pull-only.** Ranking is not attached to a turn: the model
+runs the search itself through `brain_query(store='facts')`, and `list_facts`
+pages the record with `offset` / `total` / `hasMore` (`include_retired` exposes
+the rows consolidation parked). `retrieve_relevant_facts` has a single caller
+now — `brain_query`, which passes `min_query_chars=1` so a deliberate search
+answers even for `"gpu"`; the 8-character default is the floor the removed
+per-turn path used to pass.
+
+**Why the ranker no longer rides a turn.** BM25 survives inside explicit search
+and the near-duplicate check that keeps `remember` from filing a second copy of
+an existing fact — those are the two places a query exists at all. A ranker can
+only match words the memory contains, and a model writes the words it chose, not
+the words the user will ask with. That is not a tuning problem: measured on the
+real 19-fact store, BM25 returned **nothing** for "what should I set my editor
+theme to" against the fact that says "Prefers dark mode", and ranked the wrong
+fact first for "what am I doing my degree in". The corpus is title + description
++ aliases + key + body, and `aliases` is a compensating mechanism inside search —
+"Prefers dark mode" with aliases `[theme, appearance, editor theme]` answers
+"what should I set my editor theme to", while the same fact without them returns
+nothing — but a store that ships without them is the normal case, so the
+per-turn tail was removed rather than tuned. The `remember` prompt asks for
+aliases; a hand edit can add them to a file's frontmatter just the same.
 
 Scopes are `global` and `bot:<agentId>` only; `project:<path>` is refused at
 the write door on purpose, because workspace memory is the separate
@@ -79,10 +89,6 @@ the write door on purpose, because workspace memory is the separate
 progressive disclosure can never hide the key lookup that `remember`'s own
 instructions depend on, and in `_BARE_TOOL_ALLOW` so a weak/downgraded model can
 still correct what it remembers instead of only accumulating.
-`retrieve_relevant_facts(min_query_chars=…)` splits the two callers: the
-automatic tail keeps the 8-character floor (a 4-character message must not spend
-context), while a deliberate `brain_query(store='facts')` search answers even for
-`"gpu"`.
 
 ## Bringing a memory export in
 
@@ -93,8 +99,8 @@ in the webview and previews it. The **whole-export door** hands the folder (or
 a second store:
 
 * `profile.md` lands as `kind='profile'`, `preferences.md` as `kind='preference'`
-  — the two kinds the always-in-context lane reads, so an imported identity is
-  recalled without winning a BM25 slot. `areas/*` → `category='project'`,
+  — the two kinds the always-in lane reads, so an imported identity is recalled
+  without winning a search. `areas/*` → `category='project'`,
   `topics/*` → `category='reference'`.
 * one bullet = one fact, keyed by the same slug `remember` derives, so re-importing
   the same export reports `unchanged` instead of restating rows;
@@ -159,7 +165,7 @@ real library.
 On the read side `list_facts` takes `offset` and reports `total`/`hasMore` — it
 used to be hard capped at the 50 newest rows, so a store the model could write
 to was one it could only partly read back — and `include_retired` exposes the
-rows consolidation parked, which recall skips but which are still stored memory.
+rows consolidation parked, which search skips but which are still stored memory.
 `brain_query` advertises the `memory` (KV notes) store for the same reason:
 reachable-but-unadvertised is a door the model has to guess at.
 

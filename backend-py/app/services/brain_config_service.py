@@ -54,7 +54,6 @@ boolKeys: tuple[str, ...] = (
     'skillKeywordExpansion',
     'memoryEnabled',
     'modelMemoryRead',
-    'memoryAutoInject',
     'memoryReview',
     'autoReview',
     'modelMemoryWrites',
@@ -283,19 +282,10 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     ('autoRouteMinSamples', 'auto_route_min_samples', 3, 'num'),
     # Memory read gate: when off, the facts-recall tool (brain_query/memory_search
     # over the facts store) is not offered. Default on so the model can pull
-    # memory ON DEMAND. Per-turn auto-injection is a SEPARATE flag below.
+    # memory ON DEMAND. There is no per-turn auto-injection flag: retrieval is
+    # pull-only, and the always-in profile lane is not gated by this switch.
     ('memoryEnabled', 'memory_enabled', True, 'bool'),
     ('modelMemoryRead', 'model_memory_read', True, 'bool'),
-    # Auto-inject gate: when on, the "Relevant memory:" section of facts relevant to the
-    # latest turn is appended every turn (plus the names-only index in the
-    # system prompt).
-    # ARMED BY DEFAULT (was OFF). The OFF default was a trust decision, not a
-    # measured one: the write door that feeds it, `memoryIsJunk`, refuses 0 of 14
-    # durable rules and catches 5 of 5 junk cases, so the content reaching this
-    # lane is already filtered. Cost is real and bounded — the block is capped by
-    # _BLOCK_CHAR_CAP and the profile lane by _PROFILE_CHAR_CAP.
-    # modelMemoryRead must stay on for the read tool to be available either way.
-    ('memoryAutoInject', 'memory_auto_inject', True, 'bool'),
     # Memory write door: the `remember` tool is offered to the model only while
     # this is on; sensitive-topic facts additionally need memorySensitiveTopics.
     ('modelMemoryWrites', 'model_memory_writes', True, 'bool'),

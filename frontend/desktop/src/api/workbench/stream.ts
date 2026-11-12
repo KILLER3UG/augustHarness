@@ -377,11 +377,6 @@ export async function streamWorkbenchReconnect(
             profileSummaryUsed?: boolean;
             heuristicsUsed?: number;
             addedMemories?: number;
-            recalledMemories?: Array<{
-              key?: string;
-              category?: string;
-              snippet?: string;
-            }>;
             currentContextUsed?: boolean;
             activeProjects?: number;
             coreFactsUsed?: boolean;

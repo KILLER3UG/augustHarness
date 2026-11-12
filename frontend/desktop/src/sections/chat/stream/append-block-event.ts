@@ -166,7 +166,7 @@ export function appendBlockEvent(
       // and the answer stays one flowing block.
       const lastFinalIdx = findLastIndex(blocks, (b) => b.type === 'finalOutput');
       const intervening = lastFinalIdx !== -1 && blocks.slice(lastFinalIdx + 1).every(
-        (b) => b.type === 'memoryNotice' || b.type === 'phase' || b.type === 'recalledMemories',
+        (b) => b.type === 'memoryNotice' || b.type === 'phase',
       );
       if (intervening && text.trim()) {
         const openFinal = blocks[lastFinalIdx];
@@ -264,14 +264,6 @@ export function appendBlockEvent(
         type: 'phase',
         content: phase,
         ...(typeof event.step === 'number' ? { step: event.step } : {}),
-      });
-    }
-  } else if (event.type === 'recalledMemories') {
-    if (event.memories && event.memories.length > 0) {
-      blocks.push({
-        id: `b_recall_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        type: 'recalledMemories',
-        memories: event.memories,
       });
     }
   } else if (event.type === 'error') {

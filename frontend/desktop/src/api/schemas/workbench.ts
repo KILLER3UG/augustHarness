@@ -370,8 +370,8 @@ export const WorkbenchTurnTelemetryEventSchema = WorkbenchBaseSchema.extend({
 
 /** Lifecycle events without dedicated UI handling yet (filesystem
  *  checkpoints) — accepted so they don't trip the schema-mismatch
- *  warning in the stream dispatcher. `todosUpdated`, `upstreamRetry`,
- *  `recalledMemories` and `narrationReclassify` route to handlers in
+ *  warning in the stream dispatcher. `todosUpdated`, `upstreamRetry`
+ *  and `narrationReclassify` route to handlers in
  *  streamEvents.ts; `turnTelemetry` has its own schema above (a
  *  discriminated union cannot hold the same `type` twice).
  *
@@ -386,7 +386,6 @@ export const WorkbenchMiscLifecycleEventSchema = WorkbenchBaseSchema.extend({
     'aborted',
     'retrying',
     'upstreamRetry',
-    'recalledMemories',
     'narrationReclassify',
     'tool_progress',
     'info',

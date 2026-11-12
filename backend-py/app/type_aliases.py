@@ -130,7 +130,6 @@ class BrainConfigDict(TypedDict, total=False):
     budgetWallClockSec: int
     autoRouteMinSamples: int
     modelMemoryRead: bool
-    memoryAutoInject: bool
     memoryReview: bool
     modelMemoryWrites: bool
     memorySensitiveTopics: bool

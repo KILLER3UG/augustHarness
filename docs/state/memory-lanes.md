@@ -3,7 +3,7 @@ id: memory-lanes
 title: Memory lanes
 kind: contract
 status: implemented
-summary: Three separate routes carry stored memory into a turn, and only one of them is automatic.
+summary: Two automatic routes carry stored memory into a turn; everything beyond them is a search the model asks for.
 parent: august-map
 sources:
   - backend-py/app/services/memory_store/rest.py
@@ -16,41 +16,53 @@ diagramLinks:
 
 # Memory lanes
 
-Stored memory reaches a turn three different ways, and they are not the same
-mechanism. Confusing them is the usual reason a "why did it not remember"
-investigation goes wrong.
+Stored memory reaches a turn through two automatic routes, and everything beyond
+them is a search the model has to ask for. Confusing the automatic lanes with
+search is the usual reason a "why did it not remember" investigation goes wrong.
 
 ```mermaid
 flowchart TD
-  Profile[Profile lane] -->|always, every turn| Prompt
+  Profile[Profile / preference lane] -->|always, every turn| Prompt
   Delta[New since this chat opened] -->|always, appended to the tail| Prompt
-  Recall[BM25 recall] -->|only when the model asks| Prompt
+  Index[Boot memory index] -->|session start, in the system prompt| Prompt
   Prompt[(Model context)]
-  Write[remember] --> Store[(Facts table)]
+  Write[remember] --> Store[(Facts record)]
   Store --> Profile
   Store --> Delta
-  Store --> Recall
+  Store --> Index
+  Search[brain_query facts store] -->|the model asks| Store
+  List[list_facts] -->|the model pages| Store
 ```
 
-## The three lanes
+## The two automatic lanes
 
-**Profile lane.** Facts stored with `kind='profile'` are rendered first, inside a
-budget of about 600 characters, on every turn. This is what makes August
-remember who you are without waiting for a keyword to match. It runs whether or
-not automatic recall is on.
+**Profile lane.** Facts stored with `kind='profile'` or `kind='preference'` are
+rendered first, inside a budget of about 600 characters, on every turn. There is
+no keyword match and no setting to arm. This is what makes August remember who
+you are without waiting for a query to hit. A fact dropped for budget is named in
+a `recall partial:` line rather than disappearing silently.
 
 **Memory delta.** A plain list of facts written or updated since this chat
-opened, appended to the prompt tail. It is a projection over the facts table,
+opened, appended to the prompt tail. It is a projection over the facts record,
 not a cursor and not a second store, so an update to an existing key arrives
 like a new write and a retired row cannot resurface. The comparison is on
 `updated_at` at microsecond resolution, which is what lets a fact written in the
 opening second of a chat be visible on the next request.
 
-**Recall.** A BM25 search over the facts table, gated by the `memoryAutoInject`
-setting, which is **armed by default** since 2026-10-24 (an explicit stored
-`false` wins). With it off, recall happens only when the model itself calls
-`brain_query`. A fact dropped for budget reasons is named in a
-`recall partial:` line rather than disappearing silently.
+## The pull doors
+
+There is no per-turn ranked tail and no `memoryAutoInject` setting: the key was
+deleted from the brain config, so a config file or script that still writes it is
+writing a key nothing reads. A ranked search happens when the model calls
+`brain_query` with the `facts` store, and `list_facts` pages the record with
+`offset` / `total` / `hasMore`.
+
+Ranking survives only inside those explicit doors, plus the near-duplicate check
+that keeps `remember` from filing a second copy of an existing fact — the two
+places a query exists at all. It is not attached to a turn because it cannot
+carry one: measured on the real 19-fact store, BM25 returned nothing for "what
+should I set my editor theme to" against the fact that says "Prefers dark mode",
+and ranked the wrong fact first for "what am I doing my degree in".
 
 ## Writing
 
@@ -66,8 +78,9 @@ door, and internal and UI routes also call the same store function directly.
 
 ## What survives a reset
 
-Backups are taken through the SQLite backup API on a read-only handle, checked
-with `integrity_check` before one is trusted, and pruned to a verified rolling
-set. A restore is staged and applied at the next launch, never swapped in place,
-because other threads still hold the live file. What a restore replaced is kept
-beside it.
+Backups are a verified `tar.gz` of `memory/` + `state/` + `config.json` with a
+SHA-256 manifest: every archive is re-opened and every file hash is checked before
+one is trusted, and retention is a verified rolling set. A restore is staged and
+applied at the next launch, never swapped in place, because other threads still
+hold the record files open for atomic writes. What a restore replaced is kept
+beside it as `<name>.pre-restore`.

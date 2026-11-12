@@ -112,10 +112,6 @@ class WorkbenchSession:
     # (Removed Part 25 Phase 4: `_auto_routed` was never set or read — the
     # evidence-driven auto-router it described was never wired into the turn
     # loop; routing_evidence is written by the Arena/Debate verdict endpoint.)
-    # Auto-memories that getRelevantMemories() prefetched into the last
-    # buildSystemPrompt() call — surfaced to the frontend as a `recalledMemories`
-    # SSE event (see workbench.chatTurn). Cleared/replaced every turn.
-    _last_recalled_memories: list[dict[str, object]] | None = None
     # What the last buildSystemPrompt() call injected (profile, heuristics,
     # recalled memories, ...) — carried into the per-turn `done` event and the
     # chat context panel. Set/cleared every turn in buildSystemPrompt.
