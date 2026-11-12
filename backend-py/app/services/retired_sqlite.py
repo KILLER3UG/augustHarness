@@ -763,23 +763,36 @@ def run_sqlite_retirement() -> dict[str, object]:
         'SQLite retired: imported %s; rollback recovery restored %d fact(s)',
         counts, recovered,
     )
-    for src in (
-        db,
-        db.with_name(db.name + '-wal'),
-        db.with_name(db.name + '-shm'),
+    # The retired set keeps ONE naming convention: the database files gain
+    # `.retired`, and every sidecar takes the PAIRED form
+    # (`<db>.retired-wal`, not `<db>-wal.retired`). Pairing matters when the
+    # staged-copy path retired a database whose WAL still held a tail —
+    # SQLite looks for `<db>.retired-wal` when the retired file is opened,
+    # so a paired WAL is recoverable and a suffixed one is stranded bytes.
+    base = db.with_name(db.name + _RETIRED_SUFFIX)
+    for src, dst in (
+        (db, base),
+        (db.with_name(db.name + '-wal'), base.with_name(base.name + '-wal')),
+        (db.with_name(db.name + '-shm'), base.with_name(base.name + '-shm')),
         # The pre-migration snapshot the OLD migration runner took. That
         # runner is gone with the SQL engine, so nothing else will ever move
         # or prune it: it sat on this install as a 216 MB orphan beside the
-        # database it was a snapshot of. It is renamed with the database so
-        # the whole retired set is one `.retired` family, and so the next
-        # snapshot the NEW code takes (there is none — the file store has no
-        # migrations) cannot be confused with it.
-        db.with_name(db.name + '.pre-migration'),
+        # database it was a snapshot of. It is renamed with the database —
+        # sidecars paired by the same rule — so the whole retired set is one
+        # `.retired` family, and so the next snapshot the NEW code takes
+        # (there is none — the file store has no migrations) cannot be
+        # confused with it.
+        (db.with_name(db.name + '.pre-migration'),
+         db.with_name(db.name + '.pre-migration' + _RETIRED_SUFFIX)),
+        (db.with_name(db.name + '.pre-migration-wal'),
+         db.with_name(db.name + '.pre-migration' + _RETIRED_SUFFIX + '-wal')),
+        (db.with_name(db.name + '.pre-migration-shm'),
+         db.with_name(db.name + '.pre-migration' + _RETIRED_SUFFIX + '-shm')),
     ):
         if not src.exists():
             continue
         try:
-            os.replace(src, Path(str(src) + _RETIRED_SUFFIX))
+            os.replace(src, dst)
         except OSError as exc:
             # The import landed and the marker is written; a rename that fails
             # (a held handle, a permissions quirk) is logged and retried on the

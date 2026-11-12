@@ -47,7 +47,9 @@ The index is [docs/agent/README.md](docs/agent/README.md).
   ([memory.md](docs/agent/memory.md)). A **derived, rebuildable** cache is not a
   second store and does not weaken this: `state/transcript-index.sqlite` is an
   FTS5 index over `transcripts/*.jsonl`, holds nothing the JSONL does not, is
-  rebuilt on boot, and search falls back to a scan when it is absent. Do not add
+  rebuilt on boot and re-synced before every query, and search falls back to a
+  scan whenever the index cannot answer — absent, corrupt, or asked for a term
+  its tokenizer cannot match. Do not add
   a derived cache that is authoritative for anything.
 - **No verifier gate.** Nothing withholds a final answer.
   `update_state(phase=…)` is progress tracking only.

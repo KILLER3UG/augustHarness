@@ -14,6 +14,13 @@ a verified ``tar.gz`` of exactly those. Before the file store, the only copy
 the app ever made of the SQL database was one rolling file nothing read back;
 the archive keeps the same guarantees with different bytes.
 
+The scope is deliberate (owner decision, 2026-11-12): ``transcripts/`` and
+``telemetry/`` are NOT archived. The transcript is session history the owner
+has chosen not to snapshot offline, and telemetry is a cap-bound ledger whose
+old rows exist to be rotated away. Do not widen the archive to "all of
+data/" without an owner decision — the exclusion is a scope statement, not an
+oversight.
+
 The skills tree is the user's *procedure* memory, and it had no offline copy at
 all: every skill write is auto-applied (``skillAutonomy`` defaults on), so a
 bad bulk edit lands with no human step and the only undo is the per-skill

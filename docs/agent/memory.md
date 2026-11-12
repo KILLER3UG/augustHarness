@@ -37,6 +37,12 @@ consequences are load-bearing:
 
 - **It can be deleted at any time** and the next boot rebuilds it
   (`transcript_index.sync()` runs from the lifespan).
+- **It is synced before every query, not only at boot.** A message appended
+  after the last sync is on disk, so a stale index answering "not found"
+  would be a cache lying about the record; `search()` syncs first (a
+  directory listing plus one stamp lookup per unchanged file) and hands back
+  to the scan whenever the index cannot answer — absent, corrupt, or asked
+  for a term shorter than its trigram window.
 - **It is schema-versioned and self-healing.** A file written by an older
   schema is dropped, not read with columns it does not have; a file that is
   not a database is discarded and rebuilt.
@@ -302,6 +308,13 @@ terms), and prunes to a verified rolling set of 5; `GET /api/brain/integrity`
 is the health read. Settings → Memory shows the backups card. A restore is
 staged through `POST /api/brain/backups/restore` and applied at the next
 launch.
+
+**The backup's scope is deliberate** (owner decision, 2026-11-12): it covers
+the brain record only. `transcripts/` and `telemetry/` are excluded on
+purpose — the transcript is session history the owner has chosen not to
+snapshot offline, and telemetry is a cap-bound ledger whose old rows exist to
+be rotated away. Do not widen the archive to "all of data/" without an owner
+decision; the exclusion is a scope statement, not an oversight.
 
 **A restore is staged and applied at the next launch, never in place:**
 store threads hold the record files open for atomic writes, so an in-process
