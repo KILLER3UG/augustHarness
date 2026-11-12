@@ -1,16 +1,18 @@
 /* ── About — app identity, update checks, and release notes ─────────── */
-/* The update button used to live only in a hidden "Updates" section and
- * appeared solely when a newer release was detected, so it looked absent
- * even when checking. This page always shows a Check now control, surfaces
- * check ERRORS distinctly from "up to date", and offers Update now /
- * Release notes like the reference design. */
+/* The download is automatic: once a newer release is detected, the
+ * installer fetches itself in the background and this page narrates the
+ * state machine — "Version X available — downloading… (n / m)" then
+ * "Update ready — restart to apply" with exactly two choices (Restart
+ * now / Not now). There is deliberately no manual download button: the
+ * restart is the only click the user makes, and "Not now" is remembered
+ * across restarts (the staged installer never runs by itself). */
 
 import { useEffect, useState } from 'react';
 import {
   CheckCircle,
   AlertTriangle,
   Database,
-  Download,
+  DownloadCloud,
   ExternalLink,
   RefreshCw,
   Asterisk,
@@ -25,7 +27,11 @@ import { useAppUpdate } from '@/hooks/useAppUpdate';
 import { isTauri } from '@/lib/tauri-detect';
 import { openExternal } from '@/lib/tauri-shell';
 import { usePreferencesStore } from '@/lib/preferences';
-import { UPDATE_FAILURE_COPY } from '@/store/app-update-install';
+import {
+  getUpdateNotNowVersion,
+  setUpdateNotNowVersion,
+  UPDATE_FAILURE_COPY,
+} from '@/store/app-update-install';
 
 const RELEASES_URL = 'https://github.com/KILLER3UG/augustHarness/releases';
 
@@ -38,7 +44,6 @@ export function UpdateSection() {
     progress,
     formatBytes,
     install,
-    refresh,
     check,
     failure,
     cancelled,
@@ -66,6 +71,23 @@ export function UpdateSection() {
   }, []);
 
   const ready = progress.phase === 'ready';
+  const downloading = progress.phase === 'downloading';
+  const targetVersion = available?.version ?? null;
+  // The durable "Not now" for this version. It must survive remounts AND
+  // app restarts (the staged installer stays inert until an explicit
+  // restart click), so it is read from localStorage, never local state
+  // alone. A NEW release re-prompts because the choice is per version.
+  const [notNow, setNotNow] = useState(
+    () => targetVersion != null && getUpdateNotNowVersion() === targetVersion,
+  );
+  useEffect(() => {
+    setNotNow(targetVersion != null && getUpdateNotNowVersion() === targetVersion);
+  }, [targetVersion]);
+
+  const onNotNow = () => {
+    if (targetVersion) setUpdateNotNowVersion(targetVersion);
+    setNotNow(true);
+  };
 
   return (
     <div className="px-8 py-6 space-y-6">
@@ -109,10 +131,25 @@ export function UpdateSection() {
               ) : cancelled ? (
                 <span className="text-muted-foreground">Download cancelled.</span>
               ) : available ? (
-                <span className="flex items-center gap-2 font-medium text-warning-fg">
-                  <Download className="size-3 shrink-0" />
-                  A new update is ready: v{available.version}
-                </span>
+                downloading ? (
+                  <span className="flex items-center gap-2 font-medium text-primary">
+                    <DownloadCloud className="size-3 shrink-0" />
+                    Version {available.version} available — downloading…{' '}
+                    {progress.totalBytes != null && progress.totalBytes > 0
+                      ? `(${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.totalBytes)})`
+                      : `(${formatBytes(progress.downloadedBytes)})`}
+                  </span>
+                ) : ready ? (
+                  <span className="flex items-center gap-2 font-medium text-success-fg">
+                    <CheckCircle className="size-3 shrink-0" />
+                    Update ready — restart to apply
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-2 font-medium text-warning-fg">
+                    <DownloadCloud className="size-3 shrink-0" />
+                    Version {available.version} available — the download starts automatically.
+                  </span>
+                )
               ) : checking ? (
                 <span className="text-muted-foreground">Checking for updates…</span>
               ) : (
@@ -137,6 +174,13 @@ export function UpdateSection() {
               </div>
             )}
 
+            {/* The update contract (AGENTS.md): the download is automatic;
+                the restart is the user's click. There is no manual download
+                button — once a version is detected it downloads itself, and
+                the ready state offers exactly two choices: Restart now, or
+                Not now (which is remembered per version, across restarts —
+                the staged installer stays inert on disk until Restart now
+                runs it through the verified install path). */}
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
@@ -148,15 +192,27 @@ export function UpdateSection() {
                 <RefreshCw className={checking ? 'size-3 mr-1.5 animate-spin' : 'size-3 mr-1.5'} />
                 Check now
               </Button>
-              {available && (!installing || ready) && (
-                <Button size="sm" onClick={() => { void install(); }} data-testid="about-update-now">
-                  {ready
-                    ? <CheckCircle className="size-3 mr-1.5" />
-                    : <Download className="size-3 mr-1.5" />}
-                  {ready ? 'Restart to update' : 'Update now'}
-                </Button>
+              {ready && !notNow && (
+                <>
+                  <Button
+                    size="sm"
+                    onClick={() => { void install(); }}
+                    data-testid="about-update-restart"
+                  >
+                    <CheckCircle className="size-3 mr-1.5" />
+                    Restart now
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={onNotNow}
+                    data-testid="about-update-not-now"
+                  >
+                    Not now
+                  </Button>
+                </>
               )}
-              {installing && progress.phase === 'downloading' && (
+              {downloading && (
                 <>
                   <span className="text-xs font-medium text-primary">
                     {progress.percent != null
@@ -173,6 +229,20 @@ export function UpdateSection() {
                   </Button>
                 </>
               )}
+              {ready && notNow && (
+                <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  Not now is remembered — the downloaded update stays on disk, inert, until you
+                  restart into it.
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { void install(); }}
+                    data-testid="about-update-restart"
+                  >
+                    Restart now
+                  </Button>
+                </span>
+              )}
               {progress.phase === 'restarting' && (
                 <span className="text-xs font-medium text-primary">Launching installer…</span>
               )}
@@ -186,7 +256,7 @@ export function UpdateSection() {
                     size="sm"
                     onClick={() => { void openExternal(RELEASES_URL); }}
                   >
-                    Download manually
+                    Get the release manually
                   </Button>
                 </>
               )}
@@ -231,15 +301,15 @@ export function UpdateSection() {
                 {ready
                   ? `${available?.version ?? 'Update'} is ready`
                   : progress.phase === 'restarting'
-                    ? 'Opening the installer…'
+                    ? 'Restarting to apply the update…'
                     : 'Downloading update…'}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {ready
                   ? 'The update is downloaded. Restart when you’re ready to apply it.'
                   : progress.phase === 'restarting'
-                    ? 'The setup window will appear in a moment. August closes while the installer runs and reopens when it finishes.'
-                    : 'The installer opens after the download finishes.'}
+                    ? 'August closes while the silent in-place update runs and reopens when it finishes.'
+                    : 'The download runs by itself; nothing installs until you restart.'}
               </p>
             </div>
             <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">

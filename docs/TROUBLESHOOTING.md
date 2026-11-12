@@ -560,14 +560,18 @@ comes back:
 
 1. **The download is automatic.** The app checks for a new build on launch and
    whenever it is brought back into focus (a 30-minute stale time), and starts
-   downloading 60 seconds after a check finds one. Turn it off under Settings →
-   About → "Download updates automatically". The download streams via the
+   downloading 60 seconds after a check finds one — there is no manual
+   download button. Turn the auto-download off under Settings → About →
+   "Download updates automatically". The download streams via the
    `download_release_installer` Tauri command with `update-download-progress`
    events.
 2. **The restart is your click.** When the download finishes the app offers
-   "Restart to update". It never restarts on its own — a restart interrupts
-   whatever turn is running. If you cancel a download, that version is not
-   fetched again.
+   exactly two choices: "Restart now" (the verified install path) or "Not
+   now". It never restarts on its own — a restart interrupts whatever turn is
+   running. "Not now" is remembered per version across restarts: the app
+   stays on the old version, the downloaded installer sits inert on disk
+   until you click Restart now, and only a NEW release prompts again. If you
+   cancel a download, that version is not fetched again.
 3. **The replace is silent.** The app launches the installer with `/UPDATE /S`
    and exits; the installer replaces the app in place, and a detached waiter
    relaunches August a few seconds later.

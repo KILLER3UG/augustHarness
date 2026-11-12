@@ -30,6 +30,24 @@ only recursive delete the update path performs — refuses any target that is no
 inside `backend-runtime/`. Uninstall deleting app data is deliberately opt-in
 AND suppressed under `/UPDATE`.
 
+## Launch: the workspace is up from frame one
+
+**Nothing blocks on backend readiness.** The workspace — chat surface, rail,
+composer — renders immediately; the backend starts silently in the background
+and `BackendStatusPill` (`components/shell/BackendStatusPill.tsx`) is the one
+affordance reporting it: a quiet "Starting backend…" chip with the real phase
+("Preparing backend files…", "Installing dependencies…"), a fade to nothing
+once the supervisor reports ready, and on failure a compact recovery card
+carrying Restart backend / Restart August inside the pill's expanded state —
+never a full-screen wall. The old `BackendBootstrapGate` and its launch
+conversation are deleted, not dormant. The "wait" half belongs to existing
+machinery, not to a new poll: `api/client` discovery retries with backoff, the
+gateway health poll flips to open, and a composer send submitted before
+readiness parks in the offline queue (C9) and flushes the moment the API is
+reachable. The 8 s watchdog (one `restart_proxy` ask if the supervisor has not
+come up) moved with the pill — the recovery machinery is unchanged; only WHO
+blocks changed.
+
 ## Update flow
 
 **An update is an IN-PLACE, SILENT replace, and the app restarts itself.**
@@ -62,7 +80,16 @@ edit them only while changing the waiter itself.
 
 The DOWNLOAD is automatic (Settings → About → "Download updates automatically",
 on by default, 60 s after launch); the RESTART never is — it interrupts whatever
-is running, so it stays the user's click.
+is running, so it stays the user's click. There is no manual download button:
+once a check finds a version, that version downloads itself, and the surfaces
+narrate one state machine — "Version X available — downloading… (n / m)", then
+"Update ready — restart to apply" with exactly two choices: **Restart now**
+(the verified install path: schedule the waiter → stop backend →
+`launch_installer_and_exit`) or **Not now**. "Not now" is durable per version
+across restarts: the app keeps running the old version, the staged installer
+sits inert in `{temp}/august-updates` until that same click runs it, and no
+startup, quit or timer path ever launches it — only the badge keeps nudging.
+A NEW release re-prompts, because the choice is stored per version.
 
 `npm run check:minisign` proves the VERIFIER matches the format the app
 verifies with (it checks the `minisign-verify` crate's own published vector, so

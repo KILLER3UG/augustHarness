@@ -1,9 +1,9 @@
 /** Global update flow dialog: download → ready → explicit restart.
  *
- * Styled with the same conversation chrome as the app-opening / update
- * celebration UI (ConversationStage): an "August" titlebar with a live status
- * pill, a user + assistant bubble thread, and a composer-style action row —
- * so updating looks like the app talking to you rather than a generic modal.
+ * Styled with the same conversation chrome as the update celebration UI
+ * (ConversationStage): an "August" titlebar with a live status pill, a user +
+ * assistant bubble thread, and a composer-style action row — so updating
+ * looks like the app talking to you rather than a generic modal.
  */
 
 import { useEffect, useState } from 'react';
@@ -14,8 +14,8 @@ import { UpdateProgressBar } from '@/components/ui/UpdateProgressBar';
 import { useAppUpdate, useAppUpdateVersion } from '@/hooks/useAppUpdate';
 import { useActiveSessions } from '@/hooks/useActiveSessions';
 import {
-  getUpdateLaterVersion,
-  setUpdateLaterVersion,
+  getUpdateNotNowVersion,
+  setUpdateNotNowVersion,
   useAppUpdateInstallStore,
   UPDATE_FAILURE_COPY,
 } from '@/store/app-update-install';
@@ -26,11 +26,11 @@ export function UpdateRelaunchOverlay() {
   const progress = useAppUpdateInstallStore((s) => s.progress);
   const { available, formatBytes, install, cancelDownload } = useAppUpdate();
   const cachedVersion = useAppUpdateVersion();
-  // Honour a durable "Later" before the first paint, so a remount does not
-  // flash the dialog for a version the user already deferred (the effect
+  // Honour a durable "Not now" before the first paint, so a remount does not
+  // flash the dialog for a version the user already declined (the effect
   // below covers a version that arrives after mount).
   const [readyDismissed, setReadyDismissed] = useState(
-    () => cachedVersion != null && getUpdateLaterVersion() === cachedVersion,
+    () => cachedVersion != null && getUpdateNotNowVersion() === cachedVersion,
   );
   const activeSessions = useActiveSessions();
 
@@ -48,11 +48,11 @@ export function UpdateRelaunchOverlay() {
       setReadyDismissed(false);
       return;
     }
-    // "Later" is durable per version (spec §6.1): a remount, the settings
-    // visit, or the notifications panel must not resurrect a dialog the user
-    // already deferred. A fresh launch that rediscovers the staged installer
-    // clears the stored choice, so the prompt comes back there.
-    setReadyDismissed(targetVersion != null && getUpdateLaterVersion() === targetVersion);
+    // "Not now" is durable per version: a remount, the settings visit, the
+    // notifications panel AND a fresh launch must not resurrect a dialog the
+    // user already declined. The app stays on the old version across
+    // restarts; only the badge keeps nudging, and a NEW release re-prompts.
+    setReadyDismissed(targetVersion != null && getUpdateNotNowVersion() === targetVersion);
   }, [ready, targetVersion]);
 
   const showDialog = visible && (!ready || !readyDismissed);
@@ -82,7 +82,7 @@ export function UpdateRelaunchOverlay() {
   const assistantLine = downloading
     ? `Downloading ${vLabel}. The latest desktop build is coming down — you can keep working while it finishes, and your sessions won't be interrupted.`
     : ready
-      ? `${vLabel} is downloaded and ready. Restart whenever you like to apply it — sessions aren't interrupted until you click.`
+      ? `${vLabel} is downloaded and ready. Restart now to apply it — sessions aren't interrupted until you click. Not now keeps you on this version; the update never installs by itself.`
       : restarting
         ? `Installing ${vLabel}. The app is closing so the update can apply — the installer will reopen it shortly.`
         : 'Preparing the installer…';
@@ -241,17 +241,20 @@ export function UpdateRelaunchOverlay() {
               )}
               {ready && (
                 <>
+                  {/* "Not now" — persisted per version, across restarts. The
+                      staged installer stays inert on disk; only the badge
+                      keeps nudging. */}
                   <button
                     type="button"
                     onClick={() => {
                       setReadyDismissed(true);
-                      if (targetVersion) setUpdateLaterVersion(targetVersion);
+                      if (targetVersion) setUpdateNotNowVersion(targetVersion);
                     }}
                     className="shrink-0 rounded-lg px-2.5 py-2 text-[0.75rem] font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                    aria-label="Later"
+                    aria-label="Not now"
                     data-testid="update-later"
                   >
-                    <X className="size-4" />
+                    Not now
                   </button>
                   <button
                     type="button"
@@ -260,7 +263,7 @@ export function UpdateRelaunchOverlay() {
                     data-testid="update-restart"
                   >
                     <RefreshCw className="size-3" />
-                    Restart to update
+                    Restart now
                   </button>
                 </>
               )}

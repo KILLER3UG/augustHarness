@@ -9,7 +9,6 @@ import type { Update } from '@tauri-apps/plugin-updater';
 import { usePreferencesStore } from '@/lib/preferences';
 import {
   IDLE_UPDATE_PROGRESS,
-  setUpdateLaterVersion,
   useAppUpdateInstallStore,
   type AppUpdateProgress,
 } from '@/store/app-update-install';
@@ -154,8 +153,14 @@ export function useAppUpdate() {
     retry: false,
   });
   // A download that finished but was never applied stays usable across a
-  // restart: surface it straight as "Restart to update" instead of silently
-  // making the user re-download a ~200 MB installer.
+  // restart: surface it straight as "Update ready — restart to apply"
+  // instead of silently making the user re-download a ~200 MB installer.
+  // This NEVER clears a durable "Not now": the owner's contract is that a
+  // declined update stays declined across restarts — the app keeps running
+  // the old version, the staged installer stays INERT on disk, and only the
+  // badge keeps nudging. Only the user's explicit restart click
+  // (`launch_installer_and_exit`) ever runs it. A NEW release re-prompts,
+  // because the "Not now" is stored per version.
   useEffect(() => {
     const version = query.data?.version;
     if (!isTauri || !version || !isWindowsDesktop()) return;
@@ -165,9 +170,6 @@ export function useAppUpdate() {
       .then((path) => {
         if (cancelled || !path) return;
         pendingInstallerPath = path;
-        // A fresh launch that finds the staged installer re-surfaces the
-        // prompt: clear a previous "Later" for this version (spec §6.1).
-        setUpdateLaterVersion(null);
         setInstalling(true);
         setProgress({ percent: 100, downloadedBytes: 0, totalBytes: null, phase: 'ready' });
       })
@@ -183,10 +185,12 @@ export function useAppUpdate() {
     const state = useAppUpdateInstallStore.getState();
     if (state.installing && state.progress.phase !== 'ready') return;
 
-    // The second click is intentionally the explicit "Restart to update"
-    // action shown after the installer has finished downloading. The
-    // automatic background download passes 'download', so it can never
-    // apply an update on its own — the user decides when to restart.
+    // The ONLY apply path. It runs exclusively from the user's explicit
+    // "Restart now" click shown once the installer has finished downloading.
+    // The automatic background download passes 'download', so it can never
+    // apply an update on its own — nothing at boot, on quit or on a timer
+    // reaches this branch; a durable "Not now" persists per version and no
+    // startup path clears it. The installer sits inert on disk until here.
     if (mode === 'apply' && state.installing && state.progress.phase === 'ready') {
       try {
         if (isWindowsDesktop()) {

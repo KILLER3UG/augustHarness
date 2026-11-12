@@ -469,9 +469,19 @@ function ProfileRailRow() {
   const navigate = useNavigate();
   const accounts = useAccountStore((s) => s.accounts);
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
-  const { available: updateAvailable } = useAppUpdate();
+  const { available: updateAvailable, progress: updateProgress } = useAppUpdate();
   const account = accounts.find((a) => a.id === activeAccountId) ?? null;
   if (!account) return null;
+  // The chip mirrors the update state machine (Settings → Updates is the
+  // owner): detected → downloading in the background → ready, where the app
+  // stays on the old version until the user's explicit restart click.
+  const updatesLabel = !updateAvailable
+    ? 'Up to date'
+    : updateProgress.phase === 'downloading'
+      ? `Downloading update · v${updateAvailable.version}`
+      : updateProgress.phase === 'ready'
+        ? 'Update ready · restart to apply'
+        : `Update available · v${updateAvailable.version}`;
   return (
     <div className="min-h-0 shrink-0 border-t border-sidebar-border p-2">
       <button
@@ -495,7 +505,8 @@ function ProfileRailRow() {
         <Settings2 className="size-3 shrink-0 text-sidebar-foreground/40" aria-hidden="true" />
       </button>
       {/* Updates status row — same affordance as the model dropdown: current
-          state ("Up to date" / "Update available") rendered under the item. */}
+          state ("Up to date" / downloading / ready) rendered under the item.
+          Click opens Settings → Updates, where Restart now / Not now live. */}
       <button
         onClick={() => {
           void navigate('/settings/app-updates');
@@ -512,7 +523,7 @@ function ProfileRailRow() {
           aria-hidden="true"
         />
         <span className="min-w-0 flex-1 truncate text-xs text-sidebar-foreground/60">
-          {updateAvailable ? `Update available · v${updateAvailable.version}` : 'Up to date'}
+          {updatesLabel}
         </span>
       </button>
     </div>

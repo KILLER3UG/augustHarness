@@ -13,6 +13,7 @@ import { AlertCircle } from "lucide-react";
 import { openConversationSearch } from "@/store/conversation-search";
 import { openFolderViaTauri, folderNameFromPath } from "@/api/folder";
 import { isTauri } from "@/lib/tauri-detect";
+import { useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { useAppUpdate } from "@/hooks/useAppUpdate";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog";
@@ -269,9 +270,8 @@ export function SessionList({
   const signedIn = activeAccount != null;
   const {
     available: updateAvailable,
-    installing: updateInstalling,
-    install: installUpdate,
   } = useAppUpdate();
+  const navigate = useNavigate();
   const dropdownUser = activeAccount
     ? {
         name: activeAccount.displayName,
@@ -1308,22 +1308,22 @@ export function SessionList({
           </div>
 
           {/* The update door, directly above the avatar — and only when there
-              IS an update. Detection is already automatic: useAppUpdate polls
-              on a 30-minute stale time and again on window focus, so a manual
-              "check" control is a chore the app does not need. One click here
-              downloads and applies, the same call the notifications panel
-              makes. */}
+              IS an update. Detection and download are both automatic now
+              (useAppUpdate checks on a 30-minute stale time and on window
+              focus, then fetches in the background), so this button does not
+              download or apply anything: it opens Settings → Updates, where
+              the progress lives and "Restart now" is the only apply action
+              the app has. */}
           {updateAvailable ? (
             <Button variant="bare"
               type="button"
               className="nav-item"
               data-active="true"
               data-testid="sidebar-update"
-              disabled={updateInstalling}
-              onClick={() => { void installUpdate(); }}
+              onClick={() => { void navigate('/settings/app-updates'); }}
             >
               <SignalIcon name="download" />
-              <span>{updateInstalling ? 'Updating…' : 'Update'}</span>
+              <span>Update</span>
               <span className="nav-count">{updateAvailable.version}</span>
             </Button>
           ) : null}

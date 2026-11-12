@@ -839,7 +839,10 @@ because they belong to the window and not to the install.
 
 The **restart** is never automatic, whatever this says. A restart interrupts
 whatever turn is running, so it stays the user's click even though the
-download is not. Turning the download off does not stop the app from
+download is not: a ready update offers exactly two choices — **Restart now**
+or **Not now** — and "Not now" is remembered per version across restarts, so
+the app stays on the old version and the downloaded installer sits inert
+until that same click. Turning the download off does not stop the app from
 *offering* an update; it only stops the fetch. See
 [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#updating-on-windows-silent-in-place)
 for the whole sequence.

@@ -33,14 +33,15 @@ update *wrong* rather than *broken*.
 |---|---|---|---|
 | 1 | Install the previous release. Create a session, add a provider key, write one memory, and set a non-default brain-config value. | The session, the key, the memory and the setting all persist. | Stop. Nothing below is meaningful if an update loses state. |
 | 2 | Publish a new build. Launch August and wait 60 s. | The download starts on its own. No prompt, no click. | The preference "Download updates automatically" is off, or the check did not run. |
-| 3 | Watch the download complete. | The UI offers "Restart to update". The app does NOT restart by itself. | The auto-download applied the update. That is the one thing it must never do — the restart interrupts whatever is running. |
-| 4 | Click "Restart to update". | No uninstall wizard. No install wizard. No window of any kind. The app closes. | An uninstall wizard appeared → the NSIS route is still `reinst_uninstall`. An install wizard appeared → `/S` is not being passed. |
-| 5 | Watch for the relaunch. | August reopens within a few seconds, on the NEW version. | Nothing reopened → the completion marker was not written, or the waiter was not scheduled. Check for `.august-update-complete` in the install directory. |
-| 6 | Look for a second August. | Exactly one window. One backend on its port. | Two windows → the POSTINSTALL's `ExecShell` is not suppressed under `/UPDATE`. |
-| 7 | Re-check the state from step 1. | The session, the provider key, the memory and the brain-config setting are all still there. | The update is not preserving state. That is the install/update promise; stop here. |
-| 8 | Run a turn that makes a tool call. | The tool runs. The model list shows a long model id WITHOUT it painting over the badges beside it. | The truncate regression. `npm run check:truncate` should have caught it — check it ran. |
-| 9 | Force a turn that the harness rescues (a budget breach, or a provider that 400s twice). | A notice appears in the transcript saying the turn was adjusted, and that the answer may be incomplete. | The `recovery` frame is invisible again — a handler is not being supplied. `npm run check:sse` should have caught it. |
-| 10 | Turn "Download updates automatically" off. Wait for another new build, and refocus the window. | No download starts. | The preference is not being read, or the cancel path is not honoured. |
+| 3 | Watch the download complete. | The UI offers "Update ready — restart to apply" with exactly two choices: Restart now / Not now. The app does NOT restart by itself. | The auto-download applied the update. That is the one thing it must never do — the restart interrupts whatever is running. |
+| 4 | Click "Restart now". | No uninstall wizard. No install wizard. No window of any kind. The app closes. | An uninstall wizard appeared → the NSIS route is still `reinst_uninstall`. An install wizard appeared → `/S` is not being passed. |
+| 5 | Click "Not now" on a fresh download, then quit August and reopen it (even reboot the machine). | The app reopens on the OLD version. The badge may still say an update is ready; the installer never runs by itself, at boot, on quit, or on a timer. | The app updated itself without a click → some path is auto-running the installer. Only `launch_installer_and_exit`, reached only from the Restart-now click, may start it. |
+| 6 | Watch for the relaunch. | August reopens within a few seconds, on the NEW version. | Nothing reopened → the completion marker was not written, or the waiter was not scheduled. Check for `.august-update-complete` in the install directory. |
+| 7 | Look for a second August. | Exactly one window. One backend on its port. | Two windows → the POSTINSTALL's `ExecShell` is not suppressed under `/UPDATE`. |
+| 8 | Re-check the state from step 1. | The session, the provider key, the memory and the brain-config setting are all still there. | The update is not preserving state. That is the install/update promise; stop here. |
+| 9 | Run a turn that makes a tool call. | The tool runs. The model list shows a long model id WITHOUT it painting over the badges beside it. | The truncate regression. `npm run check:truncate` should have caught it — check it ran. |
+| 10 | Force a turn that the harness rescues (a budget breach, or a provider that 400s twice). | A notice appears in the transcript saying the turn was adjusted, and that the answer may be incomplete. | The `recovery` frame is invisible again — a handler is not being supplied. `npm run check:sse` should have caught it. |
+| 11 | Turn "Download updates automatically" off. Wait for another new build, and refocus the window. | No download starts. | The preference is not being read, or the cancel path is not honoured. |
 
 ## The signature check
 
