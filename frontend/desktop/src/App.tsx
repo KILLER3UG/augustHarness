@@ -7,7 +7,7 @@ import { ShortcutsModal } from '@/components/overlays/ShortcutsModal';
 import { ConversationSearchModal } from '@/components/overlays/ConversationSearchModal';
 import { OnboardingTour } from '@/components/overlays/OnboardingTour';
 import { ProviderOnboardingModal } from '@/components/overlays/ProviderOnboardingModal';
-import { BackendBootstrapGate } from '@/components/overlays/BackendBootstrapGate';
+import { BackendStatusPill } from '@/components/shell/BackendStatusPill';
 import { UpdateConversation } from '@/components/overlays/UpdateConversation';
 import { QuitConfirmModal } from '@/components/overlays/QuitConfirmModal';
 import { UpdateRelaunchOverlay } from '@/components/overlays/UpdateRelaunchOverlay';
@@ -94,8 +94,15 @@ export default function App() {
 
   return (
     <>
-      <BackendBootstrapGate>
-        <Routes>
+      {/* The workspace renders IMMEDIATELY — chat surface, rail and composer
+          are visible from frame one. The backend starts silently in the
+          background (AGENTS.md: "An update is in-place… the download is
+          automatic"; the same shape holds for boot: nothing blocks on
+          backend readiness). BackendStatusPill below is the one affordance
+          reporting that bootstrap, and the send path + api/client discovery
+          own the "wait for the backend" half: composition works, sends park
+          in the offline queue and flush the moment the API is reachable. */}
+      <Routes>
           {/* The layout route's path ends in a SPLAT and its children are
               RELATIVE. It used to be a pathless parent with absolute
               children, and React Router warned that "the parent won't
@@ -146,13 +153,16 @@ export default function App() {
         )}
         {/* First launch after a version bump: animated "what's new" chat. */}
         <UpdateConversation />
-      </BackendBootstrapGate>
-      {/* Outside the gate: the native close handler defers to the webview, so a
-          quit prompt rendered inside it could not be reached when the backend
-          failed to start — the window had no way to close. Same reason as
-          UpdateRelaunchOverlay below. */}
+      {/* Passive status affordance for the backend bootstrap — never a
+          blocker: the workspace above is already interactive. */}
+      <BackendStatusPill />
+      {/* Siblings of the routed tree, not inside it: the native close handler
+          defers to the webview, so the quit prompt and the update-restart
+          overlay must render even when a chat surface threw or the backend is
+          down — a surface-scoped boundary could hide them. */}
       <QuitConfirmModal />
-      {/* Outside the gate so a stopped backend during update can't hide it. */}
+      {/* Rendered above everything so a stopped backend during update can't
+          hide it. */}
       <UpdateRelaunchOverlay />
     </>
   );

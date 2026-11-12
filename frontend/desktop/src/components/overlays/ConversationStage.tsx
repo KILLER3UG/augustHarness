@@ -1,13 +1,12 @@
-/* ── ConversationStage — the animated chat used by launch + update ───── */
-/* Plays a ConversationScript beat-by-beat with a smooth rise-in, a live */
-/* status row that reflects the real backend phase, a typing indicator, */
-/* and a Skip control. It calls `onDone` once the script has finished — */
-/* for launch that is gated on the backend actually being ready, so the */
-/* app reveals the moment the real load completes (never a fake wait).  */
+/* ── ConversationStage — the animated chat used by the update flow ───── */
+/* Plays a ConversationScript beat-by-beat with a smooth rise-in, a      */
+/* typing indicator, and a Skip control. It calls `onDone` once the      */
+/* script has finished. (The launch conversation that used to gate the   */
+/* whole app on this stage is gone — the workspace renders immediately   */
+/* and BackendStatusPill reports the bootstrap.)                         */
 
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useReducedMotion } from '@/lib/motion';
 import type { Beat, ConversationScript } from '@/lib/conversations';
@@ -29,24 +28,6 @@ function TypingDots() {
         />
       ))}
     </span>
-  );
-}
-
-function LiveRow({ ready, label, detail }: { ready: boolean; label?: string; detail?: string }) {
-  return (
-    <div className="mt-2 flex items-center gap-2 text-xs">
-      {ready ? (
-        <Check className="size-3 shrink-0 text-success" aria-hidden />
-      ) : (
-        <Loader2 className="size-3 shrink-0 animate-spin text-primary" aria-hidden />
-      )}
-      <span className={cn('font-medium', ready ? 'text-foreground' : 'text-foreground/80')}>
-        {ready ? 'Ready' : label || 'Starting'}
-      </span>
-      {!ready && detail ? (
-        <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground/70">{detail}</span>
-      ) : null}
-    </div>
   );
 }
 
@@ -74,16 +55,10 @@ function BulletList({ items }: { items: string[] }) {
 function Bubble({
   beat,
   reduced,
-  ready,
-  liveLabel,
-  liveDetail,
 }: {
   beat: Beat;
   index?: number;
   reduced: boolean;
-  ready: boolean;
-  liveLabel?: string;
-  liveDetail?: string;
 }) {
   const rise = {
     initial: reduced ? { opacity: 1 } : { opacity: 0, y: 10 },
@@ -112,7 +87,6 @@ function Bubble({
       <div className="min-w-0 flex-1 pt-0.5 text-[0.84375rem] leading-relaxed text-foreground/90">
         {beat.text}
         {beat.bullets ? <BulletList items={beat.bullets} /> : null}
-        {beat.live ? <LiveRow ready={ready} label={liveLabel} detail={liveDetail} /> : null}
       </div>
     </motion.div>
   );
@@ -121,8 +95,6 @@ function Bubble({
 export function ConversationStage({
   script,
   ready,
-  liveLabel,
-  liveDetail,
   onDone,
   pillText,
   pillState,
@@ -130,17 +102,16 @@ export function ConversationStage({
   revealOnReady = false,
 }: {
   script: ConversationScript;
-  /** Backend actually ready (launch) — gates the closing beat + reveal. */
+  /** Backend actually ready — a `gate: 'ready'` closing beat holds until it
+   *  is (the update celebration passes `true`: the app is already running). */
   ready: boolean;
-  liveLabel?: string;
-  liveDetail?: string;
   onDone: () => void;
   pillText: string;
   pillState: 'busy' | 'ok';
   composerHint: string;
-  /** Launch mode: the moment `ready` flips true, converge the whole thread and
-   *  reveal fast — so a warm start snaps open instead of playing the full
-   *  dialogue. Off for the update celebration, which should always play out. */
+  /** The moment `ready` flips true, converge the whole thread and finish
+   *  fast — so a gated script snaps shut instead of dawdling. Off for the
+   *  update celebration, which should always play out. */
   revealOnReady?: boolean;
 }) {
   // Audit P2#18 — the sanctioned reduced-motion read (lib/motion.ts).
@@ -219,15 +190,7 @@ export function ConversationStage({
       {/* Thread */}
       <div className="flex min-h-[300px] flex-col gap-3.5 px-4 py-4">
         {beats.slice(0, shown).map((b, i) => (
-          <Bubble
-            key={i}
-            beat={b}
-            index={i}
-            reduced={reduced}
-            ready={ready}
-            liveLabel={liveLabel}
-            liveDetail={liveDetail}
-          />
+          <Bubble key={i} beat={b} index={i} reduced={reduced} />
         ))}
         <AnimatePresence>
           {waiting && (

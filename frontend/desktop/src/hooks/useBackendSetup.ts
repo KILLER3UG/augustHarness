@@ -76,18 +76,3 @@ export function useBackendSetup() {
 
   return { status, refresh, isTauri: tauri };
 }
-
-export const SETUP_STEPS: { id: BackendSetupPhaseId; label: string }[] = [
-  { id: 'copying', label: 'Preparing files' },
-  { id: 'creating_venv', label: 'Creating environment' },
-  { id: 'installing', label: 'Installing dependencies' },
-  { id: 'starting', label: 'Starting backend' },
-  { id: 'ready', label: 'Ready' },
-];
-
-export function setupStepIndex(phase: string): number {
-  if (phase === 'idle') return -1;
-  if (phase === 'error') return -2;
-  const idx = SETUP_STEPS.findIndex((s) => s.id === phase);
-  return idx >= 0 ? idx : phase === 'ready' ? SETUP_STEPS.length - 1 : 0;
-}

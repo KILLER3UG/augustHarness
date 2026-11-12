@@ -335,9 +335,10 @@ export function setDiscoveryBudget(attempts: number, maxBackoffMs = 1500): void 
  * past it) rejected it FOREVER: `const` cannot be reassigned, so every
  * `await ready` in whenReady/apiUrl/wsUrl rejected from then on and
  * installFetchPatch never ran, meaning every relative /api fetch went to the
- * Tauri asset origin. Meanwhile BackendBootstrapGate polls `proxy_status` on
- * its own 1s interval and reveals the app anyway — so the user got a fully
- * mounted UI against a dead API layer, with restart as the only way out.
+ * Tauri asset origin. Meanwhile the workspace renders immediately — nothing
+ * gates on readiness any more — and the gateway store polls `/api/health` on
+ * its own clock, so the user got a fully mounted UI against a dead API
+ * layer, with restart as the only way out.
  *
  * A settled promise is now CACHED, and a failed run is DISCARDED so the next
  * caller retries discovery rather than inheriting a dead promise. */
