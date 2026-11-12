@@ -59,6 +59,15 @@ into the tail. It rides the tail (stripped before persistence), so the cached
 prefix is untouched; `memory_context_preview` deliberately omits it, because a
 preview has no session.
 
+A keyword ranker can only match words the memory contains, and a model writes
+the words it chose, not the words the user will ask with. The corpus is title +
+description + aliases + key + body for that reason, and `aliases` is the
+compensating mechanism: measured on the recovered record, "Prefers dark mode"
+with aliases `[theme, appearance, editor theme]` answers "what should I set my
+editor theme to" (and "light mode"), while the same fact without them returns
+nothing. The `remember` prompt asks for aliases; a hand edit can add them to a
+file's frontmatter just the same.
+
 Scopes are `global` and `bot:<agentId>` only; `project:<path>` is refused at
 the write door on purpose, because workspace memory is the separate
 `.aug/memory` markdown layer that the tail already carries.

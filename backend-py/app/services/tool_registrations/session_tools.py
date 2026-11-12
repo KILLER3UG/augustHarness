@@ -2392,7 +2392,9 @@ def register() -> None:
                     'type': 'array',
                     'items': {'type': 'string'},
                     'description': 'Optional alternative names or phrasings a future message may use '
-                    'for this fact (≤8, 60 chars each). They join the deterministic alias pre-read.',
+                    'for this fact (≤8, 60 chars each). They join the recall corpus (BM25) and the '
+                    'deterministic alias pre-read — the words a fact does not contain cannot be '
+                    'matched without them.',
                 },
             },
             'required': ['fact'],
