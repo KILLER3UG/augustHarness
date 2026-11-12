@@ -152,24 +152,28 @@ async def run_bench(opts: BenchOptions) -> int:
     # ── headless stance BEFORE anything session-related runs ─────────────
     os.environ['HARNESS_HEADLESS'] = '1'
 
-    # Create the brain schema the same way app startup does. The bench drives the
+    # Create the store homes the same way app startup does. The bench drives the
     # loop in-process and never runs the app's lifespan, so on a throwaway data
-    # directory there is NO brain database schema at all — measured: a run that
+    # directory there is NO store at all yet — measured (SQLite era): a run that
     # called `remember` and `list_facts` left the file with 0 tables while both
-    # tools returned ok. `list_facts` reported `count: 0` for a missing table,
-    # which is indistinguishable from an empty store, so a broken memory path
-    # looked like a memory that simply had nothing in it. Bootstrapping here
-    # makes the bench's isolated store behave like a real one.
+    # tools returned ok. The file store needs no schema — its homes are created
+    # on first touch — but materializing them here keeps that measured property
+    # true on purpose rather than by accident: a bench store behaves like a
+    # real one from the first tool call.
     try:
-        from app.services.memory_conn import conn as _mem_conn
-        from app.services.memory_schema import ensure_schema as _ensure_schema
+        from app.services import filestore as _filestore
 
-        with _mem_conn() as _schemaConn:
-            _ensure_schema(_schemaConn)
+        for _home in (
+            _filestore.MEMORY_DIR,
+            _filestore.TRANSCRIPTS_DIR,
+            _filestore.TELEMETRY_DIR,
+            _filestore.STATE_DIR,
+        ):
+            _filestore.home(_home)
     except Exception as exc:
         # Loud, not swallowed: a bench that cannot build its own store must say
         # so, or every later memory assertion is vacuous.
-        print(f'august-bench: brain schema bootstrap failed: {exc}', file=sys.stderr)
+        print(f'august-bench: store bootstrap failed: {exc}', file=sys.stderr)
         return EXIT_ERROR
 
     # The scripted provider is a test fixture, not a product setting: it is
@@ -441,12 +445,11 @@ def _seed_memory_corpus(path: str) -> tuple[int, str]:
     Keys are namespaced `bench:` so a seeded corpus is identifiable and can be
     told apart from a real learned fact. The CLI has already refused to get here
     without an explicit `HARNESS_DATA_DIR`, which is what keeps this off the
-    user's brain database.
+    user's memory record.
     """
     import json
 
-    from app.services.memory_conn import conn
-    from app.services.memory_schema import ensure_schema
+    from app.services import filestore as _filestore
     from app.services.memory_store import save_fact
 
     try:
@@ -457,12 +460,15 @@ def _seed_memory_corpus(path: str) -> tuple[int, str]:
         return 0, f'not valid JSON: {exc}'
     if not isinstance(raw, list) or not raw:
         return 0, 'corpus must be a non-empty JSON array of fact objects'
-    # The bench drives the loop in-process and never runs the app's startup, so
-    # on a throwaway data directory the brain schema does not exist yet and the
-    # first write dies on `no such table: facts`. Creating it here is the same
-    # bootstrap the app performs at boot, not a parallel schema.
-    with conn() as migration_conn:
-        ensure_schema(migration_conn)
+    # The bench drives the loop in-process and never runs the app's startup.
+    # The file store needs no schema — materialize the homes so the first
+    # write lands in a real directory tree (same bootstrap as run_bench).
+    for _home in (
+        _filestore.MEMORY_DIR,
+        _filestore.TELEMETRY_DIR,
+        _filestore.STATE_DIR,
+    ):
+        _filestore.home(_home)
     written = 0
     for entry in raw:
         if not isinstance(entry, dict):

@@ -1,134 +1,37 @@
 """P4.2 — debounced commit for high-frequency per-turn writes.
 
-Per-turn telemetry (``turn_outcomes`` rows, lifecycle events, internal_state
-upserts) each issued its own ``conn.commit()`` on the turn thread — three
-WAL syncs per turn on the hot path, none of them read back within the turn.
-This module batches those commits into ONE debounced commit (≤2s window)
-without changing visibility semantics:
+RETIRED with SQLite: the whole-file stores write atomically and fsync at the
+call site (filestore rules 1 and 4), so there is nothing to batch — every
+write is already durable when the function returns, and the packaged desktop
+quit (``taskkill /T /F``) loses nothing.
 
-* Writes still execute immediately, so same-connection readers (the turn
-  thread's own thread-local connection) see them uncommitted, exactly as
-  before. Only the COMMIT is deferred.
-* Deferral applies ONLY on threads with a running asyncio loop (the turn /
-  loop thread). Sync contexts (tests, boot) and ``asyncio.to_thread``
-  workers commit immediately — their behavior is unchanged.
-* The flush runs on the OWNING thread (loop timers + next-call re-entry):
-  sqlite3 connections are ``check_same_thread`` by default and must never
-  be committed from a foreign thread.
-
-Durability trade: a hard crash inside the window loses ≤2s of
-diagnostics-only rows — accepted by the plan for exactly this class of
-write. Anything read cross-thread within the window must keep the
-immediate commit.
+The public names stay because importers in the transcript domain still call
+them: ``defer_commit(conn)`` is now a no-op and ``flush_thread_pending()``
+returns 0. A caller that still holds a SQLite connection object passes it
+here harmlessly while its own rewrite lands.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import sqlite3
-import threading
-import time
 
 logger = logging.getLogger(__name__)
 
+#: Kept for callers that read the old debounce window. Meaningless now: the
+#: file stores do not buffer.
 WINDOW_S = 2.0
-# A conn written continuously must not have its commit postponed forever.
-_MAX_HOLD_S = 10.0
-
-_lock = threading.Lock()
-# id(conn) -> (conn, owner thread id, first defer, due monotonic)
-_pending: dict[int, tuple[sqlite3.Connection, int, float, float]] = {}
-_timers: dict[int, asyncio.TimerHandle] = {}
 
 
-def _on_loop_thread() -> bool:
-    try:
-        asyncio.get_running_loop()
-        return True
-    except RuntimeError:
-        return False
+def defer_commit(conn: object = None, window_s: float = WINDOW_S) -> None:
+    """No-op. The SQL-era debounce funnel — file writes are durable on return.
 
-
-def _commit(conn: sqlite3.Connection) -> None:
-    """Commit through memory_conn's helper so the WAL checkpoint counts it.
-
-    Previously this called `conn.commit()` and then poked `note_commit()`
-    itself, which meant the deferred lane and the direct-write lane had two
-    places to keep in step. Now every brain commit goes through
-    `memory_conn.commit`, so the checkpoint fires wherever the write happens.
+    The ``conn`` argument is the retired connection handle; it is accepted so
+    call sites keep their shape during the engine swap and ignored otherwise.
     """
-    from app.services.memory_conn import commit as brain_commit
-
-    try:
-        if conn.in_transaction:
-            brain_commit(conn)
-    except sqlite3.ProgrammingError:
-        pass  # closed between defer and flush — nothing to persist
-    except Exception:
-        logger.debug('deferred commit failed', exc_info=True)
-
-
-def _flush_key(key: int) -> None:
-    with _lock:
-        entry = _pending.pop(key, None)
-        handle = _timers.pop(key, None)
-    if handle is not None:
-        handle.cancel()
-    if entry is not None:
-        _commit(entry[0])
-
-
-def _flush_owned_entries(*, only_due: bool) -> int:
-    """Flush entries owned by the CURRENT thread (never a foreign conn)."""
-    thread_id = threading.get_ident()
-    now = time.monotonic()
-    with _lock:
-        keys = [
-            k
-            for k, (_c, owner, _f, due) in _pending.items()
-            if owner == thread_id and (not only_due or due <= now)
-        ]
-    for key in keys:
-        _flush_key(key)
-    return len(keys)
+    del conn, window_s
+    return None
 
 
 def flush_thread_pending() -> int:
-    """Commit every pending deferred write owned by the calling thread."""
-    return _flush_owned_entries(only_due=False)
-
-
-def defer_commit(conn: sqlite3.Connection, window_s: float = WINDOW_S) -> None:
-    """Commit ``conn`` now (sync/worker threads) or on a ≤``window_s`` debounce.
-
-    Call instead of ``conn.commit()`` for high-frequency writes that are not
-    read back across threads within the turn.
-    """
-    if not _on_loop_thread():
-        _commit(conn)
-        return
-    thread_id = threading.get_ident()
-    now = time.monotonic()
-    with _lock:
-        entry = _pending.get(id(conn))
-        first = entry[2] if entry else now
-        _pending[id(conn)] = (conn, thread_id, first, min(now + window_s, first + _MAX_HOLD_S))
-        overdue = [
-            k
-            for k, (_c, owner, _f, due) in _pending.items()
-            if owner == thread_id and due <= now and k != id(conn)
-        ]
-    for key in overdue:
-        _flush_key(key)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    with _lock:
-        if id(conn) not in _pending:
-            return  # flushed again before the timer could be armed
-        old = _timers.get(id(conn))
-        _timers[id(conn)] = loop.call_later(window_s + 0.05, _flush_key, id(conn))
-    if old is not None:
-        old.cancel()
+    """No-op. There is no deferred queue to flush; returns 0 flushed units."""
+    return 0

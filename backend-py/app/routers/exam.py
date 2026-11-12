@@ -3,6 +3,11 @@ Exam router — generate, fetch, answer, and help preparation exams (v3, §13).
 
 The defining rule: the model authors every question. No endpoint accepts a
 client-supplied correct_index. Questions are served one at a time as banners.
+
+Storage: ``<state>/exams.json`` with three sections (``exams``,
+``examQuestions``, ``examAttempts``) — the SQL-era exams/exam_questions/
+exam_attempts tables. Rows keep their column names; ids are per-section
+sequential.
 """
 
 from __future__ import annotations
@@ -15,19 +20,47 @@ from fastapi import APIRouter, HTTPException
 
 from app.json_narrowing import as_int, as_list, as_str
 from app.services import exam_service
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_store import _conn
+from app.services.memory_store import tables
+from app.services.memory_store.timeutil import utc_now_text
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/api/exam')
+
+_EXAMS_LOCK_NAME = 'exams.store'
+
+
+def _exams_rows() -> list[dict[str, object]]:
+    return tables.load_section(tables.exams_file(), 'exams')
+
+
+def _questions_rows() -> list[dict[str, object]]:
+    return tables.load_section(tables.exams_file(), 'examQuestions')
+
+
+def _attempts_rows() -> list[dict[str, object]]:
+    return tables.load_section(tables.exams_file(), 'examAttempts')
+
+
+def _save_sections(
+    exams: list[dict[str, object]] | None = None,
+    questions: list[dict[str, object]] | None = None,
+    attempts: list[dict[str, object]] | None = None,
+) -> None:
+    with tables.store_lock(_EXAMS_LOCK_NAME):
+        if exams is not None:
+            tables.save_section(tables.exams_file(), 'exams', exams)
+        if questions is not None:
+            tables.save_section(tables.exams_file(), 'examQuestions', questions)
+        if attempts is not None:
+            tables.save_section(tables.exams_file(), 'examAttempts', attempts)
 
 
 def _read_attached_files(files: list[object], ws_root: Path | None) -> str:
     """Read the caller's attached files, bounded by a containment root.
 
     Split out of ``generateExam`` so it can be tested directly: inline, the
-    containment logic could only be reached through the full request/DB path,
+    containment logic could only be reached through the full request path,
     which is how triage #23 (a request-supplied root of ``/``) survived.
 
     Two roots, and neither is asserted by the caller: a session-owned workspace
@@ -120,10 +153,6 @@ def _trusted_workspace_root(session_id: str, claimed: str) -> Path | None:
     return None
 
 
-def _db():
-    return _conn()
-
-
 @router.post('/generate')
 async def generateExam(body: dict[str, object]):
     """Generate a new exam via Prefrontal. Topic can be a string or derived from uploaded files."""
@@ -161,29 +190,48 @@ async def generateExam(body: dict[str, object]):
     except ValueError as exc:
         logger.warning('exam generate failed: %s', exc)
         raise HTTPException(status_code=500, detail='Exam generation failed — check the model/provider configuration.')
-    conn = _db()
     source = 'files' if files else 'topic' if as_str(body.get('topic')) else 'model'
-    cur = conn.execute(
-        'INSERT INTO exams (title, topic, source, source_files) VALUES (?, ?, ?, ?)',
-        (f'Exam: {topic[:80]}', topic, source, sourceFiles),
-    )
-    examId = cur.lastrowid
-    for i, q in enumerate(questions):
-        conn.execute(
-            'INSERT INTO exam_questions (exam_id, position, stem, options, correct_index, rationale, origin) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            (examId, i + 1, q['stem'], json.dumps(q['options']), q['correct_index'], q['rationale'], 'generated'),
+    now = utc_now_text()
+    with tables.store_lock(_EXAMS_LOCK_NAME):
+        exams = _exams_rows()
+        examId = tables.next_id(exams)
+        exams.append(
+            {
+                'id': examId,
+                'title': f'Exam: {topic[:80]}',
+                'topic': topic,
+                'created_at': now,
+                'source': source,
+                'source_files': sourceFiles,
+            }
         )
-    brain_commit(conn)
-    first = conn.execute(
-        'SELECT id, position, stem, options FROM exam_questions WHERE exam_id = ? ORDER BY position LIMIT 1', (examId,)
-    ).fetchone()
+        qs = _questions_rows()
+        q_id_base = tables.next_id(qs)
+        for i, q in enumerate(questions):
+            qs.append(
+                {
+                    'id': q_id_base + i,
+                    'exam_id': examId,
+                    'position': i + 1,
+                    'stem': q['stem'],
+                    'options': json.dumps(q['options']),
+                    'correct_index': q['correct_index'],
+                    'rationale': q.get('rationale', ''),
+                    'source_snippet': '',
+                    'origin': 'generated',
+                }
+            )
+        _save_sections(exams=exams, questions=qs)
+    first = next((q for q in _questions_rows() if q.get('exam_id') == examId), None)
+    if first is None:  # pragma: no cover — the insert above just wrote it
+        raise HTTPException(status_code=500, detail='Exam generation failed — the question store did not persist.')
     firstQ = exam_service.stripAnswer(
         {
             'id': first['id'],
             'examId': examId,
             'position': first['position'],
             'stem': first['stem'],
-            'options': json.loads(first['options']),
+            'options': json.loads(str(first['options'])),
         }
     )
     return {'examId': examId, 'question': firstQ, 'totalQuestions': len(questions)}
@@ -200,18 +248,19 @@ async def addQuestion(examId: int, body: dict[str, object]):
     else:
         model = as_str(model_raw)
     provider = as_str(body.get('provider'))
-    conn = _db()
-    exam = conn.execute('SELECT topic FROM exams WHERE id = ?', (examId,)).fetchone()
+    exam = next((e for e in _exams_rows() if as_int(e.get('id'), 0) == examId), None)
     if not exam:
         raise HTTPException(status_code=404, detail='Exam not found')
-    topic = exam['topic'] or 'general'
-    existing = conn.execute(
-        'SELECT stem, options FROM exam_questions WHERE exam_id = ? ORDER BY position LIMIT 3', (examId,)
-    ).fetchall()
+    topic = str(exam.get('topic') or 'general')
+    existing = [
+        q for q in _questions_rows()
+        if as_int(q.get('exam_id'), 0) == examId
+    ]
+    existing.sort(key=lambda q: as_int(q.get('position'), 0))
     similar = []
-    for row in existing:
+    for row in existing[:3]:
         try:
-            similar.append({'stem': row['stem'], 'options': json.loads(row['options'])})
+            similar.append({'stem': row.get('stem'), 'options': json.loads(str(row.get('options')))})
         except Exception:
             continue
     try:
@@ -221,31 +270,35 @@ async def addQuestion(examId: int, body: dict[str, object]):
     except ValueError as exc:
         logger.warning('exam generate failed: %s', exc)
         raise HTTPException(status_code=500, detail='Exam generation failed — check the model/provider configuration.')
-    if afterPosition is not None:
-        afterPos = as_int(afterPosition)
-        conn.execute(
-            'UPDATE exam_questions SET position = position + 1 WHERE exam_id = ? AND position > ?', (examId, afterPos)
+    with tables.store_lock(_EXAMS_LOCK_NAME):
+        qs = _questions_rows()
+        in_exam = sorted(
+            (q for q in qs if as_int(q.get('exam_id'), 0) == examId),
+            key=lambda q: as_int(q.get('position'), 0),
         )
-        nextPos = afterPos + 1
-    else:
-        row = conn.execute(
-            'SELECT COALESCE(MAX(position), 0) + 1 FROM exam_questions WHERE exam_id = ?', (examId,)
-        ).fetchone()
-        nextPos = row[0]
-    cur = conn.execute(
-        'INSERT INTO exam_questions (exam_id, position, stem, options, correct_index, rationale, origin) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        (
-            examId,
-            nextPos,
-            q['stem'],
-            json.dumps(q['options']),
-            q['correct_index'],
-            q['rationale'],
-            f'user-requested: {requestText}' if requestText else 'user-requested',
-        ),
-    )
-    questionId = cur.lastrowid
-    brain_commit(conn)
+        if afterPosition is not None:
+            afterPos = as_int(afterPosition)
+            for row in in_exam:
+                if as_int(row.get('position'), 0) > afterPos:
+                    row['position'] = as_int(row.get('position'), 0) + 1
+            nextPos = afterPos + 1
+        else:
+            nextPos = max((as_int(row.get('position'), 0) for row in in_exam), default=0) + 1
+        questionId = tables.next_id(qs)
+        qs.append(
+            {
+                'id': questionId,
+                'exam_id': examId,
+                'position': nextPos,
+                'stem': q['stem'],
+                'options': json.dumps(q['options']),
+                'correct_index': q['correct_index'],
+                'rationale': q.get('rationale', ''),
+                'source_snippet': '',
+                'origin': f'user-requested: {requestText}' if requestText else 'user-requested',
+            }
+        )
+        _save_sections(questions=qs)
     newQ = exam_service.stripAnswer(
         {'id': questionId, 'examId': examId, 'position': nextPos, 'stem': q['stem'], 'options': q['options']}
     )
@@ -255,14 +308,23 @@ async def addQuestion(examId: int, body: dict[str, object]):
 @router.get('/{examId}/question/{position}')
 async def getQuestion(examId: int, position: int):
     """Fetch one question. NEVER leaks correct_index or rationale (the authoring invariant)."""
-    conn = _db()
-    q = conn.execute(
-        'SELECT id, stem, options FROM exam_questions WHERE exam_id = ? AND position = ?', (examId, position)
-    ).fetchone()
+    q = next(
+        (
+            q for q in _questions_rows()
+            if as_int(q.get('exam_id'), 0) == examId and as_int(q.get('position'), -1) == position
+        ),
+        None,
+    )
     if not q:
         raise HTTPException(status_code=404, detail='Question not found')
     return exam_service.stripAnswer(
-        {'id': q['id'], 'examId': examId, 'position': position, 'stem': q['stem'], 'options': json.loads(q['options'])}
+        {
+            'id': q['id'],
+            'examId': examId,
+            'position': position,
+            'stem': q['stem'],
+            'options': json.loads(str(q['options'])),
+        }
     )
 
 
@@ -271,19 +333,31 @@ async def answerQuestion(examId: int, body: dict[str, object]):
     """Record an answer for a question. Returns correctness + rationale."""
     questionId = body.get('questionId')
     selectedIndex = body.get('selectedIndex')
-    conn = _db()
-    q = conn.execute(
-        'SELECT correct_index, rationale FROM exam_questions WHERE id = ? AND exam_id = ?', (questionId, examId)
-    ).fetchone()
+    q = next(
+        (
+            q for q in _questions_rows()
+            if as_int(q.get('id'), -1) == as_int(questionId, -2) and as_int(q.get('exam_id'), 0) == examId
+        ),
+        None,
+    )
     if not q:
         raise HTTPException(status_code=404, detail='Question not found')
-    isCorrect = 1 if as_int(selectedIndex, -1) == as_int(q['correct_index'], -1) else 0
-    conn.execute(
-        "INSERT INTO exam_attempts (exam_id, question_id, selected_index, is_correct, answered_at) VALUES (?, ?, ?, ?, datetime('now'))",
-        (examId, questionId, selectedIndex, isCorrect),
-    )
-    brain_commit(conn)
-    return {'isCorrect': bool(isCorrect), 'correctIndex': q['correct_index'], 'rationale': q['rationale']}
+    isCorrect = 1 if as_int(selectedIndex, -1) == as_int(q.get('correct_index'), -1) else 0
+    with tables.store_lock(_EXAMS_LOCK_NAME):
+        attempts = _attempts_rows()
+        attempts.append(
+            {
+                'id': tables.next_id(attempts),
+                'exam_id': examId,
+                'question_id': questionId,
+                'selected_index': selectedIndex,
+                'is_correct': isCorrect,
+                'asked_for_help': 0,
+                'answered_at': utc_now_text(),
+            }
+        )
+        _save_sections(attempts=attempts)
+    return {'isCorrect': bool(isCorrect), 'correctIndex': q.get('correct_index'), 'rationale': q.get('rationale')}
 
 
 @router.post('/{examId}/help')
@@ -291,22 +365,26 @@ async def helpQuestion(examId: int, body: dict[str, object]):
     """Explain a question via Prefrontal without revealing the answer in the banner state."""
     questionId = body.get('questionId')
     ask = as_str(body.get('ask'), '')
-    conn = _db()
-    q = conn.execute(
-        'SELECT stem, options FROM exam_questions WHERE id = ? AND exam_id = ?', (questionId, examId)
-    ).fetchone()
+    q = next(
+        (
+            q for q in _questions_rows()
+            if as_int(q.get('id'), -1) == as_int(questionId, -2) and as_int(q.get('exam_id'), 0) == examId
+        ),
+        None,
+    )
     if not q:
         raise HTTPException(status_code=404, detail='Question not found')
-    options = json.loads(q['options'])
+    options = json.loads(str(q['options']))
     explanation = await exam_service.helpExplanation(
-        stem=q['stem'], options=options, userQuestion=ask or 'Explain this question.'
+        stem=str(q['stem']), options=options, userQuestion=ask or 'Explain this question.'
     )
     try:
-        conn.execute(
-            'UPDATE exam_attempts SET asked_for_help = 1 WHERE question_id = ? AND exam_id = ?',
-            (questionId, examId),
-        )
-        brain_commit(conn)
+        with tables.store_lock(_EXAMS_LOCK_NAME):
+            attempts = _attempts_rows()
+            for row in attempts:
+                if as_int(row.get('question_id'), -1) == as_int(questionId, -2) and as_int(row.get('exam_id'), 0) == examId:
+                    row['asked_for_help'] = 1
+            _save_sections(attempts=attempts)
     except Exception:
         pass
     return {'explanation': explanation, 'bannerDismissed': False}

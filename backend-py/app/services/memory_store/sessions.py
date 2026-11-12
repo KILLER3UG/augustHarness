@@ -1,53 +1,139 @@
-"""Sessions table domain — workbench sessions and messages in SQLite."""
+"""Sessions domain — workbench sessions and messages in transcript files.
+
+The SQLite ``sessions`` / ``messages`` tables became two file homes under
+``dataDir()``:
+
+* ``<dataDir>/transcripts/<sessionId>.jsonl`` — one JSON line per message,
+  carrying the same per-message dict the ``messages`` table row held (same
+  column-name spellings, ``blocks_json`` included), so the wire shapes the
+  desktop reads never moved.
+* ``<dataDir>/transcripts/sessions.json`` — a dict keyed by sessionId with
+  the same fields the ``sessions`` row carried (snake_case; the wire
+  camelCase conversion happens at read time via ``_row_as_wire``).
+
+The delete-and-reinsert-in-a-transaction pattern became
+load-modify-atomic-replace: ``save_workbench_session_sot`` loads the current
+JSONL, applies the message list and rewrites the file through
+``filestore.rewrite_jsonl`` (temp file + ``os.replace``). That is the same
+guarantee the ``BEGIN IMMEDIATE`` transaction gave — a crash mid-write
+leaves the previous transcript intact — without a database.
+"""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import threading
+import time
+from pathlib import Path
 from typing import cast
 
 from app.json_narrowing import as_int, as_str
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.services.filestore import (
+    STATE_DIR,
+    TRANSCRIPTS_DIR,
+    append_jsonl,
+    home,
+    load_jsonl,
+    read_json,
+    rewrite_jsonl,
+    write_json,
+)
 from app.services.memory_store.transcript_blocks import encode_blocks
 from app.services.memory_store.wire import _row_as_wire, _session_field
 from app.type_aliases import SessionRecord
 
+# One lock serialises read-modify-write cycles on the transcript files.
+# Writers are this backend's own threads; the atomic-replace rule makes each
+# whole-file write all-or-nothing and the lock makes the read side of a
+# read-modify-write see a complete file.
+_LOCK = threading.RLock()
 
-def _begin_txn(conn) -> None:
-    """Open an explicit WRITE transaction, tolerating an already-open one.
+_SESSIONS_FILE = 'sessions.json'
+# Monotonic message-id counter (the ``messages.id`` AUTOINCREMENT stand-in).
+# Ids only have to be unique and non-decreasing within a session, but a global
+# counter keeps every property the old column had, cheaply.
+_SEQ_FILE = 'transcript-seq.json'
+_SEQ_KEY = 'next'
 
-    Per-turn writers (``turn_outcomes`` / ``lifecycle`` / ``internal_state``)
-    run on the loop thread and use ``deferred_writes.defer_commit``, which
-    deliberately leaves the thread-local connection inside an open implicit
-    transaction (only the COMMIT is debounced). A raw ``BEGIN`` on top of that
-    raises "cannot start a transaction within a transaction" and the whole
-    session save/delete is lost. Settling the open transaction first is safe —
-    those rows only ever wanted a *later* commit, and committing now just makes
-    them durable sooner — and it lets the ``BEGIN IMMEDIATE`` below own a clean,
-    atomic transaction.
+_UNSAFE_NAME_CHARS = re.compile(r'[^A-Za-z0-9._-]')
 
-    IMMEDIATE, not deferred, and that is the part with a measured reason. Every
-    save here READS before it WRITES (the ``is_archived`` dual-read keeps a
-    column the wire does not carry), and a deferred transaction takes only a
-    read snapshot. Once another connection commits, that snapshot is stale, and
-    SQLite refuses the upgrade with ``database is locked`` RIGHT AWAY — the
-    ``busy_timeout=10000`` set on every brain connection buys nothing, because
-    no amount of waiting makes a stale snapshot writable. Measured on a
-    throwaway database: deferred read-then-write with one commit interleaved
-    fails in 0.000 s, the same sequence under ``BEGIN IMMEDIATE`` writes in
-    0.005 s and the other connection simply waits for the lock. Taking the write
-    lock at ``BEGIN`` rather than at the first write is what turns that error
-    into ordinary serialisation.
+
+def _session_file(session_id: str) -> Path:
+    """The JSONL file for one session's transcript (created on demand)."""
+    safe = _UNSAFE_NAME_CHARS.sub('_', session_id) or '_'
+    if safe != session_id:
+        # Characters were replaced: add a short digest so two hostile ids can
+        # never sanitise onto the same file.
+        digest = hashlib.sha1(session_id.encode('utf-8')).hexdigest()[:8]
+        safe = f'{safe[:80]}__{digest}'
+    return home(TRANSCRIPTS_DIR) / f'{safe}.jsonl'
+
+
+def _sessions_path() -> Path:
+    return home(TRANSCRIPTS_DIR) / _SESSIONS_FILE
+
+
+def _load_session_rows() -> dict[str, dict[str, object]]:
+    raw = read_json(_sessions_path(), default={})
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, dict):
+            out[key] = value
+    return out
+
+
+def _save_session_rows(rows: dict[str, dict[str, object]]) -> None:
+    write_json(_sessions_path(), rows)
+
+
+def _now_stamp() -> str:
+    """The ``datetime('now')`` shape the old rows carried (UTC, seconds)."""
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())
+
+
+def _load_rows(session_id: str) -> list[dict[str, object]]:
+    rows = load_jsonl(_session_file(session_id))
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _write_rows(session_id: str, rows: list[dict[str, object]]) -> None:
+    rewrite_jsonl(_session_file(session_id), cast('list[object]', rows))
+
+
+def _max_row_id(rows: list[dict[str, object]]) -> int:
+    best = 0
+    for row in rows:
+        value = as_int(row.get('id'), 0)
+        if value > best:
+            best = value
+    return best
+
+
+def _allocate_ids(count: int, floor: int = 0) -> list[int]:
+    """``count`` fresh AUTOINCREMENT-style ids, never below ``floor`` + 1.
+
+    The counter file keeps the value across restarts so a rewritten
+    transcript never hands a new message an id an older row already used.
     """
-    if conn.in_transaction:
-        brain_commit(conn)
-    conn.execute('BEGIN IMMEDIATE')
+    with _LOCK:
+        counter = read_json(home(STATE_DIR) / _SEQ_FILE, default={})
+        nxt = as_int(counter.get(_SEQ_KEY) if isinstance(counter, dict) else None, 1)
+        nxt = max(nxt, floor + 1, 1)
+        ids = list(range(nxt, nxt + max(count, 0)))
+        if ids:
+            write_json(home(STATE_DIR) / _SEQ_FILE, {_SEQ_KEY: ids[-1] + 1})
+        return ids
 
 
 def save_session(session: SessionRecord) -> None:
     """Persist a session record. Accepts camelCase wire keys (or snake_case)."""
-    conn = _conn()
     # Dual-read: wire camelCase or snake_case
     sid = as_str(session.get('id'), '')
+    if not sid:
+        return
     title = _session_field(session, 'title', '')
     started_at = _session_field(session, 'startedAt')
     message_count = _session_field(session, 'messageCount', 0)
@@ -58,57 +144,37 @@ def save_session(session: SessionRecord) -> None:
     workspace_path = _session_field(session, 'workspacePath')
     blob = session.get('workbenchBlob') or session.get('workbench_blob')
     updated_at = _session_field(session, 'updatedAt') or started_at
-    # Preserve existing blob if caller only updates metadata
-    if blob is None or is_archived is None:
-        # ... and the same for the archive flag: an unrelated metadata write used
-        # to reset it to 0, silently un-archiving a session the user parked.
-        row = conn.execute(
-            'SELECT workbench_blob, is_archived FROM sessions WHERE id = ?', (sid,)
-        ).fetchone()
-        if row is not None:
-            try:
-                stored_blob = row['workbench_blob']
-                stored_archived = row['is_archived']
-            except (KeyError, IndexError, TypeError):
-                stored_blob = row[0] if row else None
-                stored_archived = row[1] if row and len(row) > 1 else 0
-            if blob is None:
-                blob = stored_blob
-            if is_archived is None:
-                is_archived = bool(as_int(stored_archived, 0))
-    # UPSERT (not INSERT OR REPLACE): REPLACE is DELETE+INSERT and trips the
-    # messages.session_id foreign key when child rows already exist.
-    conn.execute(
-        '''INSERT INTO sessions
-           (id, title, started_at, message_count, provider, model, folder_id,
-            is_archived, workspace_path, workbench_blob, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET
-             title=excluded.title,
-             started_at=excluded.started_at,
-             message_count=excluded.message_count,
-             provider=excluded.provider,
-             model=excluded.model,
-             folder_id=excluded.folder_id,
-             is_archived=excluded.is_archived,
-             workspace_path=excluded.workspace_path,
-             workbench_blob=excluded.workbench_blob,
-             updated_at=excluded.updated_at''',
-        (
-            sid,
-            title or '',
-            started_at,
-            message_count if message_count is not None else 0,
-            provider or '',
-            model or '',
-            folder_id,
-            1 if is_archived else 0,
-            workspace_path,
-            blob if isinstance(blob, str) else (json.dumps(blob) if blob is not None else None),
-            updated_at,
-        ),
-    )
-    brain_commit(conn)
+    with _LOCK:
+        rows = _load_session_rows()
+        stored = rows.get(sid)
+        # Preserve the stored blob / archive flag when the caller only updates
+        # metadata: an unrelated metadata write used to reset the archive flag
+        # to 0, silently un-archiving a session the user parked.
+        if blob is None and stored is not None:
+            blob = stored.get('workbench_blob')
+        if is_archived is None:
+            if stored is not None:
+                is_archived = bool(as_int(stored.get('is_archived'), 0))
+            else:
+                is_archived = False
+        rows[sid] = {
+            'id': sid,
+            'title': title or '',
+            'started_at': started_at,
+            'message_count': message_count if message_count is not None else 0,
+            'provider': provider or '',
+            'model': model or '',
+            'folder_id': folder_id,
+            'is_archived': 1 if is_archived else 0,
+            'workspace_path': workspace_path,
+            'workbench_blob': (
+                blob
+                if isinstance(blob, str)
+                else (json.dumps(blob) if blob is not None else None)
+            ),
+            'updated_at': updated_at,
+        }
+        _save_session_rows(rows)
 
 
 # Client-identity match window for the snapshot rewrite (migration 048). The
@@ -157,38 +223,30 @@ def _same_message(a: object, b: object) -> bool:
 
 
 def _claim_client_rows(
-    conn,
+    rows: list[dict[str, object]],
     sid: str,
 ) -> dict[str, list[dict[str, object]]]:
     """Existing client-authored rows of this session, grouped by role, in order.
 
-    Only rows the desktop has claimed (``client_message_id IS NOT NULL``) take
-    part: a server-derived row must never be adopted, or an enrichment PATCH
-    could land on a message the client never authored.
+    Only rows the desktop has claimed (``client_message_id`` set) take part:
+    a server-derived row must never be adopted, or an enrichment PATCH could
+    land on a message the client never authored.
     """
-    rows = conn.execute(
-        'SELECT id, role, content, client_message_id, blocks_json FROM messages'
-        ' WHERE session_id = ? AND client_message_id IS NOT NULL ORDER BY id',
-        (sid,),
-    ).fetchall()
     grouped: dict[str, list[dict[str, object]]] = {}
     for row in rows:
-        try:
-            entry = {
-                'id': row['id'],
-                'role': row['role'],
-                'content': row['content'],
-                'clientMessageId': row['client_message_id'],
-                'blocksJson': row['blocks_json'],
-            }
-        except (KeyError, IndexError, TypeError):
-            entry = {
-                'id': row[0],
-                'role': row[1],
-                'content': row[2],
-                'clientMessageId': row[3],
-                'blocksJson': row[4],
-            }
+        if row.get('session_id') != sid:
+            continue
+        client_id = row.get('client_message_id')
+        if not client_id:
+            continue
+        entry = {
+            'id': row.get('id'),
+            'role': row.get('role'),
+            'content': row.get('content'),
+            'clientMessageId': client_id,
+            'blocksJson': row.get('blocks_json'),
+            'createdAt': row.get('created_at'),
+        }
         grouped.setdefault(as_str(entry['role'], 'user'), []).append(entry)
     return grouped
 
@@ -212,21 +270,20 @@ def save_workbench_session_sot(
     session_dict: dict[str, object],
     messages: list[dict[str, object]] | None = None,
 ) -> None:
-    """Write session metadata, full blob, and messages in one SQLite transaction.
+    """Write session metadata, full blob, and messages as one atomic file write.
 
-    This is the primary workbench save path. Optional JSON file export happens
-    outside this function.
+    This is the primary workbench save path, called three times per tool round
+    through the durability barriers in ``workbench/durability.py``. Optional
+    JSON file export happens outside this function.
 
-    Migration 048: the rewrite is DELETE-all + re-INSERT, which used to silently
-    drop everything the desktop had synced. Client-authored identity and
-    ``blocks_json`` are now carried across the rewrite, so the rich transcript
+    Migration 048 semantics survive the engine swap: client-authored identity
+    and ``blocks_json`` are carried across the rewrite, so the rich transcript
     a user sees survives the next durability barrier (model dispatch, tool
-    step boundary, autosave). A row the snapshot no longer contains IS deleted —
-    the backend transcript stays authoritative for removals (Undo, clear,
-    regeneration) — and the client re-posts it on its next sync.
+    step boundary, autosave). A row the snapshot no longer contains IS
+    deleted — the backend transcript stays authoritative for removals (Undo,
+    clear, regeneration) — and the client re-posts it on its next sync.
     """
 
-    conn = _conn()
     sid = as_str(session_dict.get('id'), '')
     if not sid:
         raise ValueError('session id required')
@@ -243,73 +300,38 @@ def save_workbench_session_sot(
     # so writing the dict back used to reset `is_archived` to 0 on the next
     # autosave. Keep the stored value unless this caller states it explicitly.
     explicit_archived = 'isArchived' in session_dict or 'is_archived' in session_dict
-    try:
-        _begin_txn(conn)
+    with _LOCK:
+        session_rows = _load_session_rows()
+        stored_row = session_rows.get(sid)
         if explicit_archived:
             archived = 1 if (
                 session_dict.get('isArchived') or session_dict.get('is_archived')
             ) else 0
         else:
-            stored = conn.execute(
-                'SELECT is_archived FROM sessions WHERE id = ?', (sid,)
-            ).fetchone()
-            try:
-                stored_value = stored['is_archived'] if stored is not None else 0
-            except (KeyError, IndexError, TypeError):
-                stored_value = stored[0] if stored else 0
-            archived = as_int(stored_value, 0)
-        # UPSERT (not INSERT OR REPLACE): REPLACE is DELETE+INSERT and trips the
-        # messages.session_id foreign key when child rows already exist.
-        conn.execute(
-            '''INSERT INTO sessions
-               (id, title, started_at, message_count, provider, model, folder_id,
-                is_archived, workspace_path, workbench_blob, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
-                 title=excluded.title,
-                 started_at=excluded.started_at,
-                 message_count=excluded.message_count,
-                 provider=excluded.provider,
-                 model=excluded.model,
-                 folder_id=excluded.folder_id,
-                 is_archived=excluded.is_archived,
-                 workspace_path=excluded.workspace_path,
-                 workbench_blob=excluded.workbench_blob,
-                 updated_at=excluded.updated_at''',
-            (
-                sid,
-                title,
-                started,
-                len(msgs) or as_int(session_dict.get('messageCount'), 0),
-                as_str(session_dict.get('provider'), ''),
-                as_str(session_dict.get('model'), ''),
-                session_dict.get('folderId'),
-                archived,
-                as_str(session_dict.get('workspacePath'), ''),
-                blob,
-                updated,
-            ),
-        )
-        # A durability barrier must not fail because of an optional nicety.
-        # On a DB that somehow lacks the 048 column the save proceeds exactly
-        # as it did before 048 (no identity carried across the rewrite).
-        try:
-            client_rows = _claim_client_rows(conn, sid)
-            has_client_column = True
-        except Exception:
-            client_rows = {}
-            has_client_column = False
-        # 049: message provenance (audit C3). Same honesty rule as 048 — a DB
-        # without the column saves without it; source is telemetry, not payload.
-        try:
-            conn.execute('SELECT source FROM messages LIMIT 0')
-            has_source_column = True
-        except Exception:
-            has_source_column = False
-        conn.execute('DELETE FROM messages WHERE session_id = ?', (sid,))
-        rows: list[tuple[str, str, str, str | None, str | None, str | None]] = []
-        # The unique index would reject a duplicate id inside this batch and
-        # roll the whole save back; the first claim wins instead.
+            archived = as_int((stored_row or {}).get('is_archived'), 0)
+        session_rows[sid] = {
+            'id': sid,
+            'title': title,
+            'started_at': started,
+            'message_count': len(msgs) or as_int(session_dict.get('messageCount'), 0),
+            'provider': as_str(session_dict.get('provider'), ''),
+            'model': as_str(session_dict.get('model'), ''),
+            'folder_id': session_dict.get('folderId'),
+            'is_archived': archived,
+            'workspace_path': as_str(session_dict.get('workspacePath'), ''),
+            'workbench_blob': blob,
+            'updated_at': updated,
+        }
+        current_rows = _load_rows(sid)
+        client_rows = _claim_client_rows(current_rows, sid)
+        ids: list[int] = [
+            as_int(row.get('id'), 0)
+            for row in current_rows
+            if as_int(row.get('id'), 0) > 0
+        ]
+        new_rows: list[dict[str, object]] = []
+        # A duplicate id inside one batch would silently fold two messages
+        # into one row; the first claim wins instead.
         seen_client_ids: set[str] = set()
         for msg in msgs:
             if not isinstance(msg, dict):
@@ -339,7 +361,7 @@ def save_workbench_session_sot(
                     content_str = content_str[:tailFrom].rstrip()
             # Tool arguments ride in `tool_calls` and are persisted even when
             # the call was denied. Scrub this install's credential VALUES here,
-            # at the durability boundary, so the brain database never becomes
+            # at the durability boundary, so the transcript file never becomes
             # the durable copy the transport scrub was meant to prevent.
             try:
                 from app.services.hooks.secret_guard import scrubOutboundText
@@ -349,7 +371,7 @@ def save_workbench_session_sot(
                 pass
             # 047: the structured timeline (blocks / thinking / tools /
             # attachments / todos …) rides beside `content`, which stays the
-            # FTS-indexed text. NULL for a message with nothing structured.
+            # searchable text. None for a message with nothing structured.
             blocks_json = encode_blocks(msg)
             # 048: re-attach the desktop's identity for this message, and keep
             # the timeline it synced when the snapshot itself carries none
@@ -359,6 +381,14 @@ def save_workbench_session_sot(
             claimed: dict[str, object] | None = None
             if isinstance(client_id, str) and client_id.strip():
                 client_id = client_id.strip()
+                # The snapshot names the identity itself: adopt the existing
+                # row's id (and created_at) so the rewrite is an UPDATE, not
+                # an identity churn.
+                for bucket_row in client_rows.get(role, []):
+                    if as_str(bucket_row.get('clientMessageId'), '') == client_id:
+                        client_rows.get(role, []).remove(bucket_row)
+                        claimed = bucket_row
+                        break
             else:
                 client_id = None
                 claimed = _claim_client_row(client_rows, role, content_str)
@@ -373,27 +403,34 @@ def save_workbench_session_sot(
                 seen_client_ids.add(client_id)
             # 049: provenance written by the loop's machine-injection sites
             # (harness nudges, queued composites) — see message_sources.py.
-            # Untagged rows persist as NULL (not recorded), never ''.
+            # Untagged rows persist as None (not recorded), never ''.
             source = as_str(msg.get('source'), '') or None
-            rows.append((sid, role, content_str, blocks_json, client_id, source))
-        # One executemany instead of a per-row execute: the active session's
-        # full transcript is re-written on every debounced save, so O(N)
-        # round-trips were the dominant write cost on long sessions.
-        if rows:
-            cols = ['session_id', 'role', 'content', 'blocks_json']
-            if has_client_column:
-                cols.append('client_message_id')
-            if has_source_column:
-                cols.append('source')
-            conn.executemany(
-                f"INSERT INTO messages ({', '.join(cols)})"
-                f' VALUES ({", ".join(["?"] * len(cols))})',
-                [r[: len(cols)] for r in rows],
-            )
-        brain_commit(conn)
-    except Exception:
-        conn.rollback()
-        raise
+            # A claimed row keeps its existing id (and created_at): the
+            # desktop reconciles by clientMessageId, and a stable id makes
+            # `before_id` pagination work across saves instead of churning
+            # every row on every autosave. Unclaimed rows get fresh ids.
+            row_id = as_int(claimed.get('id'), 0) if claimed is not None else 0
+            if claimed is not None:
+                created_at = as_str(claimed.get('createdAt'), '') or _now_stamp()
+            else:
+                created_at = _now_stamp()
+            new_rows.append({
+                'id': row_id,
+                'session_id': sid,
+                'role': role,
+                'content': content_str,
+                'blocks_json': blocks_json,
+                'client_message_id': client_id,
+                'source': source,
+                'created_at': created_at,
+            })
+        # Allocate ids for the rows that were not claimed, in file order.
+        needs_id = [r for r in new_rows if not as_int(r.get('id'), 0)]
+        fresh = _allocate_ids(len(needs_id), floor=max(ids) if ids else 0)
+        for row, row_id in zip(needs_id, fresh):
+            row['id'] = row_id
+        _write_rows(sid, new_rows)
+        _save_session_rows(session_rows)
     # Topic index (deterministic, no LLM): derive a session topic from the
     # title so workflow detection + topic-based cross-session recall have
     # data to work with (previously session_topics was never written).
@@ -408,7 +445,7 @@ def save_workbench_session_sot(
 
 
 def get_workbench_blob(session_id: str) -> dict[str, object] | None:
-    """Load ONE workbench session blob from SQLite by id, or None.
+    """Load ONE workbench session blob by id, or None.
 
     Used when a session was pruned from the in-memory map (the snapshot
     keeps only the top-50 by recency) — replying to a pruned session must
@@ -416,21 +453,11 @@ def get_workbench_blob(session_id: str) -> dict[str, object] | None:
     """
     if not session_id:
         return None
-    try:
-        conn = _conn()
-        row = conn.execute(
-            'SELECT workbench_blob FROM sessions WHERE id = ? '
-            'AND workbench_blob IS NOT NULL AND workbench_blob != \'\'',
-            (session_id,),
-        ).fetchone()
-    except Exception:
-        return None
+    with _LOCK:
+        row = _load_session_rows().get(session_id)
     if not row:
         return None
-    try:
-        raw = row['workbench_blob'] if hasattr(row, 'keys') else row[0]
-    except (KeyError, IndexError, TypeError):
-        raw = row[0] if row else None
+    raw = row.get('workbench_blob')
     if not raw:
         return None
     try:
@@ -441,21 +468,18 @@ def get_workbench_blob(session_id: str) -> dict[str, object] | None:
 
 
 def list_workbench_blobs(limit: int = 200) -> list[dict[str, object]]:
-    """Load workbench session blobs from SQLite (newest first)."""
-    conn = _conn()
-    rows = conn.execute(
-        '''SELECT workbench_blob FROM sessions
-           WHERE workbench_blob IS NOT NULL AND workbench_blob != ''
-           ORDER BY COALESCE(updated_at, started_at) DESC
-           LIMIT ?''',
-        (max(1, min(limit, 500)),),
-    ).fetchall()
+    """Load workbench session blobs (newest first)."""
+    with _LOCK:
+        rows = list(_load_session_rows().values())
+    rows.sort(
+        key=lambda r: (
+            as_str(r.get('updated_at'), '') or as_str(r.get('started_at'), '')
+        ),
+        reverse=True,
+    )
     out: list[dict[str, object]] = []
-    for row in rows:
-        try:
-            raw = row['workbench_blob'] if hasattr(row, 'keys') else row[0]
-        except (KeyError, IndexError, TypeError):
-            raw = row[0] if row else None
+    for row in rows[: max(1, min(limit, 500))]:
+        raw = row.get('workbench_blob')
         if not raw:
             continue
         try:
@@ -470,28 +494,25 @@ def list_workbench_blobs(limit: int = 200) -> list[dict[str, object]]:
 def session_archive_flags() -> dict[str, bool]:
     """Ids of archived sessions — the cheap read the sidebar needs.
 
-    Deliberately NOT part of ``list_workbench_blobs``: that query drags the
+    Deliberately NOT part of ``list_workbench_blobs``: that load drags the
     whole transcript blob for up to 500 sessions, and the only thing the caller
     wants here is a boolean. Only archived rows are returned, so the payload
     stays tiny and an absent id means "not archived" rather than "unknown".
     """
-    conn = _conn()
-    rows = conn.execute('SELECT id FROM sessions WHERE is_archived = 1').fetchall()
-    flags: dict[str, bool] = {}
-    for row in rows:
-        try:
-            sid = row['id'] if hasattr(row, 'keys') else row[0]
-        except (KeyError, IndexError, TypeError):
-            sid = row[0] if row else None
-        if sid:
-            flags[str(sid)] = True
-    return flags
+    with _LOCK:
+        rows = _load_session_rows()
+    return {
+        sid: True
+        for sid, row in rows.items()
+        if as_int(row.get('is_archived'), 0) == 1
+    }
 
 
 def list_sessions() -> list[SessionRecord]:
     """List all sessions, most recent first."""
-    conn = _conn()
-    rows = conn.execute('SELECT * FROM sessions ORDER BY started_at DESC').fetchall()
+    with _LOCK:
+        rows = list(_load_session_rows().values())
+    rows.sort(key=lambda r: as_str(r.get('started_at'), ''), reverse=True)
     return [cast(SessionRecord, _row_as_wire(r)) for r in rows]
 
 
@@ -513,138 +534,109 @@ def set_session_archived(sessionId: str, archived: bool) -> SessionRecord | None
 
 def get_session(sessionId: str) -> SessionRecord | None:
     """Get a single session by ID."""
-    conn = _conn()
-    row = conn.execute('SELECT * FROM sessions WHERE id = ?', (sessionId,)).fetchone()
+    with _LOCK:
+        row = _load_session_rows().get(sessionId)
     return cast(SessionRecord, _row_as_wire(row)) if row else None
 
 
-# Child tables that store per-session rows. ``messages`` has a real FK to
-# ``sessions(id)`` (NO ACTION), so parent delete fails unless children go first.
-# Other tables lack formal FKs but still hold orphan-prone session data.
-_SESSION_CHILD_TABLES: tuple[str, ...] = (
-    'messages',
-    'episodic_timeline',
-    'session_topics',
-    'proposals',
-    'lifecycle',
-    'usage_events',
-    'tool_guardrail_log',
-    'blackboard',
-    # Learning rows carry raw user-message excerpts keyed by
-    # session_id — deleting a session used to orphan them (still queryable in
-    # the Curator UI after "delete this chat").
-    'episodes',
-    'turn_outcomes',
-    # Local refine entries belong to the session that learned them; global
-    # entries carry an empty session_id and are untouched by this purge
-    # (same key-space rule as episodes). The refine journal survives with
-    # the other audit journals — it is cleared by "clear activity logs".
-    'refine_entries',
+def list_workspace_paths() -> list[str]:
+    """DISTINCT non-empty workspace paths across sessions (cheap read).
+
+    Reader for the skill-promotion judge's "known projects" enumeration —
+    the old raw ``SELECT DISTINCT workspace_path FROM sessions``.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+    for row in _load_session_rows().values():
+        ws = str(row.get('workspace_path') or '').strip()
+        if ws and ws not in seen:
+            seen.add(ws)
+            paths.append(ws)
+    return paths
+
+
+# Per-session stores swept by a session delete. The table names survive as
+# the ``children`` keys of the delete result; each maps onto the shared file
+# home ``memory_store/tables.py`` names (the content domain owns those files'
+# writers; this sweep only removes the deleted session's rows).
+# ``messages`` is the session's own JSONL; JSONL ledgers are pruned by
+# rewriting each file without the session's rows; list-shaped JSON stores are
+# filtered the same way. Stores owned by other domains (episodes, proposals,
+# blackboard, refine entries, pending skills) are left to their owners' own
+# purge paths.
+_SESSION_CHILD_FILES: tuple[tuple[str, str, str], ...] = (
+    # (result key, store home, file name)
+    ('session_topics', 'telemetry', 'session-topics.json'),
+    ('lifecycle', 'telemetry', 'lifecycle.jsonl'),
+    ('usage_events', 'telemetry', 'usage-events.jsonl'),
+    ('tool_guardrail_log', 'telemetry', 'tool-guardrail-log.jsonl'),
+    ('turn_outcomes', 'telemetry', 'turn-outcomes.jsonl'),
 )
 
-
-def _delete_messages_for_session(conn: object, sid: str) -> int:
-    """Delete messages for a session, surviving partial FTS/index corruption.
-
-    Bulk ``DELETE FROM messages WHERE session_id=?`` can raise
-    ``database disk image is malformed`` when the messages FTS shadow
-    tables are inconsistent. Rebuild FTS, then fall back to per-row
-    deletes so cascade never gets stuck on one bad session.
-    """
-    import sqlite3
-
-    c = cast(sqlite3.Connection, conn)  # typed loosely; always the brain sqlite connection
-    try:
-        cur = c.execute('DELETE FROM messages WHERE session_id = ?', (sid,))
-        return int(cur.rowcount or 0)
-    except sqlite3.DatabaseError:
-        # FTS out of sync with base table — rebuild then retry bulk, then by id.
-        try:
-            c.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
-        except sqlite3.Error:
-            pass
-        try:
-            cur = c.execute('DELETE FROM messages WHERE session_id = ?', (sid,))
-            return int(cur.rowcount or 0)
-        except sqlite3.DatabaseError:
-            pass
-        deleted = 0
-        try:
-            ids = [
-                int(r[0])
-                for r in c.execute(
-                    'SELECT id FROM messages WHERE session_id = ?', (sid,)
-                ).fetchall()
-            ]
-        except sqlite3.DatabaseError:
-            ids = []
-        for mid in ids:
-            try:
-                cur = c.execute('DELETE FROM messages WHERE id = ?', (mid,))
-                deleted += int(cur.rowcount or 0)
-            except sqlite3.DatabaseError:
-                continue
-        return deleted
+_JSONL_CHILD_FILES = {'lifecycle', 'usage_events', 'tool_guardrail_log', 'turn_outcomes'}
 
 
 def delete_session_cascade(
     sessionId: str, *, notify: bool = True
 ) -> dict[str, object]:
-    """Delete a session and all dependent rows in one transaction.
+    """Delete a session and every per-session row in its files.
 
-    Always sweeps child tables even when the parent ``sessions`` row is
-    already gone (orphans from prior partial deletes). Returns:
-      ``{ok, sessionId, messages, children: {table: n}}``
-    ``ok`` is True when a parent row or any child row was removed.
+    Always sweeps the per-session child stores even when the session record
+    is already gone (orphans from prior partial deletes). Returns:
+      ``{ok, sessionId, messages, children: {store: n}}``
+    ``ok`` is True when a session record or any child row was removed.
 
     When ``notify`` is True (default), fans out a real-time session-deleted
     event so the desktop sidebar can drop the row immediately.
     """
-    import sqlite3
-
-    conn = _conn()
     sid = as_str(sessionId, '')
     if not sid:
         return {'ok': False, 'sessionId': sid, 'messages': 0, 'children': {}}
 
     children: dict[str, int] = {}
-    try:
-        _begin_txn(conn)
-        # Messages first (real FK + optional FTS corruption path).
-        try:
-            msg_n = _delete_messages_for_session(conn, sid)
-            if msg_n:
-                children['messages'] = msg_n
-        except sqlite3.OperationalError:
-            pass
-        for table in _SESSION_CHILD_TABLES:
-            if table == 'messages':
-                continue
-            try:
-                cur = conn.execute(f'DELETE FROM {table} WHERE session_id = ?', (sid,))
-                if cur.rowcount:
-                    children[table] = int(cur.rowcount)
-            except sqlite3.OperationalError:
-                # Table may not exist on older / partial brains.
-                pass
-            except sqlite3.DatabaseError:
-                # Non-fatal: continue so parent + other children still clean up.
-                pass
-        # auto_memories cascade removed:
-        # the store no longer exists, so a session delete has nothing to
-        # clean up there.
-        # Pending skill drafts attributed to this session.
-        try:
-            cur = conn.execute(
-                'DELETE FROM pending_skills WHERE source_session_id = ?', (sid,)
-            )
-            if cur.rowcount:
-                children['pending_skills'] = int(cur.rowcount)
-        except sqlite3.OperationalError:
-            pass
-        cur = conn.execute('DELETE FROM sessions WHERE id = ?', (sid,))
-        parent_deleted = cur.rowcount > 0
-        brain_commit(conn)
+    with _LOCK:
+        # Messages first — the session's own transcript file.
+        rows = _load_rows(sid)
+        if rows:
+            children['messages'] = len(rows)
+            _write_rows(sid, [])
+        for key, kind, name in _SESSION_CHILD_FILES:
+            path = home(kind) / name
+            if key in _JSONL_CHILD_FILES:
+                entries = load_jsonl(path)
+                kept = [
+                    e
+                    for e in entries
+                    if not (
+                        isinstance(e, dict) and as_str(e.get('session_id'), '') == sid
+                    )
+                ]
+                removed = len(entries) - len(kept)
+                if removed:
+                    children[key] = removed
+                    rewrite_jsonl(path, kept)
+            else:
+                # List-shaped JSON store keyed by a session_id field
+                # (session-topics, written by rest.index_session_topic).
+                raw = read_json(path, default=[])
+                if isinstance(raw, list):
+                    kept = [
+                        e
+                        for e in raw
+                        if not (
+                            isinstance(e, dict)
+                            and as_str(e.get('session_id'), '') == sid
+                        )
+                    ]
+                    removed = len(raw) - len(kept)
+                    if removed:
+                        children[key] = removed
+                        write_json(path, kept)
+        session_rows = _load_session_rows()
+        parent_deleted = sid in session_rows
+        if parent_deleted:
+            session_rows.pop(sid, None)
+            _save_session_rows(session_rows)
         any_child = bool(children)
         ok = parent_deleted or any_child
         if ok and notify:
@@ -660,19 +652,47 @@ def delete_session_cascade(
             'messages': children.get('messages', 0),
             'children': children,
         }
-    except Exception:
-        conn.rollback()
-        raise
 
 
 def delete_session_record(sessionId: str) -> bool:
     """Delete a session and all dependent rows (messages, timeline, …).
 
-    Cascades child deletes first so the ``messages.session_id`` FK cannot block
-    the parent delete. Prefer this over calling ``delete_session_messages``
-    then this function separately — order bugs caused FK failures historically.
+    Prefer this over calling ``delete_session_messages`` then this function
+    separately — order bugs caused FK failures historically.
     """
     result = delete_session_cascade(sessionId)
     return bool(result.get('ok'))
 
 
+# ── Message-row primitives shared with the search path ──────────────────────
+
+
+def append_message_row(row: dict[str, object]) -> int:
+    """Append one message row to its session file and return its id.
+
+    The id comes from the global counter, floored above every id already in
+    the file so a restored / rewritten transcript can never collide.
+    """
+    sid = as_str(row.get('session_id'), '')
+    if not sid:
+        raise ValueError('session id required')
+    with _LOCK:
+        row_id = as_int(row.get('id'), 0)
+        if row_id <= 0:
+            row_id = _allocate_ids(1, floor=_max_row_id(_load_rows(sid)))[0]
+            row['id'] = row_id
+        row.setdefault('created_at', _now_stamp())
+        append_jsonl(_session_file(sid), row)
+        return row_id
+
+
+def read_message_rows(session_id: str) -> list[dict[str, object]]:
+    """All message rows of one session, in file (conversation) order."""
+    with _LOCK:
+        return _load_rows(session_id)
+
+
+def write_message_rows(session_id: str, rows: list[dict[str, object]]) -> None:
+    """Atomically replace one session's message rows."""
+    with _LOCK:
+        _write_rows(session_id, rows)

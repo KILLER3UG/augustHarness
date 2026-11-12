@@ -1,6 +1,7 @@
 """Teammate DMs: the single ``message_agent`` send path.
 
-A DM is a durable ``bot_dm`` inbox row (migration 034). ``message_agent`` is
+A DM is a durable inbox row in ``<dataDir>/state/bot-dm.json`` (the old
+``bot_dm`` table, migration 034). ``message_agent`` is
 the ONLY way one Bot talks to another: the @ sign is addressing sugar handled
 by the composer middleware (annotation only — see ``protocol``), never a
 delivery pipe. The tool validates the target against the live roster, applies
@@ -25,15 +26,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
 
 from app.json_narrowing import as_dict, as_int, as_str
 from app.services.bot_mode import protocol
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 
 logger = logging.getLogger('august.bot_mode.dm')
+
+_DM_FILE = 'bot-dm.json'
+_DM_LOCK = threading.RLock()
 
 # Typed failure codes (the ``reason_code`` enum in bot_dm). The sender's ack
 # carries one of these so the model gets an actionable receipt, and the
@@ -68,18 +73,46 @@ def _now() -> str:
 # ── durable inbox store ──────────────────────────────────────────────────────
 
 
+def _dm_path() -> Path:
+    return home(STATE_DIR) / _DM_FILE
+
+
+def _load_dms() -> list[dict[str, object]]:
+    raw = read_json(_dm_path(), default=[])
+    if isinstance(raw, list):
+        return [row for row in raw if isinstance(row, dict)]
+    if isinstance(raw, dict) and isinstance(raw.get('dms'), list):
+        return [row for row in raw['dms'] if isinstance(row, dict)]
+    return []
+
+
+def _save_dms(rows: list[dict[str, object]]) -> None:
+    write_json(_dm_path(), rows)
+
+
 def enqueue(
     *, from_agent: str, to_agent: str, body: str, from_session: str = '', to_session: str = ''
 ) -> int:
     try:
-        c = _conn()
-        cur = c.execute(
-            'INSERT INTO bot_dm (from_agent, to_agent, from_session, to_session, body, status, created_at) '
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-            (from_agent, to_agent, from_session, to_session, body, _now()),
-        )
-        brain_commit(c)
-        return int(cur.lastrowid or 0)
+        with _DM_LOCK:
+            rows = _load_dms()
+            dm_id = 1 + max((as_int(r.get('id'), 0) for r in rows), default=0)
+            rows.append(
+                {
+                    'id': dm_id,
+                    'from_agent': from_agent,
+                    'to_agent': to_agent,
+                    'from_session': from_session,
+                    'to_session': to_session,
+                    'body': body,
+                    'status': 'pending',
+                    'reason_code': '',
+                    'created_at': _now(),
+                    'delivered_at': None,
+                }
+            )
+            _save_dms(rows)
+            return dm_id
     except Exception:
         logger.debug('bot_dm enqueue failed', exc_info=True)
         return 0
@@ -91,18 +124,16 @@ def _set_status(
     if dm_id <= 0:
         return
     try:
-        c = _conn()
-        if delivered:
-            c.execute(
-                'UPDATE bot_dm SET status = ?, reason_code = ?, delivered_at = ? WHERE id = ?',
-                (status, reason_code, _now(), dm_id),
-            )
-        else:
-            c.execute(
-                'UPDATE bot_dm SET status = ?, reason_code = ? WHERE id = ?',
-                (status, reason_code, dm_id),
-            )
-        brain_commit(c)
+        with _DM_LOCK:
+            rows = _load_dms()
+            for row in rows:
+                if as_int(row.get('id'), 0) != dm_id:
+                    continue
+                row['status'] = status
+                row['reason_code'] = reason_code
+                if delivered:
+                    row['delivered_at'] = _now()
+            _save_dms(rows)
     except Exception:
         logger.debug('bot_dm status update failed', exc_info=True)
 
@@ -121,24 +152,25 @@ def mark_failed(dm_id: int, reason_code: str) -> None:
 
 def get_dm(dm_id: int) -> dict[str, object] | None:
     try:
-        row = _conn().execute('SELECT * FROM bot_dm WHERE id = ?', (dm_id,)).fetchone()
-        return dict(row) if row is not None else None
+        with _DM_LOCK:
+            rows = _load_dms()
+        for row in rows:
+            if as_int(row.get('id'), 0) == dm_id:
+                return row
+        return None
     except Exception:
         return None
 
 
 def list_inbox(to_agent: str, status: str = '') -> list[dict[str, object]]:
     try:
+        with _DM_LOCK:
+            rows = _load_dms()
+        inbox = [r for r in rows if str(r.get('to_agent') or '') == to_agent]
         if status:
-            rows = _conn().execute(
-                'SELECT * FROM bot_dm WHERE to_agent = ? AND status = ? ORDER BY id DESC',
-                (to_agent, status),
-            ).fetchall()
-        else:
-            rows = _conn().execute(
-                'SELECT * FROM bot_dm WHERE to_agent = ? ORDER BY id DESC', (to_agent,)
-            ).fetchall()
-        return [dict(r) for r in rows]
+            inbox = [r for r in inbox if str(r.get('status') or '') == status]
+        inbox.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
+        return inbox
     except Exception:
         return []
 
@@ -146,14 +178,35 @@ def list_inbox(to_agent: str, status: str = '') -> list[dict[str, object]]:
 def has_inflight(from_agent: str, to_agent: str) -> bool:
     """A pending/running DM from→to already exists (ping-pong guard)."""
     try:
-        row = _conn().execute(
-            "SELECT 1 FROM bot_dm WHERE from_agent = ? AND to_agent = ? "
-            "AND status IN ('pending','running') LIMIT 1",
-            (from_agent, to_agent),
-        ).fetchone()
-        return row is not None
+        with _DM_LOCK:
+            rows = _load_dms()
+        for row in rows:
+            if (
+                str(row.get('from_agent') or '') == from_agent
+                and str(row.get('to_agent') or '') == to_agent
+                and str(row.get('status') or '') in ('pending', 'running')
+            ):
+                return True
+        return False
     except Exception:
         return False
+
+
+def purge_agent(agent_id: str) -> None:
+    """Drop every DM row touching ``agent_id`` (bot deletion cascade)."""
+    try:
+        with _DM_LOCK:
+            rows = _load_dms()
+            kept = [
+                r
+                for r in rows
+                if agent_id
+                not in (str(r.get('from_agent') or ''), str(r.get('to_agent') or ''))
+            ]
+            if len(kept) != len(rows):
+                _save_dms(kept)
+    except Exception:
+        logger.debug('bot_dm purge failed', exc_info=True)
 
 
 # ── unattended ceiling ───────────────────────────────────────────────────────
@@ -248,17 +301,20 @@ def _unattendedRun(session_id: str, ceiling: int) -> int:
     if not session_id or ceiling <= 0:
         return 0
     try:
-        rows = _conn().execute(
-            "SELECT content, source FROM messages WHERE session_id = ? AND role = 'user' "
-            'ORDER BY id DESC LIMIT ?',
-            (session_id, ceiling),
-        ).fetchall()
+        from app.services.memory_store import sessions as _sessions
+
+        rows = [
+            row
+            for row in _sessions.read_message_rows(session_id)
+            if str(row.get('role') or '') == 'user'
+        ][-ceiling:]
+        rows.reverse()
     except Exception:
         logger.debug('unattended run read failed', exc_info=True)
         return 0
     run = 0
     for row in rows:
-        author = _turnAuthor(row['content'], row['source'])
+        author = _turnAuthor(str(row.get('content') or ''), str(row.get('source') or ''))
         if author == 'machine':
             continue
         if author != 'bot':

@@ -369,33 +369,30 @@ _STUCK_BARE_NOTE = (
 def _requestStuckStreak(session_id: str) -> int:
     """Consecutive recent turns on this session the provider refused on shape.
 
-    Sub-agent fan-out rows share the table and the session id but never carry an
-    ``error_class`` (the writer passes none), so they are skipped rather than
-    counted. Any other outcome — a clean turn, a rate limit, an overflow —
+    Sub-agent fan-out rows share the ledger and the session id but never carry
+    an ``error_class`` (the writer passes none), so they are skipped rather
+    than counted. Any other outcome — a clean turn, a rate limit, an overflow —
     breaks the run: the request's shape was not what the provider objected to,
     so dropping history would fix nothing.
 
-    Returns 0 when nothing is recorded, including on a database without the
-    table. Absent means "not stuck", never "assume stuck".
+    Returns 0 when nothing is recorded. Absent means "not stuck", never
+    "assume stuck".
     """
     if not session_id:
         return 0
     try:
-        from app.services.memory_conn import conn as _brainConn
+        from app.services.turn_outcomes import recent_outcomes
 
-        rows = _brainConn().execute(
-            'SELECT ok, error_class, task_type FROM turn_outcomes '
-            'WHERE session_id = ? ORDER BY id DESC LIMIT ?',
-            (session_id, _STUCK_SCAN_ROWS),
-        ).fetchall()
+        rows = recent_outcomes(session_id, _STUCK_SCAN_ROWS)
     except Exception:
         logger.debug('stuck-request streak read failed', exc_info=True)
         return 0
     streak = 0
     for row in rows:
-        if as_str(row['task_type'], '') == 'subagent_fanout':
+        if as_str(row.get('task_type'), '') == 'subagent_fanout':
             continue
-        if int(row['ok'] or 0) == 1 or as_str(row['error_class'], '') != _STUCK_REQUEST_CLASS:
+        ok = row.get('ok')
+        if as_int(ok, 0) == 1 or as_str(row.get('error_class'), '') != _STUCK_REQUEST_CLASS:
             break
         streak += 1
         if streak > 2:

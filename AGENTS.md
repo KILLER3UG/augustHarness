@@ -40,9 +40,11 @@ The index is [docs/agent/README.md](docs/agent/README.md).
   `backend-runtime/` ([product.md](docs/agent/product.md)).
 - **An update is in-place, silent, and restarts itself.** The download is
   automatic; the restart is the user's click.
-- **One memory store.** `facts` is the system of record. There is no vector
-  store, no graph store, and no second memory database. Do not add one without
-  deleting the file that says not to ([memory.md](docs/agent/memory.md)).
+- **One memory store.** The record is `dataDir/memory/` — one markdown file per
+  fact plus `MEMORY.md`. There is no vector store, no graph store, and no second
+  memory database; SQLite is retired and survives only as
+  `august_brain.sqlite.retired`, read once by the importer
+  ([memory.md](docs/agent/memory.md)).
 - **No verifier gate.** Nothing withholds a final answer.
   `update_state(phase=…)` is progress tracking only.
 - **Provider base URLs are used exactly as pasted.** August appends only the

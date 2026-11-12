@@ -42,7 +42,6 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from app.json_narrowing import as_list, as_str
-from app.services.memory_conn import commit as brain_commit
 from app.services.subagent_orchestrator import SubagentOrchestrator, SubagentSpawnRequest
 
 if TYPE_CHECKING:
@@ -99,33 +98,36 @@ def _expire_stale_proposals(now: float | None = None) -> int:
         import json as _json
         from datetime import datetime, timezone
 
-        from app.services.memory_store import _conn
+        from app.services.memory_store import tables
 
-        conn = _conn()
-        rows = conn.execute(
-            "SELECT id, content FROM proposals WHERE status = 'pending' "
-            "AND proposal_type = 'subagent_breakdown'"
-        ).fetchall()
-        for r in rows:
-            try:
-                data = _json.loads(r['content'] or '{}')
-                created = data.get('createdAt')
-            except Exception:
-                continue
-            if isinstance(created, (int, float)) and now - float(created) > PROPOSAL_TTL_S:
-                conn.execute(
-                    'UPDATE proposals SET status = ?, decided_at = ? WHERE id = ?',
-                    ('expired', datetime.now(timezone.utc).isoformat(), r['id']),
-                )
-                expired += 1
-        brain_commit(conn)
+        path = tables.proposals_file()
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            changed = False
+            for r in rows:
+                if str(r.get('status') or '') != 'pending':
+                    continue
+                if str(r.get('proposal_type') or '') != 'subagent_breakdown':
+                    continue
+                try:
+                    data = _json.loads(str(r.get('content') or '{}'))
+                    created = data.get('createdAt') if isinstance(data, dict) else None
+                except Exception:
+                    continue
+                if isinstance(created, (int, float)) and now - float(created) > PROPOSAL_TTL_S:
+                    r['status'] = 'expired'
+                    r['decided_at'] = datetime.now(timezone.utc).isoformat()
+                    changed = True
+                    expired += 1
+            if changed:
+                tables.save_rows(path, rows)
     except Exception:
         logger.debug('proposal expiry sweep failed (non-fatal)', exc_info=True)
     return expired
 
 
 def expire_proposals_for_session(session_id: str) -> int:
-    """Expire pending proposals bound to a deleted session (memory + DB)."""
+    """Expire pending proposals bound to a deleted session (memory + store)."""
     if not session_id:
         return 0
     expired = 0
@@ -137,25 +139,34 @@ def expire_proposals_for_session(session_id: str) -> int:
     try:
         from datetime import datetime, timezone
 
-        from app.services.memory_store import _conn
+        from app.services.memory_store import tables
 
-        conn = _conn()
-        cur = conn.execute(
-            "UPDATE proposals SET status = 'expired', decided_at = ? "
-            'WHERE session_id = ? AND status = ? AND proposal_type = ?',
-            (datetime.now(timezone.utc).isoformat(), session_id, 'pending', 'subagent_breakdown'),
-        )
-        brain_commit(conn)
-        expired += int(cur.rowcount or 0)
+        path = tables.proposals_file()
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            changed = False
+            for r in rows:
+                if (
+                    str(r.get('session_id') or '') == session_id
+                    and str(r.get('status') or '') == 'pending'
+                    and str(r.get('proposal_type') or '') == 'subagent_breakdown'
+                ):
+                    r['status'] = 'expired'
+                    r['decided_at'] = datetime.now(timezone.utc).isoformat()
+                    changed = True
+                    expired += 1
+            if changed:
+                tables.save_rows(path, rows)
     except Exception:
         logger.debug('proposal session expiry failed (non-fatal)', exc_info=True)
     return expired
 
 
 # ── Proposal persistence (B5): survive backend restarts ────────────────
-# The in-memory dict above is the fast path; the `proposals` table is the
-# durable store. On restart, approvals hydrate the session from the
-# workbench store and re-spawn the work items.
+# The in-memory dict above is the fast path; the proposals store is the
+# durable one (``<state>/proposals.json``, shared with the memory store's
+# proposal domain — same row shape). On restart, approvals hydrate the
+# session from the workbench store and re-spawn the work items.
 
 def _persist_proposal(
     proposal_id: str,
@@ -165,37 +176,58 @@ def _persist_proposal(
     background: bool,
     created_at: float,
 ) -> None:
-    """Insert one pending proposal row (fire-and-forget, never raises)."""
+    """Append one pending proposal row (fire-and-forget, never raises)."""
     try:
         import json as _json
         from datetime import datetime, timezone
 
-        from app.services.memory_store import _conn
+        from app.services.memory_store import tables
 
         sid = _session_id(session)
-        _conn().execute(
-            'INSERT INTO proposals (session_id, proposal_type, content, status, created_at) '
-            'VALUES (?, ?, ?, ?, ?)',
-            (
-                sid,
-                'subagent_breakdown',
-                _json.dumps(
-                    {
-                        'proposalId': proposal_id,
-                        'workItems': work_items,
-                        'mode': mode,
-                        'background': background,
-                        'createdAt': created_at,
-                        'sessionId': sid,
-                    }
-                ),
-                'pending',
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        brain_commit(_conn())
+        path = tables.proposals_file()
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            rows.append(
+                {
+                    'id': tables.next_id(rows),
+                    'session_id': sid,
+                    'proposal_type': 'subagent_breakdown',
+                    'content': _json.dumps(
+                        {
+                            'proposalId': proposal_id,
+                            'workItems': work_items,
+                            'mode': mode,
+                            'background': background,
+                            'createdAt': created_at,
+                            'sessionId': sid,
+                        }
+                    ),
+                    'status': 'pending',
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                    'decided_at': None,
+                    'decided_by': None,
+                }
+            )
+            tables.save_rows(path, rows)
     except Exception:
         logger.debug('proposal persist failed (non-fatal)', exc_info=True)
+
+
+def _pending_breakdown_rows() -> list[dict[str, Any]]:
+    """Pending subagent_breakdown proposal rows, newest first."""
+    from app.services.memory_store import tables
+
+    path = tables.proposals_file()
+    with tables.store_lock(str(path)):
+        rows = tables.load_rows(path)
+    rows = [
+        r
+        for r in rows
+        if str(r.get('status') or '') == 'pending'
+        and str(r.get('proposal_type') or '') == 'subagent_breakdown'
+    ]
+    rows.sort(key=lambda r: int(r.get('id') or 0), reverse=True)
+    return rows
 
 
 def _load_proposal_from_db(proposal_id: str) -> dict[str, Any] | None:
@@ -204,20 +236,14 @@ def _load_proposal_from_db(proposal_id: str) -> dict[str, Any] | None:
         import json as _json
         import types
 
-        from app.services.memory_store import _conn
-
-        rows = _conn().execute(
-            "SELECT id, session_id, content FROM proposals "
-            "WHERE status = 'pending' AND proposal_type = 'subagent_breakdown'"
-        ).fetchall()
-        for r in rows:
+        for r in _pending_breakdown_rows():
             try:
-                data = _json.loads(r['content'] or '{}')
+                data = _json.loads(str(r.get('content') or '{}'))
             except Exception:
                 continue
-            if data.get('proposalId') != proposal_id:
+            if not isinstance(data, dict) or data.get('proposalId') != proposal_id:
                 continue
-            sid = str(r['session_id'] or data.get('sessionId') or '')
+            sid = str(r.get('session_id') or data.get('sessionId') or '')
             session: object | None = None
             if sid:
                 try:
@@ -249,7 +275,7 @@ def _load_proposal_from_db(proposal_id: str) -> dict[str, Any] | None:
                 'background': bool(data.get('background', True)),
             }
     except Exception:
-        logger.debug('proposal db load failed (non-fatal)', exc_info=True)
+        logger.debug('proposal store load failed (non-fatal)', exc_info=True)
     return None
 
 
@@ -259,24 +285,18 @@ def list_persisted_proposals() -> list[dict[str, Any]]:
     try:
         import json as _json
 
-        from app.services.memory_store import _conn
-
-        rows = _conn().execute(
-            "SELECT id, content FROM proposals "
-            "WHERE status = ? AND proposal_type = 'subagent_breakdown' "
-            'ORDER BY id DESC LIMIT 20',
-            ('pending',),
-        ).fetchall()
         out: list[dict[str, Any]] = []
-        for r in rows:
+        for r in _pending_breakdown_rows()[:20]:
             try:
-                data = _json.loads(r['content'] or '{}')
+                data = _json.loads(str(r.get('content') or '{}'))
             except Exception:
+                continue
+            if not isinstance(data, dict):
                 continue
             items = data.get('workItems') or []
             out.append(
                 {
-                    'proposalId': data.get('proposalId') or f'db_{r["id"]}',
+                    'proposalId': data.get('proposalId') or f"db_{r.get('id')}",
                     'createdAt': data.get('createdAt') or 0,
                     'workItemCount': len(items) if isinstance(items, list) else 0,
                     'goals': [
@@ -298,25 +318,25 @@ def _mark_proposal_decided(proposal_id: str, status: str) -> None:
         import json as _json
         from datetime import datetime, timezone
 
-        from app.services.memory_store import _conn
+        from app.services.memory_store import tables
 
-        conn = _conn()
-        rows = conn.execute(
-            "SELECT id, content FROM proposals WHERE status = 'pending' "
-            "AND proposal_type = 'subagent_breakdown'"
-        ).fetchall()
-        for r in rows:
-            try:
-                data = _json.loads(r['content'] or '{}')
-            except Exception:
-                continue
-            if data.get('proposalId') == proposal_id:
-                conn.execute(
-                    'UPDATE proposals SET status = ?, decided_at = ? WHERE id = ?',
-                    (status, datetime.now(timezone.utc).isoformat(), r['id']),
-                )
-                brain_commit(conn)
-                return
+        path = tables.proposals_file()
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            for r in rows:
+                if str(r.get('status') or '') != 'pending':
+                    continue
+                if str(r.get('proposal_type') or '') != 'subagent_breakdown':
+                    continue
+                try:
+                    data = _json.loads(str(r.get('content') or '{}'))
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get('proposalId') == proposal_id:
+                    r['status'] = status
+                    r['decided_at'] = datetime.now(timezone.utc).isoformat()
+                    tables.save_rows(path, rows)
+                    return
     except Exception:
         logger.debug('proposal decide failed (non-fatal)', exc_info=True)
 

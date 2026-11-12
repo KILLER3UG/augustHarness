@@ -42,9 +42,9 @@ import os
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.json_narrowing import as_int
 from app.models.camel_base import CamelModel
 from app.services import brain_config_service
-from app.services.memory_conn import commit as brain_commit
 
 router = APIRouter(prefix='/api/brain', tags=['brain-config'])
 
@@ -208,22 +208,33 @@ async def getConsolidationLog(limit: int = Query(50, ge=1, le=200)):
     the deleted diagnostics endpoints."""
     import json as _json
 
-    from app.services.memory_conn import conn as _mem_conn
+    from app.services.memory_store import tables
 
-    rows = _mem_conn().execute(
-        "SELECT created_at, event_type, detail FROM lifecycle "
-        "WHERE event_type IN ('consolidation', 'lesson_promoted', 'lesson_promotion_skipped') "
-        'ORDER BY created_at DESC LIMIT ?',
-        (limit,),
-    ).fetchall()
+    rows = [
+        r for r in tables.ledger_rows(tables.lifecycle_file())
+        if str(r.get('event_type') or r.get('eventType') or '')
+        in ('consolidation', 'lesson_promoted', 'lesson_promotion_skipped')
+    ]
+    rows.sort(
+        key=lambda r: (str(r.get('created_at') or r.get('createdAt') or ''), as_int(r.get('id'), 0)),
+        reverse=True,
+    )
+    rows = rows[:limit]
     entries: list[dict[str, object]] = []
     for r in rows:
+        raw_detail = r.get('detail')
         detail: object = {}
         try:
-            detail = _json.loads(r['detail']) if r['detail'] else {}
+            detail = _json.loads(str(raw_detail)) if raw_detail else {}
         except (ValueError, TypeError):
-            detail = {'raw': r['detail']}
-        entries.append({'createdAt': r['created_at'], 'eventType': r['event_type'], 'detail': detail})
+            detail = {'raw': raw_detail}
+        entries.append(
+            {
+                'createdAt': r.get('created_at') or r.get('createdAt'),
+                'eventType': r.get('event_type') or r.get('eventType'),
+                'detail': detail,
+            }
+        )
     return {'entries': entries}
 
 
@@ -317,7 +328,7 @@ async def getMemoryMetrics(days: int = Query(7, ge=1, le=30)):
     """
     import json as _json
 
-    from app.services.memory_conn import conn as _mem_conn
+    from app.services.memory_store import tables
     from app.services.memory_store.kv import get_internal_state
 
     def _readTotals() -> dict[str, int]:
@@ -356,28 +367,47 @@ async def getMemoryMetrics(days: int = Query(7, ge=1, le=30)):
         consolidation_last_run = None
     latency: dict[str, object] = {'turns': 0}
     try:
-        rows = _mem_conn().execute(
-            """
-            SELECT COUNT(*) AS turns,
-                   AVG(ttft_ms) AS avg_ttft_ms,
-                   MAX(ttft_ms) AS max_ttft_ms,
-                   AVG(duration_ms) AS avg_duration_ms,
-                   SUM(cache_hit_tokens) AS cache_hit_tokens,
-                   SUM(cache_miss_tokens) AS cache_miss_tokens
-            FROM turn_outcomes
-            WHERE ts >= datetime('now', ?)
-            """,
-            (f'-{int(days)} days',),
-        ).fetchall()
-        for r in rows:
-            turns = int(r['turns'] or 0)
-            hitT = int(r['cache_hit_tokens'] or 0)
-            missT = int(r['cache_miss_tokens'] or 0)
+        # The turn-outcomes ledger (the transcript/telemetry domain's runtime
+        # file); the aggregate walks the window's rows in one pass.
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=int(days))).strftime(
+            '%Y-%m-%d %H:%M:%S'
+        )
+
+        def _in_window(row: dict[str, object]) -> bool:
+            ts = str(row.get('ts') or row.get('createdAt') or row.get('created_at') or '')
+            # The ledger mixes the space-separated stamp the SQL writer used
+            # and ISO 'T' stamps; the space form sorts below the 'T' cutoff on
+            # the same day, so both are normalized to a comparable prefix.
+            return ts.replace('T', ' ')[:19] >= cutoff
+
+        turns_n = 0
+        ttft_sum = ttft_max = 0
+        duration_sum = 0
+        hitT = missT = 0
+        for row in tables.ledger_rows(tables.turn_outcomes_file()):
+            if not _in_window(row):
+                continue
+            turns_n += 1
+            try:
+                ttft = int(row.get('ttft_ms') or row.get('ttftMs') or 0)
+            except (TypeError, ValueError):
+                ttft = 0
+            ttft_sum += ttft
+            ttft_max = max(ttft_max, ttft)
+            try:
+                duration_sum += int(row.get('duration_ms') or row.get('durationMs') or 0)
+            except (TypeError, ValueError):
+                pass
+            hitT += int(row.get('cache_hit_tokens') or row.get('cacheHitTokens') or 0)
+            missT += int(row.get('cache_miss_tokens') or row.get('cacheMissTokens') or 0)
+        if turns_n:
             latency = {
-                'turns': turns,
-                'avgTtftMs': round(float(r['avg_ttft_ms'] or 0), 1) if turns else 0.0,
-                'maxTtftMs': int(r['max_ttft_ms'] or 0) if turns else 0,
-                'avgDurationMs': round(float(r['avg_duration_ms'] or 0), 1) if turns else 0.0,
+                'turns': turns_n,
+                'avgTtftMs': round(ttft_sum / turns_n, 1),
+                'maxTtftMs': ttft_max,
+                'avgDurationMs': round(duration_sum / turns_n, 1),
                 'cacheHitTokens': hitT,
                 'cacheMissTokens': missT,
                 'cacheHitRate': round(hitT / (hitT + missT), 3) if (hitT + missT) else 0.0,
@@ -478,31 +508,27 @@ async def getStateLookup(key: str = Query(..., min_length=1)):
     ``internal_state`` is checked first (machine state wins)."""
     import json as _json
 
-    from app.services.memory_conn import conn as _mem_conn
+    from app.services.memory_store.kv import lookup_any
 
     k = key.strip()
     if not k:
         raise HTTPException(
             status_code=400, detail={'code': 'validation', 'message': 'key query param is required'}
         )
-    conn = _mem_conn()
-    for table in ('internal_state', 'memory_store'):
-        row = conn.execute(
-            f'SELECT value, updated_at FROM {table} WHERE key = ?', (k,)
-        ).fetchone()
-        if row:
-            value: object
-            try:
-                value = _json.loads(row['value'])
-            except (ValueError, TypeError):
-                value = row['value']
-            return {
-                'key': k,
-                'found': True,
-                'source': table,
-                'value': value,
-                'updatedAt': row['updated_at'],
-            }
+    row = lookup_any(k)
+    if row is not None:
+        value: object
+        try:
+            value = _json.loads(str(row.get('value')))
+        except (ValueError, TypeError):
+            value = row.get('value')
+        return {
+            'key': k,
+            'found': True,
+            'source': row.get('source'),
+            'value': value,
+            'updatedAt': row.get('updated_at'),
+        }
     return {'key': k, 'found': False, 'source': None, 'value': None, 'updatedAt': None}
 
 
@@ -531,55 +557,70 @@ class _ArenaVerdict(CamelModel):
 async def recordArenaVerdict(body: _ArenaVerdict):
     """Record one arena/debate verdict: a winner row (ok=1) + one loser row
     (ok=0) per competing model, all tagged source='arena'."""
-    from app.services.memory_conn import conn
+    from app.services.memory_store import tables
+    from app.services.memory_store.timeutil import utc_now_text
 
     winner = body.winner
     if winner is None or not winner.model_id:
         raise HTTPException(status_code=400, detail='winner.modelId is required')
-    c = conn()
+    path = tables.routing_evidence_file()
     recorded = 0
-    c.execute(
-        "INSERT INTO routing_evidence (session_id, task_type, model, provider, ok, source, prompt) "
-        "VALUES (?, ?, ?, ?, 1, 'arena', ?)",
-        (body.session_id, body.task_type or 'arena', winner.model_id, winner.provider, body.prompt),
-    )
-    recorded += 1
-    for loser in body.losers:
-        if not loser.model_id:
-            continue
-        c.execute(
-            "INSERT INTO routing_evidence (session_id, task_type, model, provider, ok, source, prompt) "
-            "VALUES (?, ?, ?, ?, 0, 'arena', ?)",
-            (body.session_id, body.task_type or 'arena', loser.model_id, loser.provider, body.prompt),
-        )
+    with tables.store_lock(str(path)):
+        rows = tables.ledger_rows(path)
+        next_id = tables.next_id(rows)
+
+        def _row(model: str, provider: str, ok: int) -> dict[str, object]:
+            nonlocal next_id
+            next_id += 1
+            return {
+                'id': next_id - 1,
+                'session_id': body.session_id,
+                'task_type': body.task_type or 'arena',
+                'model': model,
+                'provider': provider,
+                'ok': ok,
+                'source': 'arena',
+                'prompt': body.prompt,
+                'input_tokens': 0,
+                'output_tokens': 0,
+                'duration_ms': 0,
+                'created_at': utc_now_text(),
+            }
+
+        rows.append(_row(winner.model_id, winner.provider, 1))
         recorded += 1
-    brain_commit(c)
+        for loser in body.losers:
+            if not loser.model_id:
+                continue
+            rows.append(_row(loser.model_id, loser.provider, 0))
+            recorded += 1
+        tables.rewrite_ledger(path, rows)
     return {'ok': True, 'recorded': recorded}
 
 
 @router.get('/routing/arena')
 async def getArenaHistory(limit: int = Query(100, ge=1, le=500)):
     """Recent arena verdicts (the durable archive the UI groups per session)."""
-    from app.services.memory_conn import conn
+    from app.services.memory_store import tables
 
-    rows = conn().execute(
-        "SELECT session_id, task_type, model, provider, ok, input_tokens, output_tokens, "
-        "duration_ms, created_at, prompt FROM routing_evidence WHERE source = 'arena' "
-        'ORDER BY id DESC LIMIT ?',
-        (limit,),
-    ).fetchall()
+    rows = [
+        r for r in tables.ledger_rows(tables.routing_evidence_file())
+        if str(r.get('source') or '') == 'arena'
+    ]
+    rows.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
+    rows = rows[:limit]
     return {
         'results': [
             {
-                'sessionId': str(r['session_id'] or ''),
-                'taskType': str(r['task_type'] or 'arena'),
-                'model': str(r['model'] or ''),
-                'provider': str(r['provider'] or ''),
-                'won': bool(r['ok']),
-                'tokens': int(r['input_tokens'] or 0) + int(r['output_tokens'] or 0),
-                'durationMs': int(r['duration_ms'] or 0),
-                'at': str(r['created_at'] or ''),
-                'prompt': str(r['prompt'] or ''),
+                'sessionId': str(r.get('session_id') or ''),
+                'taskType': str(r.get('task_type') or 'arena'),
+                'model': str(r.get('model') or ''),
+                'provider': str(r.get('provider') or ''),
+                'won': bool(r.get('ok')),
+                'tokens': int(r.get('input_tokens') or 0) + int(r.get('output_tokens') or 0),
+                'durationMs': int(r.get('duration_ms') or 0),
+                'at': str(r.get('created_at') or ''),
+                'prompt': str(r.get('prompt') or ''),
             }
             for r in rows
         ]
@@ -591,25 +632,35 @@ async def getRoutingSuggestions(prompt: str = Query('', max_length=2000), limit:
     """Per-model win-rate suggestions from arena evidence (surpass #1 loop):
     models ranked by win rate over ≥1 recorded verdict, for the composer's
     'which model wins this kind of prompt' affordance."""
-    from app.services.memory_conn import conn
+    from app.services.memory_store import tables
 
-    rows = conn().execute(
-        "SELECT model, provider, SUM(ok) AS wins, COUNT(*) AS total, "
-        "AVG(input_tokens + output_tokens) AS avg_tokens FROM routing_evidence "
-        "WHERE source = 'arena' AND model != '' GROUP BY model, provider "
-        'ORDER BY wins * 1.0 / total DESC, total DESC LIMIT ?',
-        (limit,),
-    ).fetchall()
+    groups: dict[tuple[str, str], dict[str, int]] = {}
+    for r in tables.ledger_rows(tables.routing_evidence_file()):
+        if str(r.get('source') or '') != 'arena':
+            continue
+        model = str(r.get('model') or '')
+        if not model:
+            continue
+        key = (model, str(r.get('provider') or ''))
+        bucket = groups.setdefault(key, {'wins': 0, 'total': 0, 'tokens': 0, 'n': 0})
+        bucket['total'] += 1
+        bucket['wins'] += 1 if r.get('ok') else 0
+        bucket['tokens'] += int(r.get('input_tokens') or 0) + int(r.get('output_tokens') or 0)
+        bucket['n'] += 1
+    ranked = sorted(
+        groups.items(),
+        key=lambda kv: (-(kv[1]['wins'] / kv[1]['total']), -kv[1]['total']),
+    )[:limit]
     suggestions = [
         {
-            'modelId': str(r['model'] or ''),
-            'provider': str(r['provider'] or ''),
-            'wins': int(r['wins'] or 0),
-            'total': int(r['total'] or 0),
-            'winRate': round(int(r['wins'] or 0) / max(1, int(r['total'] or 0)), 3),
-            'avgTokens': int(r['avg_tokens'] or 0),
+            'modelId': key[0],
+            'provider': key[1],
+            'wins': bucket['wins'],
+            'total': bucket['total'],
+            'winRate': round(bucket['wins'] / max(1, bucket['total']), 3),
+            'avgTokens': round(bucket['tokens'] / bucket['n']) if bucket['n'] else 0,
         }
-        for r in rows
+        for key, bucket in ranked
     ]
     return {'prompt': prompt, 'suggestions': suggestions}
 

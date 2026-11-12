@@ -81,12 +81,21 @@ def _known_workspace_paths() -> list[str]:
     import tempfile
 
     try:
-        from app.services.memory_conn import conn as _conn
+        from app.services.memory_store import list_sessions
 
-        rows = _conn().execute(
-            "SELECT DISTINCT workspace_path FROM sessions "
-            "WHERE workspace_path IS NOT NULL AND TRIM(workspace_path) != ''"
-        ).fetchall()
+        # The same enumeration the SQL query produced: distinct non-empty
+        # workspace paths across every session, read through the public
+        # sessions door (the transcript domain owns that store at runtime).
+        raw_paths: list[str] = []
+        for s in list_sessions() or []:
+            raw = str(
+                getattr(s, 'workspacePath', '')
+                or (s.get('workspacePath') if isinstance(s, dict) else '')
+                or ''
+            ).strip()
+            if raw:
+                raw_paths.append(raw)
+        rows = [{'workspace_path': raw} for raw in dict.fromkeys(raw_paths)]
     except Exception:
         return []
     home = Path.home().resolve()

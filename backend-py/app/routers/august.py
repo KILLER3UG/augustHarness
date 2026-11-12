@@ -19,7 +19,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.lib.local_api_auth import require_local_token
 from app.models.camel_base import CamelModel
 from app.services import alias_service
-from app.services.memory_conn import commit as brain_commit
 from app.services.memory_store import list_config_audit
 from app.type_aliases import FactDict, JsonValue
 
@@ -561,11 +560,10 @@ async def manage_memory(body: ActionBody):
             save_internal(key, cast(JsonValue, body.value))
             return {'ok': True, 'store': 'memory', 'key': key}
         if action in ('delete', 'forget'):
-            conn_kv = memory_store._conn()  # noqa: SLF001
-            cur = conn_kv.execute('DELETE FROM memory_store WHERE key = ?', (key,))
-            conn_kv
-            brain_commit(conn_kv)
-            return {'ok': cur.rowcount > 0, 'store': 'memory', 'key': key}
+            from app.services.memory_store.kv import delete_memory
+
+            removed = delete_memory(key)
+            return {'ok': removed, 'store': 'memory', 'key': key}
     if action in ('set', 'upsert') and key:
         before_fact = memory_store.get_fact(key)
         before = copy.deepcopy(before_fact) if before_fact else None
@@ -1170,10 +1168,10 @@ async def decide_memory_proposal(
         return {'ok': False, 'error': "decision must be 'approve' or 'reject'"}
     result = consolidation.apply_retire_decision(proposal_id, approve=decision == 'approve')
     if not result.get('ok'):
-        # `error` is the operator's string: it names the function that raised and
-        # carries the SQLite condition, which is what a log line is for and what a
-        # settings panel must not show. The unit it describes is restored before
-        # anything else can publish it (`memory_conn.poison`), so the user-facing
+        # `error` is the operator's string: it names the function that raised, which
+        # is what a log line is for and what a settings panel must not show. The
+        # store restores the claim before the error escapes (apply_retire_decision
+        # reverts an approved claim to pending on failure), so the user-facing
         # sentence can promise the one thing that is true: nothing was applied and
         # the proposal is still open. `api.post` is a bare JSON post here, so this
         # route is the only place the distinction could be made — a sibling caller

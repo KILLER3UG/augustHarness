@@ -8,6 +8,10 @@ insufficient). This is SkillsBench's paired-evaluation protocol at proposal
 scale — the harness's own evals — and it replaces the status quo where
 ``expectedOutcome`` was written and never checked.
 
+The ledger is ``<dataDir>/telemetry/harness-outcomes.json`` — a JSON state
+file keyed by the row's unique ``key`` (a re-approved proposal re-books
+nothing, which is what INSERT OR IGNORE used to guarantee).
+
 Episode-derived stats are the measurement surface because that is what the
 harness actually changes for the user: how often sessions recover from
 failures, how often the targeted failure fingerprint recurs. Rates use
@@ -26,12 +30,19 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from app.json_narrowing import as_dict, as_int, as_str
 from app.services.best_effort import best_effort
-from app.services.memory_conn import commit as brain_commit
+from app.services.filestore import (  # noqa: F401 (TELEMETRY_DIR/home: outcomes file)
+    TELEMETRY_DIR,
+    home,
+    read_json,
+    write_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,41 +60,26 @@ _MIN_EPISODES = 8
 # about as fine a distinction as this sample can honestly support.
 _IMPROVE_EPS = 0.15
 
-# SQLite-compatible format (space form; julianday parses it unambiguously).
+# SQLite-compatible format (space form), kept for the stored timestamps.
 _TS = '%Y-%m-%d %H:%M:%S'
 
-
-def _conn():
-    from app.services.memory_conn import conn
-
-    return conn()
+_OUTCOMES_FILE = 'harness-outcomes.json'
+_LOCK = threading.RLock()
 
 
-def _ensure_schema() -> None:
-    """Migration 042 creates the table at schema init; cover contexts that
-    touch the ledger before a full init (tests, scripts)."""
-    conn = _conn()
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS harness_outcome ('
-        '  id INTEGER PRIMARY KEY AUTOINCREMENT,'
-        '  key TEXT NOT NULL UNIQUE,'
-        '  source TEXT NOT NULL,'
-        "  kind TEXT NOT NULL DEFAULT '',"
-        "  target TEXT NOT NULL DEFAULT '',"
-        "  fingerprint TEXT NOT NULL DEFAULT '',"
-        '  applied_at TEXT NOT NULL,'
-        "  expected TEXT NOT NULL DEFAULT '',"
-        '  measured_at TEXT,'
-        '  window_d INTEGER,'
-        '  before_json TEXT,'
-        '  after_json TEXT,'
-        '  verdict TEXT)'
-    )
-    conn.execute(
-        'CREATE INDEX IF NOT EXISTS idx_harness_outcome_pending '
-        'ON harness_outcome(measured_at, applied_at)'
-    )
-    brain_commit(conn)
+def _outcomes_path() -> Path:
+    return home(TELEMETRY_DIR) / _OUTCOMES_FILE
+
+
+def _load_outcomes() -> dict[str, dict[str, Any]]:
+    raw = read_json(_outcomes_path(), default={})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _save_outcomes(rows: dict[str, dict[str, Any]]) -> None:
+    write_json(_outcomes_path(), rows)
 
 
 def _window_days() -> int:
@@ -100,24 +96,46 @@ def _utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _episode_rows(since_s: str, until_s: str) -> list[dict[str, Any]]:
+    """Episode rows inside a window, read from the episode domain's own file.
+
+    The ``episodes`` table left SQLite with the rest of the store; its home is
+    ``<state>/episodes.json`` (``memory_store.tables.episodes_file``). This
+    module is a READER of that domain, not its owner. Rows keep their SQL-era
+    column names (``outcome`` / ``created_at`` / ``fingerprint_id``). An
+    unreadable store degrades to the 'insufficient' verdict — never a
+    fabricated improvement or regression.
+    """
+    try:
+        from app.services.memory_store import tables
+
+        rows = tables.load_rows(tables.episodes_file())
+    except Exception:
+        return []
+    return [
+        row
+        for row in rows
+        if since_s <= str(row.get('created_at') or '') < until_s
+    ]
+
+
 def episode_stats(since: datetime, until: datetime, fingerprint: str = '') -> dict[str, Any]:
     """Episode outcome stats for a window; optionally the recurrence count of
     one failure fingerprint inside it.
 
-    Recurrence is counted from ``failure_fingerprints.first_seen/last_seen``
-    overlap with the window plus episode rows — an episode-based count is the
-    honest one (a fingerprint table row aggregates lifetime), so we count
-    episodes carrying the fingerprint.
+    Recurrence is counted from the episode rows carrying the fingerprint — an
+    episode-based count is the honest one (a fingerprint table row aggregates
+    lifetime), so we count episodes, not fingerprint lifetimes.
     """
-    conn = _conn()
     since_s, until_s = since.strftime(_TS), until.strftime(_TS)
-    rows = conn.execute(
-        "SELECT outcome, COUNT(*) AS n FROM episodes "
-        'WHERE julianday(created_at) >= julianday(?) AND julianday(created_at) < julianday(?) '
-        'GROUP BY outcome',
-        (since_s, until_s),
-    ).fetchall()
-    counts = {str(r['outcome']): int(r['n']) for r in rows}
+    rows = _episode_rows(since_s, until_s)
+    counts: dict[str, int] = {}
+    recurrence = 0
+    for row in rows:
+        outcome = str(row.get('outcome') or '')
+        counts[outcome] = counts.get(outcome, 0) + 1
+        if fingerprint and str(row.get('fingerprint_id') or row.get('fingerprint') or '') == fingerprint:
+            recurrence += 1
     total = sum(counts.values())
     resolved = counts.get('resolved', 0) + 0.5 * counts.get('rescued', 0)
     out: dict[str, Any] = {
@@ -126,13 +144,7 @@ def episode_stats(since: datetime, until: datetime, fingerprint: str = '') -> di
         'window': [since_s, until_s],
     }
     if fingerprint:
-        fp = conn.execute(
-            'SELECT COUNT(*) AS n FROM episodes '
-            'WHERE fingerprint_id = ? '
-            'AND julianday(created_at) >= julianday(?) AND julianday(created_at) < julianday(?)',
-            (fingerprint, since_s, until_s),
-        ).fetchone()
-        out['fingerprintRecurrence'] = int(fp['n']) if fp else 0
+        out['fingerprintRecurrence'] = recurrence
     return out
 
 
@@ -146,32 +158,33 @@ def record(
 ) -> None:
     """Book one side-effecting learning write with its BEFORE stats.
 
-    Idempotent on ``key`` (INSERT OR IGNORE): re-approving/replaying never
-    double-books. Never raises — a failed outcome row must not fail the
-    approval it is annotating.
+    Idempotent on ``key``: re-approving/replaying never double-books. Never
+    raises — a failed outcome row must not fail the approval it is annotating.
     """
     try:
         days = _window_days()
         now = _utc(datetime.now(timezone.utc))
         before = episode_stats(now - timedelta(days=days), now, fingerprint)
-        _ensure_schema()
-        conn = _conn()
-        conn.execute(
-            'INSERT OR IGNORE INTO harness_outcome '
-            '(key, source, kind, target, fingerprint, applied_at, expected, before_json) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            (
-                key,
-                source,
-                kind,
-                target,
-                (fingerprint or '')[:300],
-                now.strftime(_TS),
-                (expected or '')[:1000],
-                json.dumps(before, ensure_ascii=False),
-            ),
-        )
-        brain_commit(conn)
+        with _LOCK:
+            rows = _load_outcomes()
+            if key in rows:
+                return
+            rows[key] = {
+                'id': len(rows) + 1,
+                'key': key,
+                'source': source,
+                'kind': kind,
+                'target': target,
+                'fingerprint': (fingerprint or '')[:300],
+                'applied_at': now.strftime(_TS),
+                'expected': (expected or '')[:1000],
+                'before_json': json.dumps(before, ensure_ascii=False),
+                'measured_at': None,
+                'window_d': None,
+                'after_json': None,
+                'verdict': None,
+            }
+            _save_outcomes(rows)
     except Exception:
         logger.debug('harness_outcome record failed (%s %s)', source, key, exc_info=True)
 
@@ -219,41 +232,48 @@ def measure_pending() -> dict[str, Any]:
     """
     days = _window_days()
     now = _utc(datetime.now(timezone.utc))
-    _ensure_schema()
-    conn = _conn()
     cutoff = (now - timedelta(days=days)).strftime(_TS)
-    rows = conn.execute(
-        'SELECT id, key, source, kind, target, fingerprint, applied_at, expected, before_json '
-        'FROM harness_outcome WHERE measured_at IS NULL AND applied_at <= ? '
-        'ORDER BY applied_at LIMIT 50',
-        (cutoff,),
-    ).fetchall()
     verdicts = {'improved': 0, 'flat': 0, 'regressed': 0, 'insufficient': 0}
-    for r in rows:
-        applied = as_str(r['applied_at'], '')
-        try:
-            applied_dt = _utc(datetime.strptime(applied, _TS))
-        except ValueError:
-            verdicts['insufficient'] += 1
-            continue
-        fingerprint = as_str(r['fingerprint'], '')
-        try:
-            before = json.loads(as_str(r['before_json'], '{}'))
-        except Exception:
-            before = {}
-        after = episode_stats(applied_dt, applied_dt + timedelta(days=days), fingerprint)
-        verdict = _classify(before, after, targeted=bool(fingerprint))
-        conn.execute(
-            'UPDATE harness_outcome SET measured_at = ?, window_d = ?, after_json = ?, verdict = ? '
-            'WHERE id = ?',
-            (now.strftime(_TS), days, json.dumps(after, ensure_ascii=False), verdict, r['id']),
-        )
-        verdicts[verdict] += 1
-        if verdict == 'regressed':
-            with best_effort('learning.revert-proposal'):
-                _file_revert_proposal(r, before, after, days)
-    brain_commit(conn)
-    return {'measured': len(rows), **{f'v_{k}': v for k, v in verdicts.items()}}
+    measured = 0
+    try:
+        with _LOCK:
+            rows = _load_outcomes()
+            due = [
+                row
+                for row in rows.values()
+                if row.get('measured_at') is None
+                and str(row.get('applied_at') or '') <= cutoff
+            ]
+            due.sort(key=lambda row: str(row.get('applied_at') or ''))
+            for row in due[:50]:
+                applied = as_str(row.get('applied_at'), '')
+                try:
+                    applied_dt = _utc(datetime.strptime(applied, _TS))
+                except ValueError:
+                    verdicts['insufficient'] += 1
+                    measured += 1
+                    continue
+                fingerprint = as_str(row.get('fingerprint'), '')
+                try:
+                    before = json.loads(as_str(row.get('before_json'), '{}'))
+                except Exception:
+                    before = {}
+                after = episode_stats(applied_dt, applied_dt + timedelta(days=days), fingerprint)
+                verdict = _classify(before, after, targeted=bool(fingerprint))
+                row['measured_at'] = now.strftime(_TS)
+                row['window_d'] = days
+                row['after_json'] = json.dumps(after, ensure_ascii=False)
+                row['verdict'] = verdict
+                verdicts[verdict] += 1
+                measured += 1
+                if verdict == 'regressed':
+                    with best_effort('learning.revert-proposal'):
+                        _file_revert_proposal(row, before, after, days)
+            _save_outcomes(rows)
+    except Exception:
+        logger.debug('harness_outcome measure_pending failed', exc_info=True)
+        return {'measured': measured, **{f'v_{k}': v for k, v in verdicts.items()}}
+    return {'measured': measured, **{f'v_{k}': v for k, v in verdicts.items()}}
 
 
 def _source_change(key: str) -> tuple[str, str]:
@@ -278,7 +298,7 @@ def _source_change(key: str) -> tuple[str, str]:
     return '', ''
 
 
-def _file_revert_proposal(r: Any, before: dict[str, Any], after: dict[str, Any], days: int) -> None:
+def _file_revert_proposal(r: dict[str, Any], before: dict[str, Any], after: dict[str, Any], days: int) -> None:
     """Answer a measured regression: undo it if it is ours, else ask a human.
 
     A 'regressed' verdict is the ledger's one unambiguous negative signal: the
@@ -293,10 +313,10 @@ def _file_revert_proposal(r: Any, before: dict[str, Any], after: dict[str, Any],
     """
     from app.services import harness_self_improve as hsi
 
-    key = as_str(r['key'], '')
-    source = as_str(r['source'], '')
-    kind = as_str(r['kind'], '')
-    target = as_str(r['target'], '') or key
+    key = as_str(r.get('key'), '')
+    source = as_str(r.get('source'), '')
+    kind = as_str(r.get('kind'), '')
+    target = as_str(r.get('target'), '') or key
     change, rollback = _source_change(key)
     if not rollback:
         # The source row is gone (pruned proposal file). Say so rather than
@@ -335,7 +355,7 @@ def _file_revert_proposal(r: Any, before: dict[str, Any], after: dict[str, Any],
         kind='revert',
         expected_metric='resolved rate recovers toward the pre-change window',
         payload={
-            'outcomeId': r['id'],
+            'outcomeId': r.get('id'),
             'outcomeKey': key,
             'source': source,
             'changeKind': kind,
@@ -385,22 +405,21 @@ def _classify(before: dict[str, Any], after: dict[str, Any], targeted: bool = Fa
 
 def outcome_report(limit: int = 30) -> dict[str, Any]:
     """Rows for the Learning panel / curator endpoint (newest first)."""
-    conn = _conn()
-    rows = conn.execute(
-        'SELECT key, source, kind, target, applied_at, expected, measured_at, verdict, '
-        'before_json, after_json FROM harness_outcome ORDER BY id DESC LIMIT ?',
-        (int(limit),),
-    ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        for jf in ('before_json', 'after_json'):
-            try:
-                d[jf] = json.loads(str(d.get(jf) or '{}'))
-            except Exception:
-                d[jf] = {}
-        out.append(d)
-    pending = conn.execute(
-        'SELECT COUNT(*) AS n FROM harness_outcome WHERE measured_at IS NULL'
-    ).fetchone()
-    return {'rows': out, 'pending': int(pending['n']) if pending else 0}
+    try:
+        with _LOCK:
+            rows = list(_load_outcomes().values())
+        rows.sort(key=lambda row: int(row.get('id') or 0), reverse=True)
+        out = []
+        for row in rows[: max(1, int(limit))]:
+            d = dict(row)
+            d.pop('id', None)
+            for jf in ('before_json', 'after_json'):
+                try:
+                    d[jf] = json.loads(str(d.get(jf) or '{}'))
+                except Exception:
+                    d[jf] = {}
+            out.append(d)
+        pending = sum(1 for row in rows if row.get('measured_at') is None)
+        return {'rows': out, 'pending': pending}
+    except Exception:
+        return {'rows': [], 'pending': 0}

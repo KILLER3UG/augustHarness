@@ -39,13 +39,13 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import threading
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from app.json_narrowing import as_float, as_int, as_str
 from app.services.agent_message_bus import AgentMessageBus, Handler, Subscription
-from app.services.memory_conn import commit as brain_commit
 from app.services.workbench.subagent_fanout import (
     # Re-exported: callers and tests read the ceiling off this module, which is
     # where the pool has always advertised it. noqa keeps autofix from
@@ -168,14 +168,16 @@ async def _acquire_slot(sem: asyncio.Semaphore | ConcurrencyGate, timeout: float
 def _record_run(handle: SubagentHandle) -> None:
     """Persist one run row (fire-and-forget, never raises).
 
-    Inserts on first sight of the task; updates the same row on status
-    transitions. Best-effort — a missing table or busy DB must not break
-    orchestration.
+    Appends on first sight of the task; updates the same row on status
+    transitions. The run history is ``<dataDir>/telemetry/subagent-runs.jsonl``
+    (one JSON line per run, the row the ``subagent_runs`` table carried); a
+    status transition is load-modify-atomic-replace. Best-effort — a lost
+    telemetry write must not break orchestration.
     """
     try:
-        from app.services.memory_store import _conn
+        from app.services.filestore import TELEMETRY_DIR, home, load_jsonl, rewrite_jsonl
 
-        conn = _conn()
+        path = home(TELEMETRY_DIR) / 'subagent-runs.jsonl'
         status = handle.status or 'pending'
         summary = ''
         if isinstance(handle.result, dict):
@@ -187,9 +189,6 @@ def _record_run(handle: SubagentHandle) -> None:
             ).strip()
         elif isinstance(handle.result, str):
             summary = handle.result
-        existing = conn.execute(
-            'SELECT id FROM subagent_runs WHERE task_id = ?', (handle.taskId,)
-        ).fetchone()
         full = summary  # full blob for perfect drawer rendering (up to 20k)
         if len(full) > 20000:
             # result_full is the drawer's RECOVERY field — what a user reads
@@ -206,77 +205,50 @@ def _record_run(handle: SubagentHandle) -> None:
         now_iso = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         last_act_iso = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.lastActivityAt)) if getattr(handle, 'lastActivityAt', None) else now_iso
         api_calls = int(getattr(handle, 'apiCalls', 0) or 0)
-        if existing:
-            try:
-                conn.execute(
-                    'UPDATE subagent_runs SET status = ?, result_summary = ?, result_full = ?, error = ?, '
-                    "finished_at = COALESCE(?, finished_at), last_activity_at = ?, api_calls = ?, todos_json = ? WHERE task_id = ?",
-                    (
-                        status,
-                        summary[:4000],
-                        full[:20000],
-                        (handle.error or '')[:2000],
-                        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.finishedAt)) if handle.finishedAt else None,
-                        last_act_iso,
-                        api_calls,
-                        todos_json,
-                        handle.taskId,
-                    ),
+        with _RUNS_LOCK:
+            rows = [r for r in load_jsonl(path) if isinstance(r, dict)]
+            existing = None
+            for row in rows:
+                if str(row.get('task_id') or '') == handle.taskId:
+                    existing = row
+                    break
+            if existing is not None:
+                existing['status'] = status
+                existing['result_summary'] = summary[:4000]
+                existing['result_full'] = full[:20000]
+                existing['error'] = (handle.error or '')[:2000]
+                if handle.finishedAt:
+                    existing.setdefault('finished_at', None)
+                    if not existing.get('finished_at'):
+                        existing['finished_at'] = time.strftime(
+                            '%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.finishedAt)
+                        )
+                existing['last_activity_at'] = last_act_iso
+                existing['api_calls'] = api_calls
+                existing['todos_json'] = todos_json
+                rewrite_jsonl(path, cast('list[object]', rows))
+            else:
+                row_id = 1 + max((as_int(r.get('id'), 0) for r in rows), default=0)
+                rows.append(
+                    {
+                        'id': row_id,
+                        'task_id': handle.taskId,
+                        'session_id': handle.sessionId,
+                        'agent_id': handle.agentId,
+                        'goal': (handle.goal or '')[:500],
+                        'status': status,
+                        'result_summary': summary[:4000],
+                        'result_full': full[:20000],
+                        'error': '',
+                        'started_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.startedAt)),
+                        'finished_at': None,
+                        'last_activity_at': last_act_iso,
+                        'api_calls': api_calls,
+                        'todos_json': todos_json,
+                        'created_at': now_iso,
+                    }
                 )
-            except Exception as e:
-                # Column not yet migrated (021 not applied) — fallback to old schema
-                if 'no such column' in str(e).lower():
-                    conn.execute(
-                        'UPDATE subagent_runs SET status = ?, result_summary = ?, error = ?, '
-                        "finished_at = COALESCE(?, finished_at) WHERE task_id = ?",
-                        (
-                            status,
-                            summary[:4000],
-                            (handle.error or '')[:2000],
-                            time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.finishedAt)) if handle.finishedAt else None,
-                            handle.taskId,
-                        ),
-                    )
-                else:
-                    raise
-        else:
-            try:
-                conn.execute(
-                    'INSERT INTO subagent_runs '
-                    '(task_id, session_id, agent_id, goal, status, started_at, result_summary, result_full, last_activity_at, api_calls, todos_json) '
-                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    (
-                        handle.taskId,
-                        handle.sessionId,
-                        handle.agentId,
-                        (handle.goal or '')[:500],
-                        status,
-                        time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.startedAt)),
-                        summary[:4000],
-                        full[:20000],
-                        last_act_iso,
-                        api_calls,
-                        todos_json,
-                    ),
-                )
-            except Exception as e:
-                if 'no such column' in str(e).lower():
-                    conn.execute(
-                        'INSERT INTO subagent_runs '
-                        '(task_id, session_id, agent_id, goal, status, started_at) '
-                        'VALUES (?, ?, ?, ?, ?, ?)',
-                        (
-                            handle.taskId,
-                            handle.sessionId,
-                            handle.agentId,
-                            (handle.goal or '')[:500],
-                            status,
-                            time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(handle.startedAt)),
-                        ),
-                    )
-                else:
-                    raise
-        brain_commit(conn)
+                rewrite_jsonl(path, cast('list[object]', rows))
     except Exception:
         logger.debug('subagent run record failed (non-fatal)', exc_info=True)
 
@@ -286,9 +258,11 @@ def _record_run(handle: SubagentHandle) -> None:
 # so nothing can move those rows again and the tab spins forever on a 2 s poll.
 _ORPHANABLE_STATUSES = ('pending', 'queued', 'starting', 'running', 'stalling')
 
+_RUNS_LOCK = threading.RLock()
+
 
 def sweep_orphaned_runs() -> int:
-    """Mark every active-but-unowned ``subagent_runs`` row terminal at startup.
+    """Mark every active-but-unowned run row terminal at startup.
 
     A restart mid-run used to leave the row at ``running``: the drawer maps that
     to "working", keeps polling, and never resolves — so a worker that died with
@@ -301,30 +275,65 @@ def sweep_orphaned_runs() -> int:
     managed to write down before it died.
     """
     try:
-        from app.services.memory_store import _conn
+        from app.services.filestore import TELEMETRY_DIR, home, load_jsonl, rewrite_jsonl
 
-        conn = _conn()
-        placeholders = ', '.join('?' for _ in _ORPHANABLE_STATUSES)
-        cur = conn.execute(
-            f'UPDATE subagent_runs SET status = ?, error = ?, '
-            "finished_at = COALESCE(finished_at, datetime('now')) "
-            f'WHERE status IN ({placeholders})',
-            (
-                'lost',
-                'Lost: the backend restarted while this sub-agent was running.',
-                *_ORPHANABLE_STATUSES,
-            ),
-        )
-        brain_commit(conn)
-        count = int(cur.rowcount or 0)
+        path = home(TELEMETRY_DIR) / 'subagent-runs.jsonl'
+        count = 0
+        with _RUNS_LOCK:
+            rows = [r for r in load_jsonl(path) if isinstance(r, dict)]
+            for row in rows:
+                if str(row.get('status') or '') in _ORPHANABLE_STATUSES:
+                    row['status'] = 'lost'
+                    if not row.get('error'):
+                        row['error'] = 'Lost: the backend restarted while this sub-agent was running.'
+                    if not row.get('finished_at'):
+                        row['finished_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                    count += 1
+            if count:
+                rewrite_jsonl(path, cast('list[object]', rows))
         if count:
             logger.info('[Orchestrator] marked %d orphaned subagent run(s) as lost', count)
         return count
     except Exception:
-        # A missing table (fresh install, migrations not yet applied) must not
-        # block boot — the drawer just degrades to its previous behaviour.
+        # A missing store (fresh install) must not block boot — the drawer just
+        # degrades to its previous behaviour.
         logger.debug('subagent orphan sweep skipped (non-fatal)', exc_info=True)
         return 0
+
+
+def list_run_rows(
+    session_id: str | None = None, limit: int = 50
+) -> list[dict[str, object]]:
+    """Persisted sub-agent run rows, newest first (the /api/subagent/runs read).
+
+    Reader for the routers; the row keeps the ``subagent_runs`` column
+    spellings so the camelCase wire conversion is unchanged.
+    """
+    try:
+        from app.services.filestore import TELEMETRY_DIR, home, load_jsonl
+
+        path = home(TELEMETRY_DIR) / 'subagent-runs.jsonl'
+        rows = [r for r in load_jsonl(path) if isinstance(r, dict)]
+    except Exception:
+        return []
+    if session_id:
+        rows = [r for r in rows if str(r.get('session_id') or '') == session_id]
+    rows.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
+    return rows[: max(1, min(int(limit), 500))]
+
+
+def get_run_row(task_id: str) -> dict[str, object] | None:
+    """One run row by task id (the resume + agents-router lookup), or None."""
+    try:
+        from app.services.filestore import TELEMETRY_DIR, home, load_jsonl
+
+        path = home(TELEMETRY_DIR) / 'subagent-runs.jsonl'
+        for row in load_jsonl(path):
+            if isinstance(row, dict) and str(row.get('task_id') or '') == task_id:
+                return row
+    except Exception:
+        return None
+    return None
 
 
 class SubagentSpawnRequest:

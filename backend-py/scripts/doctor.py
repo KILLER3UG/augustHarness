@@ -98,23 +98,28 @@ def check_fastapi() -> bool:
 
 
 def check_sqlite() -> bool:
-    db = BACKEND_DIR / 'august_brain.sqlite'
-    if not db.exists():
-        warn('august_brain.sqlite not found (created on first run)')
+    """The brain record is file-backed now; check its homes (and mention the
+    retired SQL file only if the one-time import never ran)."""
+    data_dir = BACKEND_DIR / 'data'
+    memory = data_dir / 'memory'
+    state = data_dir / 'state'
+    if not memory.is_dir() and not state.is_dir():
+        retired = data_dir / 'august_brain.sqlite'
+        if retired.exists():
+            return check(
+                'brain record stores',
+                False,
+                'august_brain.sqlite present but not imported — start the backend '
+                'once so the one-time SQLite retirement runs',
+            )
+        warn('no brain record stores yet (created on first run)')
         return True
-    # Check it's a valid sqlite file
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(db))
-        conn.execute('SELECT 1')
-        conn.close()
-        return check('august_brain.sqlite readable', True)
-    except Exception as e:
-        return check(
-            'august_brain.sqlite readable',
-            False,
-            f'Corrupt database: {e}. Delete it to start fresh: del august_brain.sqlite',
-        )
+    facts = len(list(memory.glob('*.md'))) if memory.is_dir() else 0
+    return check(
+        'brain record stores readable',
+        True,
+        f'{facts} fact file(s) in memory/, state stores in state/',
+    )
 
 
 def check_app_import() -> bool:

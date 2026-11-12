@@ -2,7 +2,7 @@
 """Live connectivity smoke checklist against a running August Harness.
 
 Program acceptance checks (unified connectivity plan):
-  1. Session SoT: SQLite blob survives without JSON (in-process)
+  1. Session SoT: the transcript blob survives without the JSON export (in-process)
   2. Fleet PUT visible without restart
   3. Cognitive config tree readable
   4. Health maps to real storage
@@ -132,20 +132,8 @@ def main() -> int:
         memory_store.delete_session_record('smoke_wb_sot')
         _sessions.pop('smoke_wb_sot', None)
 
-        # Vector/graph SQLite writers
-        from app.services.memory import graph_memory, vector_db
-
-        ve = vector_db.insert('smoke vector sentence', metadata={'src': 'smoke'}, namespace='smoke')
-        check('vector.sqlite_insert', bool(ve.get('id')), ve.get('id'))
-        check('vector.sqlite_count', vector_db.count('smoke') >= 1, vector_db.count('smoke'))
-        ge = graph_memory.addEntity('smoke_entity', entityType='test')
-        check('graph.sqlite_entity', ge.get('name') == 'smoke_entity', ge)
-
         ok = sync_workbench_session_to_brain(sess, strict=False)
         check('brain_sync.sync', ok, get_sync_stats())
-
-        bq = memory_store.brain_query(store='auto_memories', query='', limit=1)
-        check('brain_query.alias', 'not available' not in bq, bq[:120])
 
         bf = backfill_workbench_json_to_brain()
         check('backfill.callable', bf.get('message') in ('ok', 'no workbench-sessions.json'), bf)

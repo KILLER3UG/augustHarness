@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.json_narrowing import as_str
 from app.lib.local_api_auth import require_local_token
 from app.models.camel_base import CamelModel
-from app.services.memory_conn import commit as brain_commit
 from app.services.tools import agent_registry
 from app.services.workbench.subagent import register_detached_session_task
 
@@ -347,41 +346,50 @@ def _record_api_job_run(
     result: str = '',
     error: str = '',
 ) -> None:
-    """Write one API-agent job into subagent_runs (fire-and-forget)."""
+    """Write one API-agent job into the subagent-runs ledger (fire-and-forget).
+
+    The run history is ``<telemetry>/subagent-runs.jsonl`` (one line per run,
+    the row the ``subagent_runs`` table carried); a status transition is a
+    load-modify-atomic-replace keyed on ``task_id`` — the same discipline the
+    orchestrator's own writer uses.
+    """
     try:
         import time
 
-        from app.services.memory_store import _conn
+        from app.services.filestore import TELEMETRY_DIR, home, load_jsonl, rewrite_jsonl
 
         now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        conn = _conn()
-        existing = conn.execute(
-            'SELECT id FROM subagent_runs WHERE task_id = ?', (job_id,)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                'UPDATE subagent_runs SET status = ?, result_summary = ?, error = ?, '
-                'finished_at = ? WHERE task_id = ?',
-                (status, (result or '')[:4000], (error or '')[:2000], now, job_id),
-            )
+        path = home(TELEMETRY_DIR) / 'subagent-runs.jsonl'
+        raw_rows = load_jsonl(path)
+        rows = [r for r in raw_rows if isinstance(r, dict)]
+        existing = next((r for r in rows if str(r.get('task_id') or '') == job_id), None)
+        if existing is not None:
+            existing['status'] = status
+            existing['result_summary'] = (result or '')[:4000]
+            existing['error'] = (error or '')[:2000]
+            existing['finished_at'] = now
         else:
-            conn.execute(
-                'INSERT INTO subagent_runs '
-                '(task_id, session_id, agent_id, goal, status, started_at, finished_at, '
-                'result_summary, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                (
-                    job_id,
-                    session_id or '',
-                    agent_id or 'general',
-                    (goal or '')[:500],
-                    status,
-                    now,
-                    now,
-                    (result or '')[:4000],
-                    (error or '')[:2000],
-                ),
+            top = 0
+            for r in rows:
+                try:
+                    top = max(top, int(r.get('id') or 0))
+                except (TypeError, ValueError):
+                    continue
+            rows.append(
+                {
+                    'id': top + 1,
+                    'task_id': job_id,
+                    'session_id': session_id or '',
+                    'agent_id': agent_id or 'general',
+                    'goal': (goal or '')[:500],
+                    'status': status,
+                    'started_at': now,
+                    'finished_at': now,
+                    'result_summary': (result or '')[:4000],
+                    'error': (error or '')[:2000],
+                }
             )
-        brain_commit(conn)
+        rewrite_jsonl(path, [dict(r) for r in rows])
     except Exception:
         logger.debug('api job run record failed (non-fatal)', exc_info=True)
 

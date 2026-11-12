@@ -24,7 +24,7 @@ from typing import cast
 import httpx  # noqa: F401
 
 from app.json_narrowing import as_float, as_int, as_str
-from app.services.memory_conn import commit as brain_commit
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 from app.type_aliases import DaemonStatusDict
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,25 @@ BACKOFF_CAP = 300
 MAX_RETRIES = 2
 POLL_INTERVAL = 30
 SHUTDOWN_TIMEOUT = 5
+
+# The durable copy of running daemons (the old ``daemons`` table) is one JSON
+# state file keyed by daemon id, carrying the same fields the row did.
+_DAEMONS_FILE = 'daemons.json'
+
+
+def _daemons_path():
+    return home(STATE_DIR) / _DAEMONS_FILE
+
+
+def _load_daemon_rows() -> dict[str, dict[str, object]]:
+    raw = read_json(_daemons_path(), default={})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _save_daemon_rows(rows: dict[str, dict[str, object]]) -> None:
+    write_json(_daemons_path(), rows)
 
 
 @dataclass
@@ -167,40 +186,36 @@ class DaemonManager:
             logger.info('Daemon spawned: %s', daemonId)
             try:
                 import json as _json
+                from datetime import datetime, timezone
 
-                from app.services.memory_store import _conn as _mem_conn
-
-                c = _mem_conn()
-                c.execute(
-                    'INSERT OR REPLACE INTO daemons (id, session_id, workspace_path, name, spec_json, result_json, status, updated_at, expires_at) '
-                    'VALUES (?, ?, ?, ?, ?, ?, ?, datetime("now"), ?)',
-                    (
-                        daemonId,
-                        sessionId,
-                        workspacePath,
-                        spec.name,
-                        _json.dumps(
-                            {
-                                'prompt': spec.prompt,
-                                'watchCondition': spec.watchCondition,
-                                'tools': spec.tools,
-                                'persistWorkspace': bool(getattr(spec, 'persistWorkspace', False)),
-                            }
-                        ),
-                        _json.dumps({'status': 'running'}),
-                        'running',
-                        # The column existed and NOTHING wrote it: the reaper
-                        # filters the in-memory `expires_at`, so the DB copy
-                        # looked redundant — and then a restart silently reset
-                        # the TTL to a full fresh term (finding 2026-09-27 #9).
-                        # A daemon with a 1h TTL whose app was closed for a day
-                        # came back with another full hour, every launch.
-                        # Wall-clock epoch seconds; the reaper still compares
-                        # monotonic in memory, so rehydrate converts.
-                        f'{time.time() + as_float(info.get("expires_at"), 0.0) - time.monotonic():.3f}',
+                rows = _load_daemon_rows()
+                rows[daemonId] = {
+                    'id': daemonId,
+                    'session_id': sessionId,
+                    'workspace_path': workspacePath,
+                    'name': spec.name,
+                    'spec_json': _json.dumps(
+                        {
+                            'prompt': spec.prompt,
+                            'watchCondition': spec.watchCondition,
+                            'tools': spec.tools,
+                            'persistWorkspace': bool(getattr(spec, 'persistWorkspace', False)),
+                        }
                     ),
-                )
-                brain_commit(c)
+                    'result_json': _json.dumps({'status': 'running'}),
+                    'status': 'running',
+                    'updated_at': datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                    # The column existed and NOTHING wrote it: the reaper
+                    # filters the in-memory `expires_at`, so the durable copy
+                    # looked redundant — and then a restart silently reset
+                    # the TTL to a full fresh term (finding 2026-09-27 #9).
+                    # A daemon with a 1h TTL whose app was closed for a day
+                    # came back with another full hour, every launch.
+                    # Wall-clock epoch seconds; the reaper still compares
+                    # monotonic in memory, so rehydrate converts.
+                    'expires_at': f'{time.time() + as_float(info.get("expires_at"), 0.0) - time.monotonic():.3f}',
+                }
+                _save_daemon_rows(rows)
             except Exception:
                 pass
             return daemonId
@@ -219,12 +234,10 @@ class DaemonManager:
                 del self._daemons[daemonId]
             logger.info('Daemon killed: %s', daemonId)
             try:
-                from app.services.memory_store import _conn as _mem_conn2
-
-                c2 = _mem_conn2()
-                c2.execute('DELETE FROM daemons WHERE id = ?', (daemonId,))
-                c2
-                brain_commit(c2)
+                rows = _load_daemon_rows()
+                if daemonId in rows:
+                    del rows[daemonId]
+                    _save_daemon_rows(rows)
             except Exception:
                 pass
             return True
@@ -253,33 +266,36 @@ class DaemonManager:
         return killed
 
     def rehydrate_from_db(self) -> int:
-        """Rehydrate in-memory daemon entries from DB after restart."""
+        """Rehydrate in-memory daemon entries from the daemon state file after restart."""
         try:
             import json as _json
 
-            from app.services.memory_store import _conn as _mem_conn3
-
-            c = _mem_conn3()
-            rows = c.execute('SELECT id, session_id, workspace_path, name, spec_json, result_json, status, expires_at FROM daemons WHERE status = "running"').fetchall()
+            stored = [
+                r
+                for r in _load_daemon_rows().values()
+                if str(r.get('status') or '') == 'running'
+            ]
             n = 0
-            for r in rows:
-                did = str(r['id'])
+            for r in stored:
+                did = str(r.get('id'))
                 if did in self._daemons:
                     continue
                 try:
-                    spec_d = _json.loads(r['spec_json'] or '{}')
-                    res_d = _json.loads(r['result_json'] or '{}')
+                    spec_d = _json.loads(str(r.get('spec_json') or '{}'))
+                    res_d = _json.loads(str(r.get('result_json') or '{}'))
                 except Exception:
+                    continue
+                if not isinstance(spec_d, dict) or not isinstance(res_d, dict):
                     continue
                 # The deadline is persisted as WALL-CLOCK epoch seconds and
                 # converted back to a monotonic offset, so time spent with the
                 # app closed counts against the daemon's TTL. A row with no
-                # deadline (written before the column was populated) gets a
+                # deadline (written before the field was populated) gets a
                 # full fresh term, which is the pre-fix behaviour and the only
                 # safe default.
                 _wallDeadline = 0.0
                 try:
-                    _wallDeadline = float(str(r['expires_at'] or '0') or '0')
+                    _wallDeadline = float(str(r.get('expires_at') or '0') or '0')
                 except (TypeError, ValueError):
                     _wallDeadline = 0.0
                 _remaining = _wallDeadline - time.time() if _wallDeadline > 0 else self._ttl_seconds()
@@ -288,9 +304,9 @@ class DaemonManager:
                     continue
                 info: dict[str, object] = {
                     'id': did,
-                    'name': str(r['name'] or spec_d.get('name') or 'daemon'),
-                    'session_id': str(r['session_id'] or ''),
-                    'workspace_path': str(r['workspace_path'] or ''),
+                    'name': str(r.get('name') or spec_d.get('name') or 'daemon'),
+                    'session_id': str(r.get('session_id') or ''),
+                    'workspace_path': str(r.get('workspace_path') or ''),
                     'prompt': str(spec_d.get('prompt') or ''),
                     'watch_condition': spec_d.get('watchCondition'),
                     'tools': spec_d.get('tools'),

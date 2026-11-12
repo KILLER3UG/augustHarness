@@ -550,7 +550,7 @@ def sanitize_enrichment(
 
 
 def enrichment_size(fields: dict[str, object]) -> int:
-    """Encoded byte size of a sanitized payload (what actually lands in SQLite)."""
+    """Encoded byte size of a sanitized payload (what actually lands in the transcript)."""
     return _encoded_size(fields)
 
 

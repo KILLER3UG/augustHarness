@@ -164,45 +164,12 @@ async def listRuns(sessionId: Optional[str] = None, limit: int = 50):
     Optional ``sessionId`` filter narrows to one conversation; ``limit``
     caps the page (default 50, max 500).
     """
-    from app.services.memory_store import _conn, _row_as_wire
+    from app.services.memory_store.wire import _row_as_wire
+    from app.services.subagent_orchestrator import list_run_rows
 
     if limit < 1 or limit > 500:
         limit = 50
-    conn = _conn()
-    try:
-        if sessionId:
-            rows = conn.execute(
-                'SELECT id, task_id, session_id, agent_id, goal, status, result_summary, result_full, error, '
-                'started_at, finished_at, last_activity_at, api_calls, created_at, todos_json FROM subagent_runs '
-                'WHERE session_id = ? ORDER BY id DESC LIMIT ?',
-                (sessionId, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                'SELECT id, task_id, session_id, agent_id, goal, status, result_summary, result_full, error, '
-                'started_at, finished_at, last_activity_at, api_calls, created_at, todos_json FROM subagent_runs '
-                'ORDER BY id DESC LIMIT ?',
-                (limit,),
-            ).fetchall()
-    except Exception as e:
-        # Fallback before migration 021
-        if 'no such column' in str(e).lower():
-            if sessionId:
-                rows = conn.execute(
-                    'SELECT id, task_id, session_id, agent_id, goal, status, result_summary, error, '
-                    'started_at, finished_at, created_at FROM subagent_runs '
-                    'WHERE session_id = ? ORDER BY id DESC LIMIT ?',
-                    (sessionId, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    'SELECT id, task_id, session_id, agent_id, goal, status, result_summary, error, '
-                    'started_at, finished_at, created_at FROM subagent_runs '
-                    'ORDER BY id DESC LIMIT ?',
-                    (limit,),
-                ).fetchall()
-        else:
-            raise
+    rows = list_run_rows(sessionId, limit)
     return {'runs': [_row_as_wire(r) for r in rows]}
 
 
@@ -392,19 +359,15 @@ async def resumeSubagent(
     the same transcript). Returns the NEW task id — the old run's history
     row is preserved.
     """
-    from app.services.memory_store import _conn
+    from app.services.subagent_orchestrator import get_run_row
 
-    conn = _conn()
-    row = conn.execute(
-        'SELECT task_id, session_id, agent_id, goal FROM subagent_runs WHERE task_id = ?',
-        (taskId,),
-    ).fetchone()
+    row = get_run_row(taskId)
     if not row:
         raise HTTPException(status_code=404, detail=f'Task {taskId} not found in run history')
     orch = _getOrchestrator(request)
-    sessionId = as_str(row['session_id'] if isinstance(row, dict) or hasattr(row, 'keys') else row[1], '') or 'default'
-    goal = as_str(row['goal'] if isinstance(row, dict) or hasattr(row, 'keys') else row[3], '')
-    agentId = as_str(row['agent_id'] if isinstance(row, dict) or hasattr(row, 'keys') else row[2], '') or 'general'
+    sessionId = as_str(row.get('session_id'), '') or 'default'
+    goal = as_str(row.get('goal'), '')
+    agentId = as_str(row.get('agent_id'), '') or 'general'
     if not goal:
         raise HTTPException(status_code=400, detail=f'Task {taskId} has no goal to resume')
     session = _getSession(request)

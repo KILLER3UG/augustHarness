@@ -28,13 +28,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
 
-from app.json_narrowing import as_dict, as_str
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.json_narrowing import as_dict, as_int, as_str
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 
 logger = logging.getLogger('august.bot_mode.rooms')
 
@@ -50,12 +51,39 @@ MAX_MEMBERS = 6
 _REVIEW_MARK = 'request_review('
 _PASS_TOKENS = frozenset({'', '(pass)', 'pass', '[pass]'})
 
+_FILE = 'bot-rooms.json'
+_LOCK = threading.RLock()
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 # ── room store ───────────────────────────────────────────────────────────────
+# ``bot_room`` / ``bot_room_message`` became one JSON state file:
+# ``{'rooms': [...], 'messages': [...]}`` with the same row fields.
+
+
+def _path() -> Path:
+    return home(STATE_DIR) / _FILE
+
+
+def _load() -> dict[str, list[dict[str, object]]]:
+    raw = read_json(_path(), default={})
+    if not isinstance(raw, dict):
+        return {'rooms': [], 'messages': []}
+    rooms = raw.get('rooms')
+    messages = raw.get('messages')
+    return {
+        'rooms': [r for r in (rooms or []) if isinstance(r, dict)] if isinstance(rooms, list) else [],
+        'messages': [m for m in (messages or []) if isinstance(m, dict)]
+        if isinstance(messages, list)
+        else [],
+    }
+
+
+def _save(data: dict[str, list[dict[str, object]]]) -> None:
+    write_json(_path(), data)
 
 
 def create_room(name: str, members: list[str]) -> int:
@@ -63,66 +91,79 @@ def create_room(name: str, members: list[str]) -> int:
     if len(clean) < MIN_MEMBERS or len(clean) > MAX_MEMBERS:
         raise ValueError(f'a room needs {MIN_MEMBERS}-{MAX_MEMBERS} distinct members')
     try:
-        c = _conn()
-        cur = c.execute(
-            'INSERT INTO bot_room (name, members, created_at) VALUES (?, ?, ?)',
-            ((name or 'Room').strip()[:120], json.dumps(clean), _now()),
-        )
-        brain_commit(c)
-        return int(cur.lastrowid or 0)
+        with _LOCK:
+            data = _load()
+            rooms = list(data['rooms'])
+            room_id = 1 + max((as_int(r.get('id'), 0) for r in rooms), default=0)
+            rooms.append(
+                {
+                    'id': room_id,
+                    'name': (name or 'Room').strip()[:120],
+                    'members': json.dumps(clean),
+                    'needs_you': 0,
+                    'created_at': _now(),
+                }
+            )
+            data['rooms'] = rooms
+            _save(data)
+            return room_id
     except Exception:
         logger.debug('create_room failed', exc_info=True)
         return 0
 
 
 def _needs_you(row: dict[str, object]) -> bool:
-    """The SQLite INTEGER 0/1 badge → bool (as_bool only accepts real bools)."""
+    """The stored 0/1 badge → bool (as_bool only accepts real bools)."""
     try:
         return bool(int(str(row.get('needs_you') or 0)))
     except (TypeError, ValueError):
         return False
 
 
+def _decoded_room(row: dict[str, object]) -> dict[str, object]:
+    out = dict(row)
+    try:
+        out['members'] = json.loads(str(out.get('members') or '[]'))
+    except (json.JSONDecodeError, TypeError):
+        out['members'] = []
+    out['needs_you'] = _needs_you(out)
+    return out
+
+
 def get_room(room_id: int) -> dict[str, object] | None:
     try:
-        row = _conn().execute('SELECT * FROM bot_room WHERE id = ?', (room_id,)).fetchone()
-        if row is None:
-            return None
-        out = dict(row)
-        try:
-            out['members'] = json.loads(str(out.get('members') or '[]'))
-        except (json.JSONDecodeError, TypeError):
-            out['members'] = []
-        out['needs_you'] = _needs_you(out)
-        return out
+        with _LOCK:
+            rooms = _load()['rooms']
+        for row in rooms:
+            if as_int(row.get('id'), 0) == room_id:
+                return _decoded_room(row)
+        return None
     except Exception:
         return None
 
 
 def list_rooms() -> list[dict[str, object]]:
     try:
-        rows = _conn().execute('SELECT * FROM bot_room ORDER BY id DESC').fetchall()
-        out: list[dict[str, object]] = []
-        for r in rows:
-            d = dict(r)
-            try:
-                d['members'] = json.loads(str(d.get('members') or '[]'))
-            except (json.JSONDecodeError, TypeError):
-                d['members'] = []
-            d['needs_you'] = _needs_you(d)
-            out.append(d)
-        return out
+        with _LOCK:
+            rooms = _load()['rooms']
+        rooms = sorted(rooms, key=lambda r: as_int(r.get('id'), 0), reverse=True)
+        return [_decoded_room(r) for r in rooms]
     except Exception:
         return []
 
 
 def delete_room(room_id: int) -> bool:
     try:
-        c = _conn()
-        c.execute('DELETE FROM bot_room_message WHERE room_id = ?', (room_id,))
-        cur = c.execute('DELETE FROM bot_room WHERE id = ?', (room_id,))
-        brain_commit(c)
-        return bool(cur.rowcount)
+        with _LOCK:
+            data = _load()
+            rooms = list(data['rooms'])
+            kept = [r for r in rooms if as_int(r.get('id'), 0) != room_id]
+            if len(kept) == len(rooms):
+                return False
+            data['rooms'] = kept
+            data['messages'] = [m for m in data['messages'] if as_int(m.get('room_id'), 0) != room_id]
+            _save(data)
+            return True
     except Exception:
         return False
 
@@ -146,12 +187,13 @@ def update_room(
         clean = list(cast(list[str], room.get('members') or []))
         members_json = json.dumps(clean)
     try:
-        c = _conn()
-        c.execute(
-            'UPDATE bot_room SET name = ?, members = ? WHERE id = ?',
-            (new_name, members_json, room_id),
-        )
-        brain_commit(c)
+        with _LOCK:
+            data = _load()
+            for row in data['rooms']:
+                if as_int(row.get('id'), 0) == room_id:
+                    row['name'] = new_name
+                    row['members'] = members_json
+            _save(data)
         return get_room(room_id)
     except Exception:
         logger.debug('update_room failed', exc_info=True)
@@ -160,9 +202,12 @@ def update_room(
 
 def set_needs_you(room_id: int, value: bool) -> None:
     try:
-        c = _conn()
-        c.execute('UPDATE bot_room SET needs_you = ? WHERE id = ?', (1 if value else 0, room_id))
-        brain_commit(c)
+        with _LOCK:
+            data = _load()
+            for row in data['rooms']:
+                if as_int(row.get('id'), 0) == room_id:
+                    row['needs_you'] = 1 if value else 0
+            _save(data)
     except Exception:
         logger.debug('set_needs_you failed', exc_info=True)
 
@@ -177,17 +222,23 @@ def add_message(
     """Append one log row. ``thread_id=None`` makes the row its own thread
     root (its id becomes the thread_id); a given id joins that thread."""
     try:
-        c = _conn()
-        cur = c.execute(
-            'INSERT INTO bot_room_message (room_id, sender_agent, body, kind, created_at, thread_id) '
-            'VALUES (?, ?, ?, ?, ?, ?)',
-            (room_id, sender_agent, body, kind, _now(), thread_id),
-        )
-        mid = int(cur.lastrowid or 0)
-        if thread_id is None and mid:
-            c.execute('UPDATE bot_room_message SET thread_id = ? WHERE id = ?', (mid, mid))
-        brain_commit(c)
-        return mid
+        with _LOCK:
+            data = _load()
+            messages = list(data['messages'])
+            mid = 1 + max((as_int(m.get('id'), 0) for m in messages), default=0)
+            row: dict[str, object] = {
+                'id': mid,
+                'room_id': room_id,
+                'sender_agent': sender_agent,
+                'body': body,
+                'kind': kind,
+                'created_at': _now(),
+                'thread_id': mid if thread_id is None else thread_id,
+            }
+            messages.append(row)
+            data['messages'] = messages
+            _save(data)
+            return mid
     except Exception:
         logger.debug('add_message failed', exc_info=True)
         return 0
@@ -195,27 +246,29 @@ def add_message(
 
 def room_log(room_id: int, limit: int = 200) -> list[dict[str, object]]:
     try:
-        rows = _conn().execute(
-            'SELECT * FROM bot_room_message WHERE room_id = ? ORDER BY id ASC LIMIT ?',
-            (room_id, max(1, int(limit))),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        with _LOCK:
+            messages = _load()['messages']
+        rows = [m for m in messages if as_int(m.get('room_id'), 0) == room_id]
+        rows.sort(key=lambda m: as_int(m.get('id'), 0))
+        return rows[: max(1, int(limit))]
     except Exception:
         return []
 
 
 def _last_message_id(room_id: int, thread_id: int | None = None) -> int:
     try:
-        if thread_id is None:
-            row = _conn().execute(
-                'SELECT MAX(id) AS m FROM bot_room_message WHERE room_id = ?', (room_id,),
-            ).fetchone()
-        else:
-            row = _conn().execute(
-                'SELECT MAX(id) AS m FROM bot_room_message WHERE room_id = ? AND thread_id = ?',
-                (room_id, thread_id),
-            ).fetchone()
-        return int(row['m'] or 0) if row and row['m'] is not None else 0
+        with _LOCK:
+            messages = _load()['messages']
+        best = 0
+        for m in messages:
+            if as_int(m.get('room_id'), 0) != room_id:
+                continue
+            if thread_id is not None and as_int(m.get('thread_id'), 0) != thread_id:
+                continue
+            mid = as_int(m.get('id'), 0)
+            if mid > best:
+                best = mid
+        return best
     except Exception:
         return 0
 
@@ -224,20 +277,53 @@ def _new_messages_since(
     room_id: int, since_id: int, thread_id: int | None = None
 ) -> list[dict[str, object]]:
     try:
-        if thread_id is None:
-            rows = _conn().execute(
-                'SELECT * FROM bot_room_message WHERE room_id = ? AND id > ? ORDER BY id ASC',
-                (room_id, since_id),
-            ).fetchall()
-        else:
-            rows = _conn().execute(
-                'SELECT * FROM bot_room_message WHERE room_id = ? AND thread_id = ? AND id > ? '
-                'ORDER BY id ASC',
-                (room_id, thread_id, since_id),
-            ).fetchall()
-        return [dict(r) for r in rows]
+        with _LOCK:
+            messages = _load()['messages']
+        rows = [m for m in messages if as_int(m.get('room_id'), 0) == room_id]
+        if thread_id is not None:
+            rows = [m for m in rows if as_int(m.get('thread_id'), 0) == thread_id]
+        rows = [m for m in rows if as_int(m.get('id'), 0) > since_id]
+        rows.sort(key=lambda m: as_int(m.get('id'), 0))
+        return rows
     except Exception:
         return []
+
+
+def purge_agent(agent_id: str) -> None:
+    """Drop a deleted Bot's room footprint (roster deletion cascade).
+
+    Removes it from every room's member list; rooms that fall below the
+    2-member minimum are deleted with their logs.
+    """
+    try:
+        with _LOCK:
+            data = _load()
+            kept_rooms: list[dict[str, object]] = []
+            dropped_ids: set[int] = set()
+            changed = False
+            for row in data['rooms']:
+                try:
+                    members = json.loads(str(row.get('members') or '[]'))
+                except (json.JSONDecodeError, TypeError):
+                    members = []
+                if agent_id not in members:
+                    kept_rooms.append(row)
+                    continue
+                changed = True
+                remaining = [m for m in members if m != agent_id]
+                if len(remaining) < 2:
+                    dropped_ids.add(as_int(row.get('id'), 0))
+                else:
+                    row['members'] = json.dumps(remaining)
+                    kept_rooms.append(row)
+            if changed:
+                data['rooms'] = kept_rooms
+                data['messages'] = [
+                    m for m in data['messages'] if as_int(m.get('room_id'), 0) not in dropped_ids
+                ]
+                _save(data)
+    except Exception:
+        logger.debug('bot room purge failed', exc_info=True)
 
 
 # ── deterministic mention parse ──────────────────────────────────────────────

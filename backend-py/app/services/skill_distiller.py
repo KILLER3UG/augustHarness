@@ -40,8 +40,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.json_narrowing import as_int as _as_int
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.services.episode_miner import _episode_rows
 
 logger = logging.getLogger(__name__)
 
@@ -495,12 +494,13 @@ def judgeStatus() -> dict[str, Any]:
     model, provider, source = resolve_judge_full()
     pending = 0
     try:
-        row = _conn().execute(
-            'SELECT COUNT(*) AS n FROM episodes'
-            " WHERE tier = 2 AND quarantined = 0"
-            "   AND (judge_verdict IS NULL OR judge_verdict = '')"
-        ).fetchone()
-        pending = int(row['n']) if row else 0
+        pending = sum(
+            1
+            for r in _episode_rows()
+            if int(r.get('tier') or 1) == 2
+            and int(r.get('quarantined') or 0) == 0
+            and (r.get('judge_verdict') is None or str(r.get('judge_verdict') or '') == '')
+        )
     except Exception:
         logger.debug('distiller pending-episode count failed', exc_info=True)
     if not model:
@@ -588,20 +588,19 @@ def _actionTimeline(ep: dict[str, Any]) -> str:
     if not sessionId or start is None or end is None:
         return ''
     try:
-        rows = _conn().execute(
-            'SELECT blocks_json FROM messages'
-            ' WHERE session_id = ? AND id >= ? AND id <= ? ORDER BY id',
-            (sessionId, int(start), int(end)),
-        ).fetchall()
+        from app.services.memory_store import get_messages
+
+        msgs = [
+            m for m in get_messages(sessionId)
+            if int(m.get('id') or 0) >= int(start) and int(m.get('id') or 0) <= int(end)
+        ]
     except Exception:
         logger.debug('distiller timeline read failed for %s', ep.get('id'), exc_info=True)
         return ''
-    from app.services.memory_store.transcript_blocks import decode_blocks
-
     lines: list[str] = []
-    for row in rows:
+    for m in msgs:
         try:
-            blocks = decode_blocks(row['blocks_json']).get('blocks')
+            blocks = m.get('blocks') if isinstance(m.get('blocks'), list) else None
         except Exception:
             continue
         if not isinstance(blocks, list):
@@ -1111,9 +1110,11 @@ def _evidenceWindow(verdict: dict[str, Any], episode_id: Any, fingerprint: str =
     row = None
     if episode_id is not None:
         try:
-            row = _conn().execute(
-                'SELECT * FROM episodes WHERE id = ?', (episode_id,)
-            ).fetchone()
+            wanted = _as_int(episode_id, 0)
+            row = next(
+                (r for r in _episode_rows() if _as_int(r.get('id'), 0) == wanted),
+                None,
+            )
         except Exception:
             logger.debug('distiller evidence read failed for %r', episode_id, exc_info=True)
     if row is not None:
@@ -1138,9 +1139,9 @@ def _recordAppliedLabel(episode_id: object, label: str) -> None:
     if eid <= 0 or not label:
         return
     try:
-        conn = _conn()
-        conn.execute('UPDATE episodes SET applied_label = ? WHERE id = ?', (label, eid))
-        brain_commit(conn)
+        from app.services.episode_miner import set_applied_label
+
+        set_applied_label(eid, label)
     except Exception:  # noqa: BLE001
         logger.debug('episode applied_label write failed', exc_info=True)
 
@@ -1154,17 +1155,18 @@ def verdict_label_stats(days: int = 30) -> dict[str, object]:
     """
     since = _iso(_utcnow() - timedelta(days=max(1, min(int(days), 365))))
     try:
-        rows = _conn().execute(
-            "SELECT applied_label, COUNT(*) AS n FROM episodes "
-            "WHERE (applied_label IS NOT NULL AND applied_label != '') AND created_at >= ? "
-            'GROUP BY applied_label ORDER BY n DESC',
-            (since,),
-        ).fetchall()
+        counts: dict[str, int] = {}
+        for r in _episode_rows():
+            label = str(r.get('applied_label') or '')
+            if not label:
+                continue
+            created = str(r.get('created_at') or '')
+            if created and created.replace('T', ' ')[:19] < since.replace('T', ' ')[:19]:
+                continue
+            counts[label] = counts.get(label, 0) + 1
     except Exception:
         return {'days': days, 'labels': [], 'total': 0, 'error': 'unavailable'}
-    pairs: list[tuple[str, int]] = [
-        (str(r['applied_label']), int(r['n'])) for r in rows
-    ]
+    pairs: list[tuple[str, int]] = sorted(counts.items(), key=lambda kv: -kv[1])
     labels = [{'label': name, 'count': count} for name, count in pairs]
     return {
         'days': days,
@@ -1652,12 +1654,25 @@ def _reviewTarget() -> tuple[str, int, bool]:
     cursors = _reviewCursors()
     archiveCursors = _reviewCursors(_ARCHIVE_CURSOR_KEY)
     try:
-        rows = _conn().execute(
-            'SELECT session_id, MAX(id) AS newest FROM messages'
-            " WHERE session_id IS NOT NULL AND session_id != ''"
-            ' GROUP BY session_id ORDER BY newest DESC LIMIT ?',
-            (_REVIEW_SCAN_SESSIONS,),
-        ).fetchall()
+        rows: list[dict[str, Any]] = []
+        newest_by_session: dict[str, int] = {}
+        from app.lib.paths import dataPath
+        from app.services.memory_store import tables as _tables
+
+        directory = dataPath('transcripts')
+        if directory.is_dir():
+            for path in directory.glob('*.jsonl'):
+                sid = path.stem
+                for raw in _tables.ledger_rows(path):
+                    mid = _as_int(raw.get('id'), 0)
+                    if mid > newest_by_session.get(sid, 0):
+                        newest_by_session[sid] = mid
+            rows = [
+                {'session_id': sid, 'newest': mid}
+                for sid, mid in sorted(
+                    newest_by_session.items(), key=lambda kv: -kv[1]
+                )[:_REVIEW_SCAN_SESSIONS]
+            ]
     except Exception:
         logger.debug('review target lookup failed', exc_info=True)
         return '', 0, False
@@ -1746,26 +1761,24 @@ def _reviewWindow(session_id: str, cursor: int) -> tuple[str, int]:
     """(rendered window, newest message id reviewed)."""
     rows: list[Any] = []
     try:
-        rows = list(
-            _conn().execute(
-                'SELECT id, role, content FROM messages'
-                ' WHERE session_id = ? AND id > ? ORDER BY id DESC LIMIT ?',
-                (session_id, cursor, _REVIEW_MAX_MESSAGES),
-            ).fetchall()
-        )
+        from app.services.memory_store import get_messages
+
+        msgs = [m for m in get_messages(session_id) if _as_int(m.get('id'), 0) > cursor]
+        msgs.sort(key=lambda m: _as_int(m.get('id'), 0), reverse=True)
+        rows = list(msgs[:_REVIEW_MAX_MESSAGES])
     except Exception:
         logger.debug('review window read failed', exc_info=True)
         return '', cursor
-    newest = int(rows[0]['id']) if rows else cursor
+    newest = _as_int(rows[0].get('id'), 0) if rows else cursor
     lines: list[str] = []
     used = 0
     for r in reversed(rows):
-        text = ' '.join(_flattenMessageText(r['content']).split())
+        text = ' '.join(_flattenMessageText(r.get('content')).split())
         if not text:
             continue
         if len(text) > _REVIEW_LINE_CAP:
             text = text[:_REVIEW_LINE_CAP] + '…'
-        line = f"  [{r['id']}] {r['role']}: {text}"
+        line = f"  [{r.get('id')}] {r.get('role')}: {text}"
         used += len(line) + 1
         if used > _REVIEW_TOTAL_CAP:
             lines.append('  … window truncated …')
@@ -1989,13 +2002,17 @@ def run_distiller_pass(dryRun: bool = False) -> dict[str, Any]:
             results.append({'episode': d.get('episode'), 'label': 'dropped-invalid', 'why': d['why']})
         for v in applicable:
             epId = v.get('episode')
-            fpRow = _conn().execute(
-                'SELECT fingerprint_id, scope FROM episodes WHERE id = ?', (epId,)
-            ).fetchone()
-            fp = str(fpRow['fingerprint_id']) if fpRow and fpRow['fingerprint_id'] else 'unknown'
+            fpRow = next(
+                (
+                    r for r in _episode_rows()
+                    if _as_int(r.get('id'), 0) == _as_int(epId, -1)
+                ),
+                None,
+            )
+            fp = str(fpRow.get('fingerprint_id') or '') if fpRow else 'unknown'
             # The distilled fact lands in the episode's scope —
             # bot-private episodes must not leak lessons into global memory.
-            epScope = str(fpRow['scope'] or '') if fpRow and 'scope' in fpRow.keys() else ''
+            epScope = str(fpRow.get('scope') or '') if fpRow else ''
             label = apply_verdict(v, fp, mode, scope=epScope)
             if epId is not None:
                 set_judge_verdict(int(epId), json.dumps(v, ensure_ascii=False)[:2000])

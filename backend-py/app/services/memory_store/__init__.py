@@ -1,18 +1,15 @@
-"""Brain SQLite memory store — domain package facade.
+"""Brain memory store — domain package facade.
 
 Public API is re-exported so existing imports keep working:
 
   from app.services.memory_store import get_messages
   from app.services import memory_store
 
-Domains: wire, kv, messages, sessions, brain, rest.
-Connection helpers: app.services.memory_conn
+Domains: wire, kv, messages, sessions, brain, rest — all file-backed under
+``dataDir()`` (the SQL engine is retired; see filestore.py and tables.py).
 """
 from __future__ import annotations
 
-from app.services.memory_conn import close
-from app.services.memory_conn import conn as _conn
-from app.services.memory_conn import db_path as _db_path
 from app.services.memory_store.brain import (
     brain_browse,
     brain_delete_row,
@@ -92,7 +89,7 @@ from app.services.memory_store.sessions import (
     session_archive_flags,
     set_session_archived,
 )
-from app.services.memory_store.wire import _row_as_wire, _session_field
+from app.services.memory_store.wire import _conn, _db_path, _row_as_wire, _session_field, close
 
 __all__ = [
     'close',

@@ -2,10 +2,16 @@
 
 The deleted consolidation daemon was a stateful multi-job machine. This is
 the minimal audited replacement: a single periodic job that expires facts,
-merges near-duplicates, supersedes same-title contradictions, sweeps
-turn_outcomes, and vacuums a bloated DB. Every action writes a lifecycle
-row so the UI can show a consolidation log; job state lives in
-``internal_state`` (never in memory).
+merges near-duplicates, supersedes same-title contradictions, sweeps the
+ledgers it owns, and reports. Every action writes a lifecycle row so the UI
+can show a consolidation log; job state lives in ``internal-state.json``
+(never in memory).
+
+The fact passes run load-merge-atomic-write over the markdown record — the
+676e88a5 guard rules are unchanged and now protect file writes instead of
+UPDATE/DELETE pairs: a merge touches the survivor only after re-reading it
+from disk, and the absorbed row is only removed once the survivor actually
+took the write.
 """
 
 from __future__ import annotations
@@ -15,17 +21,14 @@ import json
 import logging
 import os
 import re
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.json_narrowing import as_int, as_str
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
-from app.services.memory_conn import db_path as _db_path
-from app.services.memory_conn import poison
 from app.services.memory_quality import MERGE_SIMILARITY as _MERGE_SIMILARITY
-from app.services.memory_store.rest import PROFILE_FACT_KIND
+from app.services.memory_store import mirror as record
+from app.services.memory_store import tables
+from app.services.memory_store.rest import PROFILE_FACT_KIND, _record_lock
 from app.services.memory_store.timeutil import utc_now_text
 
 logger = logging.getLogger('august.consolidation')
@@ -36,8 +39,6 @@ logger = logging.getLogger('august.consolidation')
 # because it reads better at the comparison site than the ladder's name.
 # Pair pass is O(n) index queries; huge stores skip it rather than stall.
 _PAIR_SCAN_CAP = 500
-# VACUUM only when the DB file grows past this.
-_VACUUM_THRESHOLD_BYTES = 10 * 1024 * 1024
 _STATE_KEY_LAST_RUN = 'consolidation:last_run'
 
 
@@ -111,41 +112,56 @@ def _model_summarize(text: str) -> str:
     )
 
 
+def _parse_stamp(raw: object) -> datetime | None:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    try:
+        normalized = text[:-1] + '+00:00' if text.endswith('Z') else text
+        stamp = datetime.fromisoformat(normalized)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp
+    except (ValueError, TypeError):
+        return None
+
+
 def _expire_facts() -> int:
-    conn = _conn()
-    # julianday, not string compare: the column mixes writer formats (date-only
-    # from the distiller, ISO-T+offset, model-verbatim strings) and a plain
-    # 'expires_at <= datetime("now")' mis-orders 'T'-separated values on the
-    # expiry day itself — julianday() parses every ISO-8601 shape (and
-    # applies the offset) so one format can't silently outlive its window.
-    cur = conn.execute(
-        "DELETE FROM facts WHERE expires_at IS NOT NULL AND expires_at != '' "
-        "AND julianday(expires_at) IS NOT NULL "
-        "AND julianday(expires_at) <= julianday('now')"
-    )
-    brain_commit(conn)
+    """Delete facts whose expiry has passed (julianday semantics: an
+    unparseable expires_at never expires)."""
+    from app.services.memory_store.rest import _expired
+
+    removed = 0
+    with _record_lock():
+        for row in record.load_facts():
+            if not _expired(row):
+                continue
+            if record.delete_fact_file(
+                str(row.get('fact_key') or ''), str(row.get('scope') or 'global')
+            ):
+                removed += 1
     # 2.6: a TTL delete must drop the cached BM25 corpus, or expired
     # facts keep being injected until an unrelated write clears it.
-    if cur.rowcount:
+    if removed:
         try:
             from app.services.memory_store.fact_retrieval import invalidate_fact_index
 
             invalidate_fact_index()
         except Exception:
             pass
-    return cur.rowcount or 0
+    return removed
 
 
 def _sweep_episodic() -> int:
     """M-4: episodic_timeline retention sweep.
 
-    The table was unbounded — every session event appended forever. The
+    The store was unbounded — every session event appended forever. The
     retention window comes from brain-config ``episodicRetentionDays``
-    (default 90). OQ2 (ruled 2026-09-04): the table stays (``brain_index_snippet``
+    (default 90). OQ2 (ruled 2026-09-04): the store stays (``brain_index_snippet``
     reads it) but M-4's FTS/index half is CLOSED AS WON'T-BUILD — LIKE over
     ≤hundreds of rows is instant and the two readers never rank, so an FTS5
     mirror + triggers would be pure maintenance for no recall gain. Only the
-    hygiene sweep lands (and already had to, under either ruling).
+    hygiene sweep lands.
     """
     days = 90
     try:
@@ -156,27 +172,30 @@ def _sweep_episodic() -> int:
     except (TypeError, ValueError):
         pass
     days = max(1, min(3650, days))
-    conn = _conn()
+    path = tables.timeline_file()
     try:
-        cur = conn.execute(
-            "DELETE FROM episodic_timeline "
-            "WHERE julianday(timestamp) IS NOT NULL "
-            "AND julianday(timestamp) < julianday('now', ?)",
-            (f'-{days} days',),
-        )
-        brain_commit(conn)
-        return cur.rowcount or 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            kept = [
+                r for r in rows
+                if (_parse_stamp(r.get('timestamp')) or datetime.now(timezone.utc)) >= cutoff
+            ]
+            removed = len(rows) - len(kept)
+            if removed:
+                tables.save_rows(path, kept)
+            return removed
     except Exception:
-        # Table absent (fresh store pre-migration) — nothing to sweep.
         return 0
 
 
 def _sweep_usage() -> int:
-    """Delete token-usage rows older than the configured retention window.
+    """Drop token-usage rows older than the configured retention window.
 
     ``usage_events`` is analytics state rather than the durable transcript, so
-    it should not grow forever on a long-lived install. The existing
-    consolidation cadence is the single maintenance window for this sweep.
+    it should not grow forever on a long-lived install. The write path also
+    caps the ledger by bytes (filestore rotation); this date sweep honours the
+    operator's ``usageRetentionDays`` on top of that ceiling.
     """
     days = 365
     try:
@@ -187,37 +206,37 @@ def _sweep_usage() -> int:
     except (TypeError, ValueError):
         pass
     days = max(30, min(3650, days))
-    conn = _conn()
+    path = tables.usage_events_file()
     try:
-        cur = conn.execute(
-            "DELETE FROM usage_events "
-            "WHERE julianday(created_at) IS NOT NULL "
-            "AND julianday(created_at) < julianday('now', ?)",
-            (f'-{days} days',),
-        )
-        brain_commit(conn)
-        return cur.rowcount or 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with tables.store_lock(str(path)):
+            rows = tables.ledger_rows(path)
+            kept = [
+                r for r in rows
+                if (_parse_stamp(r.get('created_at') or r.get('createdAt')) or datetime.now(timezone.utc)) >= cutoff
+            ]
+            removed = len(rows) - len(kept)
+            if removed:
+                tables.rewrite_ledger(path, kept)
+            return removed
     except Exception:
-        # Fresh/legacy stores may not have usage_events yet; maintenance must
-        # remain best-effort and never block other consolidation work.
         logger.debug('usage sweep failed', exc_info=True)
         return 0
 
 
-# Diagnostics ledgers that carry conversation-derived rows (run goals, routing
-# outcomes, decision counterfactuals, harness waves) but are evidence about the
-# system, not memory. They get a shorter window than usage analytics: their
-# readers (runs page, ledger digest, routing stats) only look at recent rows.
-_DIAGNOSTIC_LEDGER_TABLES = ('subagent_runs', 'routing_evidence', 'decision_ledger', 'harness_jobs')
+# The decision ledger is the one diagnostics ledger this module still sweeps
+# by date (its rotation cap lives at the write path). The other ledgers the
+# SQL pass pruned — subagent_runs, routing_evidence, harness_jobs — are the
+# transcript/telemetry domain's runtime files now, and their rotation caps
+# replace the date sweeps here.
+_DIAGNOSTIC_LEDGERS = ('decision_ledger',)
 
 
 def _sweep_privacy_ledgers() -> dict[str, int]:
-    """Delete diagnostics-ledger rows past the retention window.
+    """Delete decision-ledger rows past the retention window.
 
-    These four tables were counted by the privacy center but swept by nothing,
-    so a long-lived install kept every goal and decision forever. The
-    consolidation pass is the same single maintenance window the other
-    retention sweeps ride.
+    The window comes from brain-config ``diagnosticsRetentionDays`` (default
+    30): the decisions resolver only looks at recent rows.
     """
     days = 30
     try:
@@ -229,25 +248,21 @@ def _sweep_privacy_ledgers() -> dict[str, int]:
         pass
     days = max(7, min(365, days))
     swept: dict[str, int] = {}
-    conn = _conn()
-    for table in _DIAGNOSTIC_LEDGER_TABLES:
-        # decision_ledger stamps `ts`; the others default `created_at`. Both
-        # are UTC via datetime('now'), and julianday guards NULL/legacy rows.
-        col = 'ts' if table == 'decision_ledger' else 'created_at'
-        try:
-            cur = conn.execute(
-                f"DELETE FROM {table} "
-                f"WHERE julianday({col}) IS NOT NULL "
-                f"AND julianday({col}) < julianday('now', ?)",
-                (f'-{days} days',),
-            )
-            swept[table] = max(0, cur.rowcount or 0)
-        except Exception:
-            # A table a fresh DB has not created yet. Maintenance stays
-            # best-effort per table and never blocks other consolidation work.
-            logger.debug('privacy ledger sweep failed for %s', table, exc_info=True)
-            swept[table] = 0
-    brain_commit(conn)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    path = tables.decision_ledger_file()
+    try:
+        with tables.store_lock(str(path)):
+            rows = tables.ledger_rows(path)
+            kept = [
+                r for r in rows
+                if (_parse_stamp(r.get('ts')) or datetime.now(timezone.utc)) >= cutoff
+            ]
+            swept['decision_ledger'] = len(rows) - len(kept)
+            if swept['decision_ledger']:
+                tables.rewrite_ledger(path, kept)
+    except Exception:
+        logger.debug('privacy ledger sweep failed for decision_ledger', exc_info=True)
+        swept['decision_ledger'] = 0
     return swept
 
 
@@ -308,14 +323,15 @@ def _enforce_fact_budget() -> tuple[int, list[str]]:
         budget = 0
     if budget <= 0:
         return 0, notes
-    conn = _conn()
     try:
-        rows = conn.execute(
-            'SELECT id, fact_key, confidence, use_count, kind, updated_at FROM facts '
-            "WHERE (status IS NULL OR status = 'active') "
-            "AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday('now')) "
-            "AND COALESCE(kind, 'fact') != 'profile'"
-        ).fetchall()
+        from app.services.memory_store.rest import _expired
+
+        rows = [
+            row for row in record.load_facts()
+            if (row.get('status') is None or str(row.get('status') or 'active') == 'active')
+            and not _expired(row)
+            and str(row.get('kind') or 'fact') != 'profile'
+        ]
     except Exception:
         logger.debug('fact budget scan failed', exc_info=True)
         return 0, notes
@@ -324,32 +340,26 @@ def _enforce_fact_budget() -> tuple[int, list[str]]:
     excess = len(rows) - budget
     # Oldest first among the weakest: a fact nobody has touched in months
     # is the one whose context is the least likely to be missed.
-    scored: list[tuple[float, float, int, str]] = []
+    scored: list[tuple[float, float, int, str, str]] = []
     for r in rows:
         try:
-            confidence = float(r['confidence']) if r['confidence'] is not None else 0.5
+            confidence = float(str(r.get('confidence'))) if r.get('confidence') is not None else 0.5
         except (TypeError, ValueError):
             confidence = 0.5
         try:
-            use = int(r['use_count'] or 0)
+            use = int(str(r.get('use_count') or 0))
         except (TypeError, ValueError):
             use = 0
         ageDays = 0.0
-        try:
-            updated = str(r['updated_at'] or '')
-            if updated:
-                ageDays = float(
-                    conn.execute(
-                        "SELECT MAX(0, julianday('now') - julianday(?))", (updated,)
-                    ).fetchone()[0]
-                    or 0.0
-                )
-        except Exception:
-            ageDays = 0.0
+        updated = str(r.get('updated_at') or '')
+        stamp = _parse_stamp(updated)
+        if stamp is not None:
+            ageDays = max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds() / 86400.0)
         # 30-day half-life, the same shape the retrieval decay uses.
         decay = 0.5 ** (ageDays / 30.0)
         score = confidence * decay * use
-        scored.append((score, -ageDays, int(r['id']), str(r['fact_key'] or '')))
+        row_id = as_int(r.get('id'), 0)
+        scored.append((score, -ageDays, row_id, str(r.get('fact_key') or ''), str(r.get('scope') or 'global')))
     # (score, OLDEST FIRST, id) — what the docstring above promises. Sorting
     # the tie-break by fact_key made an alphabetical cut: every never-used
     # fact scores 0.0 (use=0 multiplies the whole product away), so the
@@ -357,20 +367,19 @@ def _enforce_fact_budget() -> tuple[int, list[str]]:
     # untouched for a year. `id` breaks a same-second tie deterministically.
     scored.sort(key=lambda item: (item[0], item[1], item[2]))
     archived = 0
-    for _score, _age, rowId, key in scored[:excess]:
+    for _score, _age, _row_id, key, scope in scored[:excess]:
         try:
-            cur = conn.execute(
-                "UPDATE facts SET status = 'archived', updated_at = ? WHERE id = ? "
-                "AND (status IS NULL OR status = 'active')",
-                (utc_now_text(), rowId),
-            )
-            if cur.rowcount:
-                archived += 1
-                notes.append(f'archived {key!r} (over the fact budget)')
+            row = record.read_fact_file(record.fact_path(key, scope))
+            if row is None or str(row.get('status') or 'active') != 'active':
+                continue
+            row['status'] = 'archived'
+            row['updated_at'] = utc_now_text()
+            record.write_fact_file(row)
+            archived += 1
+            notes.append(f'archived {key!r} (over the fact budget)')
         except Exception:
             logger.debug('fact budget archive failed', exc_info=True)
     if archived:
-        brain_commit(conn)
         try:
             from app.services.memory_store.fact_retrieval import invalidate_fact_index
 
@@ -380,44 +389,57 @@ def _enforce_fact_budget() -> tuple[int, list[str]]:
     return archived, notes
 
 
+def _automation_session_ids() -> set[str]:
+    """Session ids the automation ledger names (tolerant read of the
+    transcript/telemetry domain's runtime file — the one-time SQLite import
+    writes ``automation-runs.jsonl`` there and the runtime writer keeps it)."""
+    from app.lib.paths import dataPath
+
+    path = dataPath('telemetry') / 'automation-runs.jsonl'
+    ids: set[str] = set()
+    try:
+        for row in tables.ledger_rows(path):
+            for key in ('session_id', 'sessionId'):
+                value = str(row.get(key) or '').strip()
+                if value:
+                    ids.add(value)
+                    break
+    except Exception:
+        logger.debug('automation session read failed', exc_info=True)
+    return ids
+
+
 def _stamp_automation_sources() -> int:
-    """M-12: stamp the rows an AUTOMATION run produced.
+    """M-12: stamp the EPISODES an AUTOMATION run produced.
 
-    ``episodes`` gained a ``scope`` column in 036 — a scope answers "whose
-    memory is this?", and a source answers "what produced this?". The
-    source was the missing half: an automation run is repetitive BY DESIGN,
-    so without a stamp its episodes dominate the mining and recurrence
-    meters exactly the way a user's own repetition does.
-
-    The automation ledger (``automation_runs``) already names the sessions
-    the runs used, so the stamp is a join and not a guess. Rows written
-    before the column existed stay NULL — "not recorded" is not the same as
-    "not an automation row", and it is never back-filled.
+    An automation run is repetitive BY DESIGN, so without a stamp its episodes
+    dominate the mining and recurrence meters exactly the way a user's own
+    repetition does. ``episodes.source`` is "what produced this?"; the
+    automation ledger names the sessions the runs used, so the stamp is a join
+    and not a guess. Rows written before the stamp existed stay empty — "not
+    recorded" is not the same as "not an automation row", and it is never
+    back-filled by anything but this pass.
     """
     stamped = 0
-    try:
-        conn = _conn()
-    except Exception:
+    sessions = _automation_session_ids()
+    if not sessions:
         return 0
-    for table in ('episodes', 'turn_outcomes'):
-        try:
-            cols = {row['name'] for row in conn.execute(f'PRAGMA table_info({table})').fetchall()}
-            if 'source' not in cols or 'session_id' not in cols:
-                continue
-            cur = conn.execute(
-                f"UPDATE {table} SET source = 'automation' "
-                "WHERE (source IS NULL OR source = '') "
-                "AND session_id IN (SELECT session_id FROM automation_runs "
-                "WHERE session_id IS NOT NULL AND session_id != '')"
-            )
-            stamped += cur.rowcount or 0
-        except Exception:
-            logger.debug('automation source stamp failed for %s', table, exc_info=True)
-    if stamped:
-        try:
-            brain_commit(conn)
-        except Exception:
-            logger.debug('automation source stamp commit failed', exc_info=True)
+    path = tables.episodes_file()
+    try:
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            changed = False
+            for row in rows:
+                if str(row.get('source') or ''):
+                    continue
+                if str(row.get('session_id') or '') in sessions:
+                    row['source'] = 'automation'
+                    stamped += 1
+                    changed = True
+            if changed:
+                tables.save_rows(path, rows)
+    except Exception:
+        logger.debug('automation source stamp failed for episodes', exc_info=True)
     return stamped
 
 
@@ -438,6 +460,7 @@ def _retire_stale_memories() -> tuple[int, list[str]]:
     """
     from app.services.brain_config_service import getRuntimeConfig
     from app.services.memory_store import save_proposal
+    from app.services.memory_store.rest import _expired
 
     try:
         cfg = getRuntimeConfig()
@@ -456,40 +479,53 @@ def _retire_stale_memories() -> tuple[int, list[str]]:
     profileDays = _days('profileRetireDays', 45)
     defaultDays = _days('memoryRetireDays', 180)
 
-    conn = _conn()
     notes: list[str] = []
     proposed = 0
     try:
-        # Never quoted (use_count 0 / NULL) + untouched since before its own
+        # Never quoted (use_count 0 / absent) + untouched since before its own
         # kind's window (last touch = last_used_at, else updated_at, else
-        # created_at). A NULL last_touch fails the comparison and is skipped —
-        # silence is not evidence of staleness.
-        rows = conn.execute(
-            'SELECT fact_key, title, kind, '
-            "  COALESCE(NULLIF(last_used_at, ''), NULLIF(updated_at, ''), created_at) AS last_touch, "
-            '  CASE kind '
-            "    WHEN 'profile' THEN ? "
-            '    ELSE ? '
-            '  END AS window_days '
-            'FROM facts '
-            "WHERE (status IS NULL OR status = 'active') "
-            'AND COALESCE(use_count, 0) = 0 '
-            'AND kind IN (' + ','.join('?' for _ in _RETIRE_WINDOWS) + ') '
-            'AND julianday(\'now\') - julianday('
-            "  COALESCE(NULLIF(last_used_at, ''), NULLIF(updated_at, ''), created_at)"
-            ') > CASE kind '
-            "    WHEN 'profile' THEN ? "
-            '    ELSE ? END',
-            (profileDays, defaultDays, *sorted(_RETIRE_WINDOWS), profileDays, defaultDays),
-        ).fetchall()
-        if not rows:
+        # created_at). A missing last_touch is skipped — silence is not
+        # evidence of staleness.
+        now = datetime.now(timezone.utc)
+        candidates: list[dict[str, Any]] = []
+        for row in record.load_facts():
+            if row.get('status') is not None and str(row.get('status') or 'active') != 'active':
+                continue
+            if _expired(row):
+                continue
+            kind = str(row.get('kind') or 'fact')
+            if kind not in _RETIRE_WINDOWS:
+                continue
+            if as_int(row.get('use_count'), 0) != 0:
+                continue
+            last_touch = (
+                str(row.get('last_used_at') or '')
+                or str(row.get('updated_at') or '')
+                or str(row.get('created_at') or '')
+            )
+            stamp = _parse_stamp(last_touch)
+            if stamp is None:
+                continue
+            window_days = profileDays if kind == PROFILE_FACT_KIND else defaultDays
+            if (now - stamp).total_seconds() / 86400.0 <= window_days:
+                continue
+            candidates.append(
+                {
+                    'fact_key': str(row.get('fact_key') or ''),
+                    'title': str(row.get('title') or ''),
+                    'kind': kind,
+                    'last_touch': last_touch,
+                    'window_days': window_days,
+                }
+            )
+        if not candidates:
             return 0, []
         openKeys: set[str] = set()
         try:
-            for pr in conn.execute(
-                "SELECT content FROM proposals WHERE proposal_type IN ('retire-fact', 'retire-preference')"
-            ).fetchall():
-                raw = pr['content']
+            for pr in tables.load_rows(tables.proposals_file()):
+                if str(pr.get('proposal_type') or '') not in _RETIRE_TYPES:
+                    continue
+                raw = pr.get('content')
                 try:
                     data = json.loads(raw) if isinstance(raw, str) else (raw or {})
                 except (json.JSONDecodeError, TypeError):
@@ -500,12 +536,12 @@ def _retire_stale_memories() -> tuple[int, list[str]]:
                     openKeys.add(str(data['fact_key']))
         except Exception:
             logger.debug('retire-proposal dedupe scan failed', exc_info=True)
-        for r in rows:
+        for r in candidates:
             key = str(r['fact_key'] or '')
             if not key or key in openKeys:
                 continue
             kind = str(r['kind'] or 'fact')
-            days = int(r['window_days'] or defaultDays)
+            days = int(r['window_days'])
             title = str(r['title'] or '') or key
             reason = (
                 f'{kind} untouched for {days}+ days and never quoted — '
@@ -542,13 +578,19 @@ def apply_retire_decision(proposal_id: int, approve: bool, decidedBy: str = 'use
     row survives — retrieval excludes it, a later restore is a status flip);
     reject → the proposal closes, the fact stays active. Either way the
     decision is a CLAIM on the proposal row (``claim_proposal_decision``, which
-    fires only while the row is still pending): a proposal decides once, and the
-    claim and the fact write land in one commit.
+    fires only while the row is still pending): a proposal decides once.
 
     Both proposal types are decidable: ``retire-fact`` is what the widened scan
     files, and ``retire-preference`` is what it filed before the scan covered
     every kind — those rows may still sit in a user's inbox from an earlier
     release, and a proposal nobody can decide is a stuck one.
+
+    Failure order (the SQL era enforced this with a savepoint + the poison
+    queue; the file store enforces it with claim-before-write): the claim is
+    taken FIRST, and a failure after it is rolled back by restoring the
+    proposal to 'pending' before the error escapes — a claim that survives a
+    failed flip would leave the proposal decided over a fact that never
+    retired.
     """
     from app.services.memory_store import (
         claim_proposal_decision,
@@ -574,9 +616,9 @@ def apply_retire_decision(proposal_id: int, approve: bool, decidedBy: str = 'use
         return {'ok': True, 'decision': 'rejected', 'retired': False, 'error': 'proposal missing key'}
     # A proposal is a snapshot, not a standing instruction. It can sit in the
     # inbox while the user quotes or edits the fact, so apply only if it still
-    # has the evidence that produced this proposal. The UPDATE repeats every
-    # condition atomically; a stale approval is closed as rejected and the
-    # next consolidation pass can file a fresh proposal if it still qualifies.
+    # has the evidence that produced this proposal. A stale approval is closed
+    # as rejected and the next consolidation pass can file a fresh proposal if
+    # it still qualifies.
     raw_kind = str(data.get('kind') or ('preference' if ptype == 'retire-preference' else ''))
     if raw_kind not in _RETIRE_WINDOWS:
         if not decide_proposal(proposal_id, 'rejected', decidedBy=decidedBy):
@@ -593,169 +635,69 @@ def apply_retire_decision(proposal_id: int, approve: bool, decidedBy: str = 'use
         days = 45 if raw_kind == PROFILE_FACT_KIND else 180
     days = max(1, min(3650, days))
     last_touch = str(data.get('lastTouch') or '')
-    # `fact_key` is UNIQUE and one key has exactly one home (save_fact M-2 /
-    # Part 26 6.2), so this predicate already names one row — no scope clause
-    # is needed, and adding one would validate a state the schema refuses.
-    conn = _conn()
     if not approve:
         if not decide_proposal(proposal_id, 'rejected', decidedBy=decidedBy):
             return {'ok': False, 'error': f'proposal {proposal_id} was already decided; nothing changed'}
         return {'ok': True, 'decision': 'rejected', 'retired': False}
-    # The claim IS the guard, so take it before touching the fact and never
-    # commit it separately: SQLite serialises writers, so a second approver —
-    # or an approval of a row someone already rejected — matches zero rows and
-    # returns False with the fact left alone. Claiming last (what this used to
-    # do) left a window where the retire landed and the stamp did not, which
-    # reads back as a retired fact under a 'rejected' label.
-    #
-    # A SAVEPOINT, not a bare `conn.rollback()`. `_conn()` is the thread-local
-    # handle, and anything else this thread has written but not committed shares
-    # the transaction with the claim — a fact saved moments earlier by the same
-    # tool loop, a KV row, a transcript block. `rollback()` un-does all of it to
-    # the last COMMIT while telling the caller only this decision failed, so the
-    # unrelated work vanishes silently. The savepoint bounds the undo to the
-    # claim + UPDATE this function owns.
-    #
-    # EVERY statement of this unit is inside the try. The first version guarded
-    # only the claim and the fact UPDATE, so a failure in the corrective claim
-    # (the stale-evidence branch) or in the RELEASE left `retire_decision` open
-    # on the handle and let the exception escape — and the next unrelated
-    # `brain_commit` on that thread then persisted the spent 'approved' claim
-    # over a fact that was never retired, the exact state this function claims
-    # is impossible.
-    # A unique name, not a constant. `SAVEPOINT x` with an existing `x` shadows
-    # the outer one and `RELEASE x` then pops the INNER one, so two units sharing
-    # a name on one handle undo each other's boundaries. Nothing nests a retire
-    # today; the collision is one refactor away and is silent when it happens.
-    sp = f'retire_decision_{uuid.uuid4().hex}'
-    conn.execute(f'SAVEPOINT {sp}')
-    # Empty until the unit has actually written something: an exception before
-    # this is assigned has nothing to undo, and the handler below runs on every
-    # path out of the try.
-    repairs: list[tuple[str, tuple]] = []
+    # The claim IS the guard, so take it before touching the fact. The store
+    # lock on the proposals file serializes the claim; a second approver — or
+    # an approval of a row someone already rejected — matches zero rows and
+    # returns False with the fact left alone.
+    if not claim_proposal_decision(None, proposal_id, 'approved', decidedBy):
+        return {'ok': False, 'error': f'proposal {proposal_id} was already decided; nothing changed'}
     try:
-        if not claim_proposal_decision(conn, proposal_id, 'approved', decidedBy):
-            conn.execute(f'ROLLBACK TO SAVEPOINT {sp}')
-            conn.execute(f'RELEASE SAVEPOINT {sp}')
-            return {'ok': False, 'error': f'proposal {proposal_id} was already decided; nothing changed'}
-        # Read what the retirement is about to overwrite, so the unit can be
-        # undone by NAME rather than by rolling a transaction back. `updated_at`
-        # is part of the evidence the proposal was filed on — the retirement
-        # window is computed from it — so restoring the status alone would leave
-        # the fact looking freshly touched and change which future proposal it
-        # earns.
-        before = conn.execute('SELECT status, updated_at FROM facts WHERE fact_key = ?', (key,)).fetchone()
-        prior_status = before[0] if before is not None else None
-        prior_updated = before[1] if before is not None else None
-        repairs = [
-            (
-                "UPDATE proposals SET status = 'pending', decided_at = NULL, decided_by = NULL "
-                "WHERE id = ? AND status = 'approved'",
-                (proposal_id,),
-            ),
-            (
-                "UPDATE facts SET status = ?, updated_at = ? "
-                "WHERE fact_key = ? AND status = 'retired'",
-                (prior_status, prior_updated, key),
-            ),
-        ]
-        cur = conn.execute(
-            "UPDATE facts SET status = 'retired', updated_at = ? "
-            "WHERE fact_key = ? AND kind = ? AND (status IS NULL OR status = 'active') "
-            'AND COALESCE(use_count, 0) = 0 '
-            "AND julianday('now') - julianday(COALESCE(NULLIF(last_used_at, ''), "
-            "NULLIF(updated_at, ''), created_at)) > ? "
-            "AND (? = '' OR COALESCE(NULLIF(last_used_at, ''), NULLIF(updated_at, ''), created_at) = ?)",
-            (utc_now_text(), key, raw_kind, days, last_touch, last_touch),
-        )
-        if not cur.rowcount:
-            # Evidence no longer holds. We own the claim, so correct it inside
-            # the same transaction: the proposal closes as rejected, the fact
-            # survives recalled, and one COMMIT makes that pair the only state a
-            # crash can leave behind.
-            claim_proposal_decision(
-                conn, proposal_id, 'rejected', decidedBy, from_status='approved',
+        # Read what the retirement is about to overwrite. `updated_at` is part
+        # of the evidence the proposal was filed on — the retirement window is
+        # computed from it — so restoring the status alone would leave the fact
+        # looking freshly touched and change which future proposal it earns.
+        row = record.load_fact(key)
+        qualified = False
+        if row is not None:
+            kind = str(row.get('kind') or 'fact')
+            use_count = as_int(row.get('use_count'), 0)
+            touch = (
+                str(row.get('last_used_at') or '')
+                or str(row.get('updated_at') or '')
+                or str(row.get('created_at') or '')
             )
-            result = {
+            stamp = _parse_stamp(touch)
+            age_days = (
+                (datetime.now(timezone.utc) - stamp).total_seconds() / 86400.0
+                if stamp is not None
+                else -1.0
+            )
+            status_ok = row.get('status') is None or str(row.get('status') or 'active') == 'active'
+            qualified = (
+                status_ok
+                and kind == raw_kind
+                and use_count == 0
+                and age_days > days
+                and (last_touch == '' or touch == last_touch)
+            )
+        if row is None or not qualified:
+            # Evidence no longer holds. We own the claim, so correct it: the
+            # proposal closes as rejected, the fact survives recalled, and the
+            # pair is the only state a crash can leave behind.
+            claim_proposal_decision(None, proposal_id, 'rejected', decidedBy, from_status='approved')
+            return {
                 'ok': True,
                 'decision': 'rejected',
                 'retired': False,
                 'key': key,
                 'error': 'memory changed after this proposal was filed; it was closed without retiring the fact',
             }
-        else:
-            result = {'ok': True, 'decision': 'approved', 'retired': True, 'key': key}
-        # COMMIT, and no RELEASE before it. Releasing first pops the savepoint
-        # while the writes are still uncommitted, so a commit that then fails
-        # (a busy database is the ordinary cause) has nothing left to undo: the
-        # spent 'approved' claim stays pending on the thread-local handle for the
-        # NEXT unrelated commit to publish, which is the exact state the
-        # claim-before-write design exists to make impossible. Committing is
-        # enough on its own — a COMMIT deactivates every savepoint in the
-        # transaction — and it leaves the savepoint in place for the handler below
-        # to roll back to if the commit itself raises.
-        brain_commit(conn)
+        row['status'] = 'retired'
+        row['updated_at'] = utc_now_text()
+        record.write_fact_file(row)
+        result: dict[str, Any] = {'ok': True, 'decision': 'approved', 'retired': True, 'key': key}
     except Exception as exc:
-        # The claim is already on this connection. Without an undo an
-        # uncommitted 'approved' survives on the thread-local handle and the
-        # NEXT unrelated write on this thread lands it — a proposal stamped
-        # approved over a fact that was never retired, and it can never be
-        # re-decided because the claim is spent. So this unit is rolled back
-        # with the statement that failed, and nothing outside it is.
-        undone = True
+        # The claim is already taken. Restore it to 'pending' so a failed flip
+        # can be retried — the exact guarantee the SQL savepoint gave, in the
+        # store's own terms.
         try:
-            conn.execute(f'ROLLBACK TO SAVEPOINT {sp}')
-            conn.execute(f'RELEASE SAVEPOINT {sp}')
+            claim_proposal_decision(None, proposal_id, 'pending', '', from_status='approved')
         except Exception:
-            # The savepoint is gone (the COMMIT took, or the handle refused) — the
-            # unit cannot be undone as a transaction boundary. It can still be
-            # undone by name, which is what `repairs` is for.
-            undone = False
-            logger.debug('retire savepoint undo failed', exc_info=True)
-        if not undone:
-            # The undo could not run, so decide what to report from the one signal
-            # that cannot lie about durability: is this connection still holding
-            # an open transaction? Reading the proposal row would not answer it —
-            # the same handle sees its OWN uncommitted 'approved', so the row says
-            # "decided" whether or not anything is durable, and reporting a landed
-            # decision that is merely pending invites a retry that lands twice.
-            if not conn.in_transaction:
-                # No transaction open means the COMMIT took, and the savepoint is
-                # gone because committing is what ends every savepoint in a
-                # transaction. So the decision IS durable; only the accounting
-                # after it failed.
-                return {
-                    'ok': True,
-                    'decision': 'unknown',
-                    'retired': None,
-                    'key': key,
-                    'error': (
-                        f'the decision was applied but the step after its commit failed ({exc}); '
-                        're-read the proposal before deciding again'
-                    ),
-                }
-            # A transaction is still open and the unit inside it is still
-            # uncommitted, so `ok: False` alone is a lie by omission: it says
-            # "nothing changed", and nothing HAS changed — on disk. On this
-            # thread-local handle the spent 'approved' claim is pending, and the
-            # next unrelated `brain_commit` on the same thread publishes it. What
-            # makes "nothing changed" true is taking the unit out of the
-            # transaction before that commit runs, and it is done with the row
-            # writes this unit replaced (`repairs`) rather than with a rollback:
-            # `ROLLBACK TO <sp>` would also discard anything else this thread has
-            # staged since the savepoint, which is how a failed retirement came to
-            # delete a user's unrelated saved fact while `commit()` reported
-            # success.
-            poison(repairs)
-            return {
-                'ok': False,
-                'decision': 'unknown',
-                'retired': None,
-                'pending': True,
-                'key': key,
-                'error': f'apply_retire_decision({proposal_id}): {exc}; the decision was not '
-                'applied and its partial writes have been queued for undo on this thread',
-            }
+            logger.debug('retire claim restore failed', exc_info=True)
         return {'ok': False, 'error': f'apply_retire_decision({proposal_id}): {exc}'}
     try:
         from app.services.memory_store.fact_retrieval import invalidate_fact_index
@@ -767,25 +709,27 @@ def apply_retire_decision(proposal_id: int, approve: bool, decidedBy: str = 'use
 
 
 def _load_active_facts() -> list[dict[str, Any]]:
-    conn = _conn()
-    rows = conn.execute(
-        'SELECT id, fact_key, fact_value, title, kind, scope, updated_at FROM facts '
-        "WHERE (status IS NULL OR status = 'active') "
-        "AND (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday('now')) "
-        'ORDER BY updated_at DESC'
-    ).fetchall()
+    from app.services.memory_store.rest import _expired
+
+    rows = [
+        row
+        for row in record.load_facts()
+        if (row.get('status') is None or str(row.get('status') or 'active') == 'active')
+        and not _expired(row)
+    ]
+    rows.sort(key=lambda r: str(r.get('updated_at') or ''), reverse=True)
     return [
         {
-            'id': int(r['id']),
-            'key': str(r['fact_key'] or ''),
-            'value': r['fact_value'],
-            'title': str(r['title'] or ''),
-            'kind': str(r['kind'] or 'fact'),
+            'id': as_int(r.get('id'), 0),
+            'key': str(r.get('fact_key') or ''),
+            'value': r.get('fact_value'),
+            'title': str(r.get('title') or ''),
+            'kind': str(r.get('kind') or 'fact'),
             # 2.5: consolidation must never fold a global fact into
             # a bot-scoped row (or across two bots) — the merge/supersede
             # passes partition by this so a scope's memory stays its own.
-            'scope': str(r['scope'] or 'global'),
-            'updated_at': str(r['updated_at'] or ''),
+            'scope': str(r.get('scope') or 'global'),
+            'updated_at': str(r.get('updated_at') or ''),
         }
         for r in rows
     ]
@@ -807,7 +751,6 @@ def _merge_duplicates(modelSummarize: bool = False) -> tuple[int, list[str]]:
     bySlug: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for f in facts:
         bySlug.setdefault((str(f['scope']), _slug(f['key'])), []).append(f)
-    conn = _conn()
     # Facts are ordered newest-first: for each duplicate pair the later
     # (older) entry is folded into the earlier (newer) one.
     pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -843,10 +786,11 @@ def _merge_duplicates(modelSummarize: bool = False) -> tuple[int, list[str]]:
                     break
     for newer, older in pairs:
         newerKey = str(newer['key'])
+        newerScope = str(newer['scope'])
         # Guard BOTH sides. The check used to cover only `older`, so a chain of
         # three mutually-similar facts could pick a survivor that a previous
-        # pair had already removed: the UPDATE then matched no row and the
-        # DELETE still ran — a fact deleted with its text written nowhere, while
+        # pair had already removed: the write then matched no row and the
+        # delete still ran — a fact deleted with its text written nowhere, while
         # the run log reported it as merged.
         if older['key'] in removedKeys or newerKey in removedKeys:
             continue
@@ -855,13 +799,11 @@ def _merge_duplicates(modelSummarize: bool = False) -> tuple[int, list[str]]:
         # from the ORIGINAL A and silently overwrote the first pair's
         # "(merged from: ...)" provenance note. The row on disk is the
         # authority for what the survivor currently holds.
-        currentRow = conn.execute(
-            'SELECT fact_value FROM facts WHERE fact_key = ?', (newerKey,)
-        ).fetchone()
-        if currentRow is None:
+        currentRow = record.load_fact(newerKey)
+        if currentRow is None or str(currentRow.get('scope') or 'global') != newerScope:
             notes.append(f'skipped {older["key"]!r} -> {newerKey!r}: survivor row missing')
             continue
-        survivorValue = currentRow['fact_value']
+        survivorValue = currentRow.get('fact_value')
         mergedValue = _merge_fact_value(survivorValue, older['title'], older['key'])
         if modelSummarize:
             summary = _model_summarize(
@@ -869,96 +811,100 @@ def _merge_duplicates(modelSummarize: bool = False) -> tuple[int, list[str]]:
             )
             if summary:
                 mergedValue = summary
-        cur = conn.execute(
-            "UPDATE facts SET fact_value = ?, updated_at = ? WHERE fact_key = ?",
-            (mergedValue, utc_now_text(), newerKey),
-        )
         # Only retire the absorbed fact once the survivor actually took the
-        # write. A rowcount of 0 means the survivor is gone, and deleting
-        # `older` then would destroy the last copy of the content.
-        if cur.rowcount != 1:
-            notes.append(f'skipped {older["key"]!r} -> {newerKey!r}: survivor row missing')
-            continue
-        # Snapshot the absorbed row before it disappears. A merge is a
-        # HEURISTIC (slugged-key equality, or BM25 >= _MERGE_SIMILARITY), and
-        # this was the one destructive memory path with no proposal and no
-        # undo — while retiring a single unused fact required a human decision.
-        # Same store, opposite risk policies. The snapshot does not make the
-        # merge reversible on its own, but the absorbed content is recoverable
-        # from `lifecycle` instead of gone.
-        try:
-            from app.services.memory_store.rest import record_lifecycle
+        # write. A missing survivor file means the merge must not delete
+        # `older` — that would destroy the last copy of the content.
+        with _record_lock():
+            survivor = record.load_fact(newerKey)
+            if (
+                survivor is None
+                or str(survivor.get('scope') or 'global') != newerScope
+                or survivor.get('fact_value') != survivorValue
+            ):
+                notes.append(f'skipped {older["key"]!r} -> {newerKey!r}: survivor row missing')
+                continue
+            survivor['fact_value'] = mergedValue
+            survivor['updated_at'] = utc_now_text()
+            record.write_fact_file(survivor)
+            # Snapshot the absorbed row before it disappears. A merge is a
+            # HEURISTIC (slugged-key equality, or BM25 >= _MERGE_SIMILARITY), and
+            # this was the one destructive memory path with no proposal and no
+            # undo — while retiring a single unused fact required a human decision.
+            # Same store, opposite risk policies. The snapshot does not make the
+            # merge reversible on its own, but the absorbed content is recoverable
+            # from `lifecycle` instead of gone.
+            try:
+                from app.services.memory_store.rest import record_lifecycle
 
-            record_lifecycle(
-                '',
-                'fact_merged',
-                {
-                    'absorbedKey': str(older['key']),
-                    'absorbedValue': older['value'],
-                    'absorbedTitle': str(older.get('title') or ''),
-                    'absorbedKind': str(older.get('kind') or 'fact'),
-                    'absorbedScope': str(older.get('scope') or 'global'),
-                    'survivorKey': newerKey,
-                    'reason': 'slug-or-similarity',
-                },
-            )
-        except Exception:  # noqa: BLE001
-            # Never block the merge on its audit trail: the survivor already
-            # took the write, so skipping the DELETE would leave two rows that
-            # both claim the content.
-            logger.debug('fact merge snapshot failed', exc_info=True)
-        # M-3: the winner's side of the lineage. The absorbed row is DELETED
-        # here (a merge is a fold, not a supersession — there is no loser row
-        # left to carry `superseded_by`), so the winner's `supersedes` list
-        # is the only place the absorption is recorded. The absorbed CONTENT
-        # itself is in the lifecycle snapshot above, which is what a restore
-        # reads.
-        _append_supersedes(conn, newerKey, str(older['key']))
-        conn.execute('DELETE FROM facts WHERE fact_key = ?', (older['key'],))
-        removedKeys.add(str(older['key']))
-        merged += 1
-        notes.append(f'merged {older["key"]!r} into {newerKey!r}')
+                record_lifecycle(
+                    '',
+                    'fact_merged',
+                    {
+                        'absorbedKey': str(older['key']),
+                        'absorbedValue': older['value'],
+                        'absorbedTitle': str(older.get('title') or ''),
+                        'absorbedKind': str(older.get('kind') or 'fact'),
+                        'absorbedScope': str(older.get('scope') or 'global'),
+                        'survivorKey': newerKey,
+                        'reason': 'slug-or-similarity',
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                # Never block the merge on its audit trail: the survivor already
+                # took the write, so skipping the DELETE would leave two rows that
+                # both claim the content.
+                logger.debug('fact merge snapshot failed', exc_info=True)
+            # M-3: the winner's side of the lineage. The absorbed row is DELETED
+            # here (a merge is a fold, not a supersession — there is no loser row
+            # left to carry `superseded_by`), so the winner's `supersedes` list
+            # is the only place the absorption is recorded. The absorbed CONTENT
+            # itself is in the lifecycle snapshot above, which is what a restore
+            # reads.
+            _append_supersedes(newerKey, newerScope, str(older['key']))
+            record.delete_fact_file(str(older['key']), str(older['scope']))
+            removedKeys.add(str(older['key']))
+            merged += 1
+            notes.append(f'merged {older["key"]!r} into {newerKey!r}')
     if merged:
-        brain_commit(conn)
         invalidate_fact_index()
+        record.rewrite_index()
     return merged, notes
 
 
-def _append_supersedes(conn: Any, winner_key: str, loser_key: str) -> None:
+def _append_supersedes(winner_key: str, winner_scope: str, loser_key: str) -> None:
     """Record that ``winner_key`` replaced ``loser_key`` (M-3, winner side).
 
     The loser's own row carries ``superseded_by``; the winner carries the
     LIST of the rows it replaced, because one winner can replace several
     (a near-duplicate merge folds N rows into one).
 
-    The list is a JSON array in a TEXT column, so it is read back with a
+    The list is a JSON array in a text field, so it is read back with a
     tolerant parse: a row whose value was written by something else (or
     hand-edited) must not make this pass throw.
     """
     if not winner_key or not loser_key:
         return
     try:
-        row = conn.execute(
-            'SELECT supersedes FROM facts WHERE fact_key = ?', (winner_key,)
-        ).fetchone()
+        row = record.read_fact_file(record.fact_path(winner_key, winner_scope))
+        if row is None:
+            row = record.load_fact(winner_key)
+        if row is None:
+            return
+        raw = row.get('supersedes')
         current: list[str] = []
-        if row is not None:
-            raw = row['supersedes'] if hasattr(row, 'keys') else row[0]
-            if isinstance(raw, list):
-                current = [str(x) for x in raw]
-            elif isinstance(raw, str) and raw.strip():
-                try:
-                    loaded = json.loads(raw)
-                    if isinstance(loaded, list):
-                        current = [str(x) for x in loaded]
-                except (json.JSONDecodeError, TypeError):
-                    current = []
+        if isinstance(raw, list):
+            current = [str(x) for x in raw]
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                loaded = json.loads(raw)
+                if isinstance(loaded, list):
+                    current = [str(x) for x in loaded]
+            except (json.JSONDecodeError, TypeError):
+                current = []
         if loser_key not in current:
             current.append(loser_key)
-        conn.execute(
-            'UPDATE facts SET supersedes = ? WHERE fact_key = ?',
-            (json.dumps(current), winner_key),
-        )
+        row['supersedes'] = json.dumps(current)
+        record.write_fact_file(row)
     except Exception:
         logger.debug('supersedes lineage write failed', exc_info=True)
 
@@ -1000,8 +946,8 @@ def _supersede_contradictions() -> tuple[int, list[str]]:
     OVERLAP are the same statement said twice — the older one is superseded.
     Two whose bodies do NOT overlap cannot both be true, and silently
     superseding one of them hides a conflict from the user: they are marked
-    ``contested`` and each names the other in ``contradicts``, so the
-    conflict is a thing a human can see and resolve.
+    ``contested`` and each names the other in ``contradicts``, so the conflict
+    is a thing a human can see and resolve.
     """
     facts = _load_active_facts()
     # 2.5: partition by (scope, normalized-title) — a global fact and a bot
@@ -1011,7 +957,6 @@ def _supersede_contradictions() -> tuple[int, list[str]]:
         norm = ' '.join(f['title'].lower().split())
         if len(norm) >= 8:
             byTitle.setdefault((str(f['scope']), norm), []).append(f)
-    conn = _conn()
     superseded = 0
     notes: list[str] = []
     for (_scope, norm), group in byTitle.items():
@@ -1020,60 +965,50 @@ def _supersede_contradictions() -> tuple[int, list[str]]:
         bodies = {_fact_body_text(f['value']) for f in group}
         if len(bodies) < 2:
             continue  # identical bodies are the merge pass's job, not conflict
-        # updated_at DESC from the query: first row wins.
+        # updated_at DESC from the load: first row wins.
         winner = group[0]
         winnerKey = str(winner['key'])
+        winnerScope = str(winner['scope'])
         for older in group[1:]:
             olderKey = str(older['key'])
             overlap = _bodiesOverlap(
                 _fact_body_text(winner['value']), _fact_body_text(older['value'])
             )
             contested = overlap < _SAME_STATEMENT_OVERLAP
-            # Both sides of the lineage, whatever the outcome: these two rows
-            # are about the same thing, and the link is what the UI reads.
-            _append_supersedes(conn, winnerKey, olderKey)
-            if contested:
-                conn.execute(
-                    "UPDATE facts SET status = 'contested', superseded_by = ?, contradicts = ?, "
-                    "updated_at = ? WHERE fact_key = ?",
-                    (winnerKey, winnerKey, utc_now_text(), olderKey),
-                )
-                conn.execute(
-                    "UPDATE facts SET contradicts = ?, updated_at = ? "
-                    'WHERE fact_key = ?',
-                    (olderKey, utc_now_text(), winnerKey),
-                )
-                notes.append(
-                    f'contested {olderKey!r} against {winnerKey!r} '
-                    f'(same title, unrelated bodies — needs a human)'
-                )
-            else:
-                conn.execute(
-                    "UPDATE facts SET status = 'superseded', superseded_by = ?, "
-                    "updated_at = ? WHERE fact_key = ?",
-                    (winnerKey, utc_now_text(), olderKey),
-                )
-                notes.append(f'superseded {olderKey!r} (same title: {norm[:40]!r})')
+            with _record_lock():
+                # Both sides of the lineage, whatever the outcome: these two rows
+                # are about the same thing, and the link is what the UI reads.
+                _append_supersedes(winnerKey, winnerScope, olderKey)
+                now = utc_now_text()
+                loser = record.read_fact_file(record.fact_path(olderKey, str(older['scope'])))
+                champion = record.read_fact_file(record.fact_path(winnerKey, winnerScope))
+                if loser is None:
+                    continue
+                loser['updated_at'] = now
+                if contested:
+                    loser['status'] = 'contested'
+                    loser['superseded_by'] = winnerKey
+                    loser['contradicts'] = winnerKey
+                    if champion is not None:
+                        champion['contradicts'] = olderKey
+                        champion['updated_at'] = now
+                        record.write_fact_file(champion)
+                    notes.append(
+                        f'contested {olderKey!r} against {winnerKey!r} '
+                        f'(same title, unrelated bodies — needs a human)'
+                    )
+                else:
+                    loser['status'] = 'superseded'
+                    loser['superseded_by'] = winnerKey
+                    notes.append(f'superseded {olderKey!r} (same title: {norm[:40]!r})')
+                record.write_fact_file(loser)
             superseded += 1
     if superseded:
-        brain_commit(conn)
         from app.services.memory_store.fact_retrieval import invalidate_fact_index
 
         invalidate_fact_index()
+        record.rewrite_index()
     return superseded, notes
-
-
-def _maybe_vacuum() -> bool:
-    try:
-        path = str(_db_path())
-        if not path or not os.path.exists(path) or os.path.getsize(path) < _VACUUM_THRESHOLD_BYTES:
-            return False
-        conn = _conn()
-        conn.execute('VACUUM')
-        return True
-    except Exception:
-        logger.debug('consolidation VACUUM failed', exc_info=True)
-        return False
 
 
 def _skill_learning_pass() -> dict[str, object]:
@@ -1400,8 +1335,8 @@ def _open_skill_proposal_names() -> set[str]:
     same skill is noise in the inbox, not a second opinion.
 
     The harness proposal files spell an undecided row ``status: 'open'``; the
-    brain-DB ``proposals`` table the memory review writes to spells the same
-    state ``'pending'``. Two stores, two words — both are named here rather than
+    ``proposals.json`` store the memory review writes to spells the same state
+    ``'pending'``. Two stores, two words — both are named here rather than
     guessed at.
     """
     try:
@@ -1859,8 +1794,8 @@ def run_consolidation(modelSummarize: bool | None = None) -> dict[str, object]:
             notes.extend(budgetNotes)
         except Exception:
             logger.debug('fact budget pass failed', exc_info=True)
-        # M-12: the automation source stamp, so an automation's episodes and
-        # turns are distinguishable from a person's.
+        # M-12: the automation source stamp, so an automation's episodes are
+        # distinguishable from a person's.
         try:
             summary['automationStamped'] = _stamp_automation_sources()
         except Exception:
@@ -1903,7 +1838,7 @@ def run_consolidation(modelSummarize: bool | None = None) -> dict[str, object]:
             summary['privacyLedgersSwept'] = _sweep_privacy_ledgers()
         except Exception:
             logger.debug('privacy ledger sweep failed', exc_info=True)
-        # M-4: episodic_timeline retention sweep (table was unbounded).
+        # M-4: episodic_timeline retention sweep (store was unbounded).
         try:
             summary['episodicSwept'] = _sweep_episodic()
         except Exception:
@@ -1922,7 +1857,8 @@ def run_consolidation(modelSummarize: bool | None = None) -> dict[str, object]:
             summary['automationSwept'] = automation_memory.sweep()
         except Exception:
             logger.debug('automation_memory sweep failed', exc_info=True)
-        summary['vacuumed'] = _maybe_vacuum()
+        # The VACUUM step is gone with the database: whole-file JSON stores
+        # never fragment, and the JSONL ledgers self-cap at the write path.
         summary.update(_skill_learning_pass())
         summary['notes'] = notes
         summary['ranAt'] = datetime.now(timezone.utc).isoformat()
@@ -1933,21 +1869,20 @@ def run_consolidation(modelSummarize: bool | None = None) -> dict[str, object]:
             logger.debug('consolidation lifecycle write failed', exc_info=True)
         if merged or superseded or summary['expired']:
             logger.info(
-                'consolidation: expired=%s merged=%s superseded=%s vacuumed=%s',
+                'consolidation: expired=%s merged=%s superseded=%s',
                 summary['expired'],
                 merged,
                 superseded,
-                summary['vacuumed'],
             )
     except Exception as exc:
         logger.warning('consolidation pass failed: %s', exc, exc_info=True)
         summary['error'] = str(exc)
-    # A pass retires/archives/merges many rows; the markdown mirror is
+    # A pass retires/archives/merges many rows; the MEMORY.md index is
     # regenerated once here rather than per mutation.
     try:
         from app.services.memory_store.mirror import rebuild_mirror
 
         summary['mirrorFiles'] = rebuild_mirror()
     except Exception:
-        logger.debug('memory mirror rebuild failed', exc_info=True)
+        logger.debug('memory record index rebuild failed', exc_info=True)
     return summary

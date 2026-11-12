@@ -314,13 +314,15 @@ strings).
 ## Memory & learning subsystem
 
 [`services/memory_store/`](../backend-py/app/services/memory_store/) is a layered
-memory system backed by `data/august_brain.sqlite`. It is a **package of domain
-modules**, not one file:
+memory system backed by the file stores under the data directory (`memory/`,
+`state/`, `telemetry/`, `transcripts/` — see
+[`filestore.py`](../backend-py/app/services/filestore.py)). It is a **package of
+domain modules**, not one file:
 
 | Module | Role |
 |--------|------|
-| [`memory_conn.py`](../backend-py/app/services/memory_conn.py) | Thread-local connection, PRAGMA defaults, path resolution |
-| [`memory_schema.py`](../backend-py/app/services/memory_schema.py) | Table / FTS / trigger / index DDL |
+| [`filestore.py`](../backend-py/app/services/filestore.py) | The four store homes, atomic writes, JSONL ledgers, rotation |
+| [`memory_store/tables.py`](../backend-py/app/services/memory_store/tables.py) | One file home per content table + per-store locks |
 | `memory_store/sessions.py` · `messages.py` · `transcript_blocks.py` | Workbench sessions, messages (hot path for chat open / pagination), durable block timelines |
 | `memory_store/rest.py` | Facts, proposals, lifecycle, topics, usage, timeline, stats |
 | `memory_store/brain.py` | `brain_query` multi-store FTS/SQL domain (and the store PATCH whitelist) |
@@ -600,17 +602,16 @@ stays **camelCase** via `memory_store` wire helpers.
 Paths resolve through [`app/lib/paths.py`](../backend-py/app/lib/paths.py)
 (`dataPath`, respects `HARNESS_DATA_DIR`).
 
-### SQLite — single-writer async queue
+### The retired SQLite queue
 
-[`memory_conn.py`](../backend-py/app/services/memory_conn.py): WAL,
-`busy_timeout=10000`, `foreign_keys=ON`.
+The SQL engine and its connection helper are retired; the whole-file stores
+write atomically and fsync at the call site.
 
-[`deferred_writes.py`](../backend-py/app/services/deferred_writes.py) is **commit
-coalescing, not a write queue**: `defer_commit(conn, window_s=WINDOW_S)` (default
-`2.0`, hard cap `_MAX_HOLD_S = 10.0`) defers the COMMIT on a thread-local
-connection, and `flush_thread_pending()` / `_flush_owned_entries()` drain it. There
-is no worker thread, no FIFO queue, and no `priority=` or age-drop parameter — do
-not design anything as if there were.
+[`deferred_writes.py`](../backend-py/app/services/deferred_writes.py) kept its
+public names for importers in the transcript domain, but it is a **no-op now**:
+`defer_commit(conn)` does nothing and `flush_thread_pending()` returns 0 — every
+file write is already durable when the function returns. Do not design anything
+as if there were still a deferred queue.
 
 ### JSON stores — atomic writes
 

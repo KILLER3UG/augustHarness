@@ -27,6 +27,12 @@ Two writers, deliberately:
 
 Not a memory store. Rows here are evidence about a decision, never beliefs to
 inject into a prompt. Lessons reach the model through ``apply_verdict``.
+
+Storage: ``<telemetry>/decision-ledger.jsonl``, one JSON line per row, append-
+only. The write path caps the ledger by bytes (filestore rotation, 10 MB) and
+the consolidation pass prunes it by ``diagnosticsRetentionDays``; a resolver
+update is a load-modify-atomic-rewrite of the file, so a crash mid-resolve
+leaves the OLD ledger.
 """
 
 from __future__ import annotations
@@ -37,9 +43,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.json_narrowing import as_float, as_int, as_str
-from app.services.deferred_writes import defer_commit
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.services.memory_store import tables
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +63,11 @@ OBSERVABLES: frozenset[str] = frozenset({'turn:finished', 'turn:ok', 'turn:no-er
 _DEFAULT_HORIZON_DAYS = 1
 _EXPIRE_DAYS = 14
 
-# Resolution is bounded per pass so one daily run cannot walk the whole table.
+# Resolution is bounded per pass so one daily run cannot walk the whole ledger.
 _RESOLVE_LIMIT = 500
 
 # A decision counts as a HIT at or above this outcome. -1..1 is allowed so a
-# resolver can express "actively wrong" later without a schema change.
+# resolver can express "actively wrong" later without a shape change.
 _HIT_THRESHOLD = 0.5
 
 
@@ -84,6 +88,45 @@ def _parse_ts(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _rows() -> list[dict[str, Any]]:
+    return [dict(r) for r in tables.ledger_rows(tables.decision_ledger_file())]
+
+
+def _next_id(rows: list[dict[str, Any]]) -> int:
+    return tables.next_id(rows)
+
+
+def _rewrite(rows: list[dict[str, Any]]) -> None:
+    tables.rewrite_ledger(tables.decision_ledger_file(), rows)
+
+
+def _turn_row(turn_id: object) -> dict[str, object] | None:
+    """The turn_outcomes row a decision points at, if any.
+
+    The turn-outcomes ledger is the transcript/telemetry domain's runtime file
+    (``<telemetry>/turn-outcomes.jsonl``); this read is tolerant of both key
+    spellings — the one-time SQLite import writes the camelCase wire rows and
+    the runtime writer may carry either.
+    """
+    tid = as_int(turn_id, 0)
+    if tid <= 0:
+        return None
+    try:
+        for row in tables.ledger_rows(tables.turn_outcomes_file()):
+            if as_int(row.get('id', row.get('turnId', row.get('turn_id'))), 0) != tid:
+                continue
+            return {
+                'id': tid,
+                'ok': row.get('ok'),
+                'end_reason': row.get('end_reason', row.get('endReason', '')),
+                'error_class': row.get('error_class', row.get('errorClass', '')),
+                'rounds': row.get('rounds', row.get('round', 0)),
+            }
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def record_turn(
@@ -107,36 +150,43 @@ def record_turn(
     be the same mistake the retired episode detector made.
     """
     try:
-        conn = _conn()
+        with tables.store_lock(str(tables.decision_ledger_file())):
+            rows = _rows()
+            row_id = _next_id(rows)
         now = _utcnow()
         # A mechanical row's outcome is already known — the turn it describes
         # has closed — so it is due immediately and the next journal pass
         # settles it. Only a model-declared decision needs a horizon, because
         # its observable is about what happens NEXT.
-        cursor = conn.execute(
-            'INSERT INTO decision_ledger '
-            '(ts, session_id, turn_id, kind, source, chosen, horizon_turns, due_at, '
-            ' cost_usd, tokens_in, tokens_out, model, provider) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (
-                _iso(now),
-                session_id,
-                turn_id,
-                'turn',
-                'mechanical',
-                end_reason or 'unknown',
-                0,
-                _iso(now),
-                cost_usd,
-                tokens_in,
-                tokens_out,
-                model or '',
-                provider or '',
-            ),
+        tables.append_ledger(
+            tables.decision_ledger_file(),
+            {
+                'id': row_id,
+                'ts': _iso(now),
+                'session_id': session_id,
+                'turn_id': turn_id,
+                'kind': 'turn',
+                'source': 'mechanical',
+                'chosen': end_reason or 'unknown',
+                'alternatives': None,
+                'thesis': '',
+                'observable': '',
+                'confidence': None,
+                'horizon_turns': 0,
+                'due_at': _iso(now),
+                'status': 'open',
+                'outcome': None,
+                'resolved_at': None,
+                'evidence': None,
+                'cost_usd': cost_usd,
+                'tokens_in': tokens_in,
+                'tokens_out': tokens_out,
+                'model': model or '',
+                'provider': provider or '',
+            },
+            max_bytes=tables._DECISION_LEDGER_MAX_BYTES,
         )
-        defer_commit(conn)
-        rowid = cursor.lastrowid
-        return int(rowid) if rowid else None
+        return row_id
     except Exception:  # noqa: BLE001
         logger.debug('decision_ledger.record_turn failed (non-fatal)', exc_info=True)
         return None
@@ -182,32 +232,39 @@ def record_decision(
     horizon = as_int(horizon_turns, _DEFAULT_HORIZON_DAYS)
     horizon = max(1, min(horizon, _EXPIRE_DAYS))
     try:
-        conn = _conn()
+        with tables.store_lock(str(tables.decision_ledger_file())):
+            rows = _rows()
+            row_id = _next_id(rows)
         now = _utcnow()
-        cursor = conn.execute(
-            'INSERT INTO decision_ledger '
-            '(ts, session_id, turn_id, kind, source, chosen, alternatives, thesis, '
-            ' observable, confidence, horizon_turns, due_at, model, provider) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (
-                _iso(now),
-                session_id,
-                turn_id,
-                kind,
-                'model',
-                chosen,
-                json.dumps(alternatives, ensure_ascii=False) if alternatives else None,
-                thesis or '',
-                observable,
-                conf,
-                horizon,
-                _iso(now + timedelta(days=horizon)),
-                model or '',
-                provider or '',
-            ),
+        tables.append_ledger(
+            tables.decision_ledger_file(),
+            {
+                'id': row_id,
+                'ts': _iso(now),
+                'session_id': session_id,
+                'turn_id': turn_id,
+                'kind': kind,
+                'source': 'model',
+                'chosen': chosen,
+                'alternatives': json.dumps(alternatives, ensure_ascii=False) if alternatives else None,
+                'thesis': thesis or '',
+                'observable': observable,
+                'confidence': conf,
+                'horizon_turns': horizon,
+                'due_at': _iso(now + timedelta(days=horizon)),
+                'status': 'open',
+                'outcome': None,
+                'resolved_at': None,
+                'evidence': None,
+                'cost_usd': None,
+                'tokens_in': None,
+                'tokens_out': None,
+                'model': model or '',
+                'provider': provider or '',
+            },
+            max_bytes=tables._DECISION_LEDGER_MAX_BYTES,
         )
-        defer_commit(conn)
-        return {'ok': True, 'id': int(cursor.lastrowid or 0), 'kind': kind}
+        return {'ok': True, 'id': row_id, 'kind': kind}
     except Exception as exc:  # noqa: BLE001
         logger.debug('decision_ledger.record_decision failed', exc_info=True)
         return {'ok': False, 'error': str(exc)[:200]}
@@ -225,32 +282,24 @@ def attach_turn(*, session_id: str, turn_id: int | None) -> int:
     if not session_id or tid <= 0:
         return 0
     try:
-        conn = _conn()
-        cursor = conn.execute(
-            'UPDATE decision_ledger SET turn_id = ? '
-            'WHERE session_id = ? AND turn_id IS NULL AND source = ?',
-            (tid, session_id, 'model'),
-        )
-        defer_commit(conn)
-        return int(cursor.rowcount or 0)
+        path = tables.decision_ledger_file()
+        with tables.store_lock(str(path)):
+            rows = _rows()
+            touched = 0
+            for row in rows:
+                if (
+                    str(row.get('session_id') or '') == session_id
+                    and row.get('turn_id') is None
+                    and str(row.get('source') or '') == 'model'
+                ):
+                    row['turn_id'] = tid
+                    touched += 1
+            if touched:
+                _rewrite(rows)
+            return touched
     except Exception:  # noqa: BLE001
         logger.debug('decision_ledger.attach_turn failed (non-fatal)', exc_info=True)
         return 0
-
-
-def _turn_row(turn_id: object) -> dict[str, object] | None:
-    """The turn_outcomes row a decision points at, if any."""
-    tid = as_int(turn_id, 0)
-    if tid <= 0:
-        return None
-    try:
-        row = _conn().execute(
-            'SELECT id, ok, end_reason, error_class, rounds FROM turn_outcomes WHERE id = ?',
-            (tid,),
-        ).fetchone()
-    except Exception:  # noqa: BLE001
-        return None
-    return dict(row) if row else None
 
 
 def _resolve_one(row: dict[str, Any]) -> tuple[str, float | None, str, dict[str, object]]:
@@ -302,42 +351,46 @@ def _resolve_one(row: dict[str, Any]) -> tuple[str, float | None, str, dict[str,
 def resolve_open(*, limit: int = _RESOLVE_LIMIT) -> dict[str, object]:
     """Resolve (or expire) every open row whose ``due_at`` has passed.
 
-    One pass, bounded, committed once. Safe to run twice: a row leaves ``open``
+    One pass, bounded, written once. Safe to run twice: a row leaves ``open``
     the first time it is touched.
     """
     resolved_n = 0
     unscorable_n = 0
     expired_n = 0
     try:
-        conn = _conn()
+        path = tables.decision_ledger_file()
         now = _utcnow()
-        rows = conn.execute(
-            'SELECT * FROM decision_ledger WHERE status = ? '
-            'AND (due_at IS NULL OR due_at <= ?) ORDER BY id ASC LIMIT ?',
-            ('open', _iso(now), max(1, int(limit))),
-        ).fetchall()
-        for raw in rows:
-            row = dict(raw)
-            ts = _parse_ts(row.get('ts'))
-            if ts is not None and (now - ts) > timedelta(days=_EXPIRE_DAYS):
-                conn.execute(
-                    'UPDATE decision_ledger SET status = ?, resolved_at = ?, evidence = ? WHERE id = ?',
-                    ('expired', _iso(now), json.dumps({'reason': 'horizon-elapsed'}), row['id']),
-                )
-                expired_n += 1
-                continue
-            status, outcome, reason, evidence = _resolve_one(row)
-            if status == 'unscorable':
-                evidence['reason'] = reason
-                unscorable_n += 1
-            else:
-                resolved_n += 1
-            conn.execute(
-                'UPDATE decision_ledger SET status = ?, outcome = ?, resolved_at = ?, evidence = ? '
-                'WHERE id = ?',
-                (status, outcome, _iso(now), json.dumps(evidence, ensure_ascii=False), row['id']),
-            )
-        brain_commit(conn)
+        with tables.store_lock(str(path)):
+            rows = _rows()
+            open_rows = [
+                r for r in rows
+                if str(r.get('status') or '') == 'open'
+                and (r.get('due_at') is None or str(r.get('due_at')) <= _iso(now))
+            ][: max(1, int(limit))]
+            by_id = {as_int(r.get('id'), 0): r for r in rows}
+            for raw in open_rows:
+                row = dict(raw)
+                ts = _parse_ts(row.get('ts'))
+                if ts is not None and (now - ts) > timedelta(days=_EXPIRE_DAYS):
+                    row['status'] = 'expired'
+                    row['resolved_at'] = _iso(now)
+                    row['evidence'] = json.dumps({'reason': 'horizon-elapsed'})
+                    expired_n += 1
+                else:
+                    status, outcome, reason, evidence = _resolve_one(row)
+                    if status == 'unscorable':
+                        evidence['reason'] = reason
+                        unscorable_n += 1
+                    else:
+                        resolved_n += 1
+                    row['status'] = status
+                    row['outcome'] = outcome
+                    row['resolved_at'] = _iso(now)
+                    row['evidence'] = json.dumps(evidence, ensure_ascii=False)
+                target = by_id.get(as_int(row.get('id'), 0))
+                if target is not None:
+                    target.update(row)
+            _rewrite(rows)
     except Exception:  # noqa: BLE001
         logger.debug('decision_ledger.resolve_open failed', exc_info=True)
         return {
@@ -368,13 +421,7 @@ def stats(*, days: int = 30) -> dict[str, object]:
     window = max(1, min(int(days), 365))
     since = _iso(_utcnow() - timedelta(days=window))
     try:
-        rows = [
-            dict(r)
-            for r in _conn().execute(
-                'SELECT model, kind, status, outcome, confidence FROM decision_ledger WHERE ts >= ?',
-                (since,),
-            ).fetchall()
-        ]
+        rows = [r for r in _rows() if str(r.get('ts') or '') >= since]
     except Exception:  # noqa: BLE001
         return {'days': window, 'rows': 0, 'byModel': [], 'byKind': []}
 
@@ -412,31 +459,18 @@ def stats(*, days: int = 30) -> dict[str, object]:
 def digest(*, day: str = '') -> dict[str, object]:
     """One day's ledger activity, for the Learning panel and the job ledger."""
     try:
-        conn = _conn()
-        where: str
-        args: tuple[str, ...]
-        if day:
-            where, args = 'substr(ts, 1, 10) = ?', (day,)
-        else:
-            where, args = "substr(ts, 1, 10) = date('now')", ()
-        row = conn.execute(
-            f'SELECT COUNT(*) AS logged, '
-            f'SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS resolved, '
-            f'SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS unscorable, '
-            f'SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS expired, '
-            f'ROUND(SUM(cost_usd), 6) AS costUsd '
-            f'FROM decision_ledger WHERE {where}',
-            ('resolved', 'unscorable', 'expired', *args),
-        ).fetchone()
-        data = dict(row) if row else {}
-        resolved = as_int(data.get('resolved'), 0)
-        cost = as_float(data.get('costUsd'), 0.0)
+        rows = [
+            r for r in _rows()
+            if str(r.get('ts') or '')[:10] == (day or _iso(_utcnow())[:10])
+        ]
+        resolved = sum(1 for r in rows if as_str(r.get('status')) == 'resolved')
+        cost = sum(as_float(r.get('cost_usd'), 0.0) for r in rows)
         return {
             'day': day or 'today',
-            'logged': as_int(data.get('logged'), 0),
+            'logged': len(rows),
             'resolved': resolved,
-            'unscorable': as_int(data.get('unscorable'), 0),
-            'expired': as_int(data.get('expired'), 0),
+            'unscorable': sum(1 for r in rows if as_str(r.get('status')) == 'unscorable'),
+            'expired': sum(1 for r in rows if as_str(r.get('status')) == 'expired'),
             'costUsd': round(cost, 6),
             # The number that makes the other one meaningful: dollars per
             # decision that actually resolved. None until something resolves.
@@ -450,16 +484,10 @@ def list_decisions(*, status: str = '', limit: int = 50) -> list[dict[str, objec
     """Newest-first rows for the API/UI. Read-only."""
     lim = max(1, min(int(limit), 500))
     try:
-        conn = _conn()
+        rows = _rows()
         if status:
-            rows = conn.execute(
-                'SELECT * FROM decision_ledger WHERE status = ? ORDER BY id DESC LIMIT ?',
-                (status, lim),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                'SELECT * FROM decision_ledger ORDER BY id DESC LIMIT ?', (lim,)
-            ).fetchall()
+            rows = [r for r in rows if as_str(r.get('status')) == status]
+        rows.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
     except Exception:  # noqa: BLE001
         return []
-    return [dict(r) for r in rows]
+    return rows[:lim]

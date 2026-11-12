@@ -5,8 +5,10 @@ pre-P2 design rode three independent pollers, each with its own
 bookkeeping; in-turn ReviewGates stay in-turn by design — they react to
 conversation, not the clock):
 
-* One table — ``learning_job_run`` (migration 041) — is the ledger. Every
-  run gets a row with status, duration and a small summary blob.
+* One ledger — ``<dataDir>/telemetry/learning-job-run.jsonl`` — one JSON
+  line per run with status, duration and a small summary blob, pruned to
+  the recent tail per job (the old ``learning_job_run`` table, migration
+  041).
 * Due-ness is computed from the ledger (last finished run + interval),
   so state survives restarts and there is exactly one overdue path, the
   one ``consolidation_loop`` used to implement by hand.
@@ -27,11 +29,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, cast
 
-from app.services.memory_conn import commit as brain_commit
+from app.json_narrowing import as_int
+from app.services.filestore import (
+    TELEMETRY_DIR,
+    append_jsonl,
+    home,
+    load_jsonl,
+    rewrite_jsonl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,25 +50,20 @@ logger = logging.getLogger(__name__)
 # the panel read at most the last few rows per job.
 _LEDGER_KEEP_PER_JOB = 50
 
-# Tick granularity. Small vs 6h/24h cadences; cheap vs a SELECT on the ledger.
+# Tick granularity. Small vs 6h/24h cadences; cheap vs a ledger read.
 _TICK_S = 60
 
-# Storage hygiene: how long between WAL checkpoints. Six hours is far more
-# often than a WAL can usefully grow on one install, and far less often than a
-# TRUNCATE is expensive, so the constant only exists to bound the cadence.
-_WAL_CHECKPOINT_EVERY_S = 6 * 3600
-
-# ``internal_state`` key holding the last successful checkpoint attempt (the
-# ATTEMPT, stamped before the call: a skipped-and-skipped attempt is the same
-# as a successful one for cadence purposes, and stamping after would retry on
-# every tick while a reader holds the log open).
-_WAL_CHECKPOINT_KEY = 'storage:wal_last_checkpoint'
+_LEDGER_FILE = 'learning-job-run.jsonl'
+_LOCK = threading.RLock()
+_LAST_ID = 0
 
 
-def _conn():
-    from app.services.memory_conn import conn
+def _ledger_path() -> Path:
+    return home(TELEMETRY_DIR) / _LEDGER_FILE
 
-    return conn()
+
+def _rows() -> list[dict[str, Any]]:
+    return [r for r in load_jsonl(_ledger_path()) if isinstance(r, dict)]
 
 
 def _utcnow() -> datetime:
@@ -71,87 +77,106 @@ def _iso(dt: datetime) -> str:
 # ── Ledger ────────────────────────────────────────────────────────────────
 
 
-def _ensure_ledger() -> None:
-    """Migration 041 creates the table at schema init; cover contexts that
-    touch the scheduler before a full init (tests, scripts)."""
-    conn = _conn()
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS learning_job_run ("
-        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "  job TEXT NOT NULL,"
-        "  started_at TEXT NOT NULL,"
-        "  finished_at TEXT,"
-        "  status TEXT NOT NULL DEFAULT 'running',"
-        "  duration_s REAL,"
-        "  detail TEXT)"
-    )
-    conn.execute(
-        'CREATE INDEX IF NOT EXISTS idx_learning_job_run_job '
-        'ON learning_job_run(job, id)'
-    )
-    brain_commit(conn)
-
-
-def _prune(conn) -> None:
-    """Cap the ledger at the recent tail per job (id is monotonic)."""
-    conn.execute(
-        'DELETE FROM learning_job_run WHERE id NOT IN ('
-        '  SELECT id FROM learning_job_run l2'
-        '  WHERE l2.job = learning_job_run.job'
-        f'  ORDER BY id DESC LIMIT {_LEDGER_KEEP_PER_JOB})'
-    )
-
-
 def _start_run(job: str) -> int:
-    conn = _conn()
-    cur = conn.execute(
-        "INSERT INTO learning_job_run (job, started_at, status) VALUES (?, ?, 'running')",
-        (job, _iso(_utcnow())),
-    )
-    brain_commit(conn)
-    return int(cur.lastrowid or 0)
+    global _LAST_ID
+    with _LOCK:
+        rows = _rows()
+        best = max((as_int(r.get('id'), 0) for r in rows), default=0)
+        _LAST_ID = max(_LAST_ID + 1, best + 1)
+        append_jsonl(
+            _ledger_path(),
+            {
+                'id': _LAST_ID,
+                'job': job,
+                'started_at': _iso(_utcnow()),
+                'finished_at': None,
+                'status': 'running',
+                'duration_s': None,
+                'detail': None,
+            },
+        )
+        return _LAST_ID
+
+
+def _prune_locked(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cap the ledger at the recent tail per job (id is monotonic)."""
+    per_job: dict[str, list[int]] = {}
+    for row in rows:
+        per_job.setdefault(str(row.get('job')), []).append(as_int(row.get('id'), 0))
+    drop: set[int] = set()
+    for ids in per_job.values():
+        drop.update(ids[:-_LEDGER_KEEP_PER_JOB] if len(ids) > _LEDGER_KEEP_PER_JOB else [])
+    if not drop:
+        return rows
+    return [row for row in rows if as_int(row.get('id'), 0) not in drop]
 
 
 def _finish_run(run_id: int, status: str, detail: dict[str, Any]) -> None:
-    conn = _conn()
-    row = conn.execute(
-        'SELECT started_at FROM learning_job_run WHERE id = ?', (run_id,)
-    ).fetchone()
-    started = str(row['started_at']) if row else ''
-    dur: float | None = None
-    if started:
-        try:
-            dur = (_utcnow() - datetime.fromisoformat(started)).total_seconds()
-        except ValueError:
-            dur = None
-    conn.execute(
-        'UPDATE learning_job_run SET finished_at = ?, status = ?, duration_s = ?, detail = ?'
-        ' WHERE id = ?',
-        (_iso(_utcnow()), status, dur, json.dumps(detail, default=str)[:2000], run_id),
-    )
-    _prune(conn)
-    brain_commit(conn)
+    with _LOCK:
+        rows = _rows()
+        target = None
+        for row in rows:
+            if as_int(row.get('id'), 0) == run_id:
+                target = row
+                break
+        started = str(target.get('started_at')) if target else ''
+        dur: float | None = None
+        if started:
+            try:
+                dur = (_utcnow() - datetime.fromisoformat(started)).total_seconds()
+            except ValueError:
+                dur = None
+        if target is not None:
+            target['finished_at'] = _iso(_utcnow())
+            target['status'] = status
+            target['duration_s'] = dur
+            target['detail'] = json.dumps(detail, default=str)[:2000]
+        else:
+            # A torn or pruned start row: the finish is still recorded.
+            append_jsonl(
+                _ledger_path(),
+                {
+                    'id': run_id,
+                    'job': '',
+                    'started_at': '',
+                    'finished_at': _iso(_utcnow()),
+                    'status': status,
+                    'duration_s': dur,
+                    'detail': json.dumps(detail, default=str)[:2000],
+                },
+            )
+            return
+        kept = _prune_locked(rows)
+        rewrite_jsonl(_ledger_path(), cast('list[object]', kept))
 
 
 def last_run(job: str) -> dict[str, Any] | None:
     """The most recent FINISHED ledger row for a job, or None."""
-    conn = _conn()
-    row = conn.execute(
-        "SELECT * FROM learning_job_run WHERE job = ? AND status != 'running'"
-        ' ORDER BY id DESC LIMIT 1',
-        (job,),
-    ).fetchone()
-    return dict(row) if row else None
+    with _LOCK:
+        rows = _rows()
+    for row in reversed(rows):
+        if str(row.get('job')) == job and str(row.get('status')) != 'running':
+            return row
+    return None
 
 
 def recent_runs(limit: int = 20) -> list[dict[str, Any]]:
-    conn = _conn()
-    rows = conn.execute(
-        'SELECT job, started_at, finished_at, status, duration_s, detail'
-        ' FROM learning_job_run ORDER BY id DESC LIMIT ?',
-        ((max(1, min(int(limit), 200))),),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    with _LOCK:
+        rows = _rows()
+    rows.reverse()
+    out = []
+    for row in rows[: max(1, min(int(limit), 200))]:
+        out.append(
+            {
+                'job': row.get('job'),
+                'started_at': row.get('started_at'),
+                'finished_at': row.get('finished_at'),
+                'status': row.get('status'),
+                'duration_s': row.get('duration_s'),
+                'detail': row.get('detail'),
+            }
+        )
+    return out
 
 
 # ── Registry ──────────────────────────────────────────────────────────────
@@ -182,7 +207,7 @@ class Job:
         if row is None:
             return True
         try:
-            finished = datetime.fromisoformat(str(row['finished_at']))
+            finished = datetime.fromisoformat(str(row.get('finished_at')))
         except (TypeError, ValueError):
             return True
         if finished.tzinfo is None:
@@ -381,7 +406,6 @@ _register(Job('journal', _journal_job, _config_interval('journalIntervalHours', 
 def run_job(name: str) -> dict[str, Any]:
     """One synchronous pass of a registered job with ledger bookkeeping.
     Never raises: failures land in the ledger as status='error'."""
-    _ensure_ledger()
     job = JOBS.get(name)
     if job is None:
         return {'ok': False, 'error': f'unknown job {name!r}'}
@@ -412,57 +436,15 @@ async def run_job_async(name: str) -> dict[str, Any]:
     return await asyncio.to_thread(run_job, name)
 
 
-async def _maybe_checkpoint_wal() -> None:
-    """Fold an uncheckpointed WAL back, at most once per ``_WAL_CHECKPOINT_EVERY_S``.
-
-    An install measured a 158 MB WAL against a 154 MB database: no checkpoint
-    had completed, so every write had been appending. The cadence guard lives
-    here rather than in ``memory_conn`` because it is bookkeeping, and this is
-    the loop that already ticks every 60 s and keeps its due-ness in
-    ``internal_state``. TRUNCATE returns BUSY (harmlessly) when a reader is
-    mid-read, so a cold attempt costs one SELECT on an idle connection.
-    """
-    from app.services.memory_conn import checkpoint_wal
-    from app.services.memory_store import get_internal_state, set_internal_state
-
-    def _due(last_stamp: object) -> bool:
-        text = str(last_stamp or '').strip()
-        if not text:
-            return True
-        try:
-            last = datetime.fromisoformat(text)
-        except ValueError:
-            return True
-        if last.tzinfo is None:
-            last = last.replace(tzinfo=timezone.utc)
-        return (_utcnow() - last) >= timedelta(seconds=_WAL_CHECKPOINT_EVERY_S)
-
-    def _run() -> None:
-        try:
-            if not _due(get_internal_state(_WAL_CHECKPOINT_KEY)):
-                return
-            set_internal_state(_WAL_CHECKPOINT_KEY, _iso(_utcnow()))
-            checkpoint_wal(truncate=True)
-        except Exception:  # noqa: BLE001
-            logger.debug('wal checkpoint tick failed', exc_info=True)
-
-    await asyncio.to_thread(_run)
-
-
 async def scheduler_loop() -> None:
     """The one scheduled learning poller. Each tick: every registered job
     that is due runs once, serially (learning passes are cheap individually
-    and serialize safely against the shared brain DB)."""
-    _ensure_ledger()
+    and serialize safely against the shared stores)."""
     while True:
         try:
             for job in list(JOBS.values()):
                 if job.due():
                     await run_job_async(job.name)
-            # Storage hygiene (2026-10-17): an uncheckpointed WAL grows without
-            # bound. Rate-limited, so a calm tick is one SELECT and a busy hour
-            # is one harmless SQLITE_BUSY.
-            await _maybe_checkpoint_wal()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -475,8 +457,7 @@ async def scheduler_loop() -> None:
 
 def scheduler_status() -> dict[str, Any]:
     """Per-job cadence + last-run view, plus the shared recent ledger.
-    Cheap: no model calls, a handful of SELECTs."""
-    _ensure_ledger()
+    Cheap: no model calls, a couple of ledger reads."""
     now = _utcnow()
     jobs: list[dict[str, Any]] = []
     for job in JOBS.values():
@@ -495,7 +476,7 @@ def scheduler_status() -> dict[str, Any]:
         detail: dict[str, Any] = {}
         if row and row.get('detail'):
             try:
-                detail = json.loads(row['detail'])
+                detail = json.loads(str(row['detail']))
             except (json.JSONDecodeError, TypeError):
                 detail = {}
         jobs.append(

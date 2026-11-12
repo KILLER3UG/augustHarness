@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.json_narrowing import as_str
+from app.json_narrowing import as_int, as_str
 
 logger = logging.getLogger('august.harness_promote')
 
@@ -65,22 +65,19 @@ def _skill_learning_mode() -> str:
 
 
 def _known_workspaces() -> list[str]:
-    """Known projects = DISTINCT sessions.workspace_path (non-empty,
+    """Known projects = DISTINCT session workspace paths (non-empty,
     non-home). The judge never invents paths (Phase E enumeration rule)."""
-    from app.services.memory_conn import conn as _conn
+    from app.services.memory_store.sessions import list_workspace_paths
 
     home = str(Path.home().resolve())
     try:
-        rows = _conn().execute(
-            "SELECT DISTINCT workspace_path FROM sessions "
-            "WHERE workspace_path IS NOT NULL AND TRIM(workspace_path) != ''"
-        ).fetchall()
+        candidates = list_workspace_paths()
     except Exception:
         return []
     out: list[str] = []
     seen: set[str] = set()
-    for r in rows:
-        ws = str(r['workspace_path']).strip()
+    for ws in candidates:
+        ws = str(ws).strip()
         if not ws or ws in seen:
             continue
         try:
@@ -451,13 +448,14 @@ def suggest_demotions() -> list[dict[str, Any]]:
         used = False
         if as_str(payload.get('promoteType')) == 'fact':
             try:
-                from app.services.memory_conn import conn as _conn
+                from app.services.memory_store import get_fact
 
                 key = 'promoted-' + re.sub(r'[^a-z0-9]+', '-', as_str(payload.get('title')).lower()).strip('-')[:60]
-                row = _conn().execute(
-                    'SELECT use_count FROM facts WHERE fact_key = ?', (key,)
-                ).fetchone()
-                used = bool(row and int(row['use_count'] or 0) > 0)
+                fact = get_fact(key)
+                count = as_int(fact.get('useCount'), 0) if fact else 0
+                if not count and fact:
+                    count = as_int(fact.get('use_count'), 0)
+                used = count > 0
             except Exception:
                 used = False
         if used:

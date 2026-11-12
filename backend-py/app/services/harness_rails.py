@@ -598,21 +598,33 @@ def _episode_ids(payload: dict[str, Any]) -> list[Any]:
 def _episode_kinds(ids: list[int]) -> list[str]:
     """The kinds behind these episodes, quarantined rows excluded.
 
-    Item 5 left 41 invented episodes in the table with their ids intact. An
+    Item 5 left 41 invented episodes in the store with their ids intact. An
     episode marked as mined-nothing must not be able to vouch for a change.
-    """
-    try:
-        from app.services.memory_conn import conn
 
-        placeholders = ','.join('?' for _ in ids)
-        rows = conn().execute(
-            f'SELECT kind FROM episodes WHERE id IN ({placeholders}) AND quarantined = 0',
-            tuple(ids),
-        ).fetchall()
+    The episodes store left SQLite with the rest of the brain; its home is
+    ``<state>/episodes.json`` (``memory_store.tables.episodes_file``). This
+    module is a READER of that domain, not its owner. An unreadable episode
+    store refuses (empty list) — the rails must never vouch for a change on
+    missing evidence.
+    """
+    if not ids:
+        return []
+    wanted = {str(i) for i in ids}
+    try:
+        from app.services.memory_store import tables
+
+        rows = tables.load_rows(tables.episodes_file())
     except Exception:  # noqa: BLE001 -- unreadable episodes must refuse, not crash
         logger.debug('rails episode lookup failed', exc_info=True)
         return []
-    return [str(r['kind'] if not isinstance(r, tuple) else r[0]) for r in rows]
+    kinds: list[str] = []
+    for row in rows:
+        if str(row.get('id')) not in wanted:
+            continue
+        if row.get('quarantined'):
+            continue
+        kinds.append(str(row.get('kind') or ''))
+    return kinds
 
 
 def _today() -> str:

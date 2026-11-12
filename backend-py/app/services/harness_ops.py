@@ -1,4 +1,9 @@
-"""Attention, search, idle pause, scheduled routines, skill-from-episode."""
+"""Attention, search, idle pause, scheduled routines, skill-from-episode.
+
+The ``workstream_reads`` table (per-session read markers) became
+``<dataDir>/state/workstream-reads.json``; the scheduled-routine fields live
+in the routines state file owned by ``harness_playbook``.
+"""
 
 from __future__ import annotations
 
@@ -10,28 +15,17 @@ from typing import Any
 
 from app.json_narrowing import as_str
 from app.lib.paths import dataPath
-from app.services.memory_conn import commit as brain_commit
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
 IDLE_SECONDS = 24 * 60 * 60
 _ACTIVITY_FILE = 'harness-activity.json'
+_READS_FILE = 'workstream-reads.json'
 
 
-def _conn():
-    from app.services.memory_store import _conn as mem_conn
-
-    conn = mem_conn()
-    try:
-        conn.execute(
-            'CREATE TABLE IF NOT EXISTS workstream_reads ('
-            'session_id TEXT NOT NULL, name TEXT NOT NULL, last_seen_seq INTEGER DEFAULT 0, '
-            'seen_at TEXT, PRIMARY KEY (session_id, name))'
-        )
-        brain_commit(conn)
-    except Exception:
-        pass
-    return conn
+def _reads_path():
+    return home(STATE_DIR) / _READS_FILE
 
 
 def touch_activity() -> None:
@@ -57,23 +51,31 @@ def is_unattended(idle_seconds: int = IDLE_SECONDS) -> bool:
 
 
 def mark_read(session_id: str, name: str, seq: int = 0) -> None:
-    conn = _conn()
-    now = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-    conn.execute(
-        'INSERT INTO workstream_reads (session_id, name, last_seen_seq, seen_at) VALUES (?,?,?,?) '
-        'ON CONFLICT(session_id, name) DO UPDATE SET last_seen_seq=excluded.last_seen_seq, seen_at=excluded.seen_at',
-        (session_id, name, int(seq or 0), now),
-    )
-    brain_commit(conn)
+    reads = read_json(_reads_path(), default={})
+    if not isinstance(reads, dict):
+        reads = {}
+    per_session = reads.get(session_id)
+    if not isinstance(per_session, dict):
+        per_session = {}
+    per_session[name] = {
+        'last_seen_seq': int(seq or 0),
+        'seen_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    }
+    reads[session_id] = per_session
+    write_json(_reads_path(), reads)
 
 
 def last_seen_seq(session_id: str, name: str) -> int:
-    conn = _conn()
-    row = conn.execute(
-        'SELECT last_seen_seq FROM workstream_reads WHERE session_id = ? AND name = ?',
-        (session_id, name),
-    ).fetchone()
-    return int(row['last_seen_seq'] or 0) if row else 0
+    reads = read_json(_reads_path(), default={})
+    if not isinstance(reads, dict):
+        return 0
+    per_session = reads.get(session_id)
+    if not isinstance(per_session, dict):
+        return 0
+    entry = per_session.get(name)
+    if not isinstance(entry, dict):
+        return 0
+    return int(entry.get('last_seen_seq') or 0)
 
 
 def annotate_attention(session_id: str, rows: list[dict[str, Any]], running_names: set[str] | None = None) -> list[dict[str, Any]]:
@@ -101,16 +103,10 @@ def needs_attention_summary() -> list[dict[str, object]]:
     Powers the sidebar "needs handoff" dots. Only sessions with at least one
     running or attention-needing workstream are returned; never raises.
     """
-    from app.services.workstreams import list_workstreams
+    from app.services.workstreams import list_session_ids, list_workstreams
 
-    try:
-        conn = _conn()
-        rows = conn.execute('SELECT DISTINCT session_id FROM workstreams').fetchall()
-    except Exception:
-        return []
     out: list[dict[str, object]] = []
-    for r in rows:
-        sid = as_str(r['session_id'], '')
+    for sid in list_session_ids():
         if not sid:
             continue
         try:
@@ -151,18 +147,14 @@ def search_harness(session_id: str, query: str, *, workspace: str = '') -> dict[
 
 
 def set_routine_schedule(routine_id: str, schedule: str, paused: bool | None = None) -> dict[str, Any]:
-    from app.services.harness_playbook import get_routine
+    from app.services.harness_playbook import get_routine, update_routine_fields
 
-    conn = _conn()
-    if paused is None:
-        conn.execute('UPDATE harness_routines SET schedule = ? WHERE id = ?', (schedule.strip(), routine_id))
-    else:
-        conn.execute(
-            'UPDATE harness_routines SET schedule = ?, paused = ? WHERE id = ?',
-            (schedule.strip(), 1 if paused else 0, routine_id),
-        )
-    brain_commit(conn)
-    row = get_routine(routine_id)
+    fields: dict[str, object] = {'schedule': schedule.strip()}
+    if paused is not None:
+        fields['paused'] = 1 if paused else 0
+    row = update_routine_fields(routine_id, **fields)
+    if not row:
+        row = get_routine(routine_id)
     if not row:
         raise ValueError('Routine not found')
     return row
@@ -170,24 +162,25 @@ def set_routine_schedule(routine_id: str, schedule: str, paused: bool | None = N
 
 def due_scheduled_routines(now: datetime | None = None) -> list[dict[str, Any]]:
     from app.services.automations_schedule import matches_cron
-    from app.services.harness_playbook import _row_routine
+    from app.services.harness_playbook import _row_routine, scheduled_routines
 
     stamp = now or datetime.now(timezone.utc)
-    conn = _conn()
     try:
-        rows = conn.execute(
-            'SELECT * FROM harness_routines WHERE schedule IS NOT NULL AND schedule != "" AND paused = 0'
-        ).fetchall()
+        rows = [
+            r
+            for r in scheduled_routines()
+            if str(r.get('schedule') or '') and not int(r.get('paused') or 0)
+        ]
     except Exception:
         return []
     out: list[dict[str, Any]] = []
     minute_key = stamp.strftime('%Y-%m-%dT%H:%M')
     for r in rows:
         try:
-            sched = as_str(r['schedule'], '')
+            sched = as_str(r.get('schedule'), '')
             if not sched or not matches_cron(sched, stamp):
                 continue
-            last = as_str(r['last_run'], '')
+            last = as_str(r.get('last_run'), '')
             if last.startswith(minute_key):
                 continue
             out.append(_row_routine(r))
@@ -197,10 +190,10 @@ def due_scheduled_routines(now: datetime | None = None) -> list[dict[str, Any]]:
 
 
 def mark_routine_ran(routine_id: str) -> None:
-    conn = _conn()
+    from app.services.harness_playbook import update_routine_fields
+
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-    conn.execute('UPDATE harness_routines SET last_run = ? WHERE id = ?', (now, routine_id))
-    brain_commit(conn)
+    update_routine_fields(routine_id, last_run=now)
 
 
 async def fire_due_routines() -> int:

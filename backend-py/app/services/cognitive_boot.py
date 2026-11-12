@@ -72,31 +72,12 @@ async def start_cognitive_services(app: object | None = None) -> dict[str, objec
         services['daemon_manager'] = {'ok': False, 'error': str(exc2)}
 
     # Facts expiry sweep (B4): purge facts whose optional expires_at (set by the
-    # `remember` tool) has passed. Defensive — skips silently if the facts table
-    # or the expires_at column is not present yet on this install.
+    # `remember` tool) has passed. Defensive — an unreadable record simply
+    # purges nothing.
     try:
-        from app.services.memory_conn import commit as brain_commit
-        from app.services.memory_conn import conn as _mem_conn
+        from app.services.memory_store.consolidation import _expire_facts
 
-        c = _mem_conn()
-        purged = 0
-        table = c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='facts'"
-        ).fetchone()
-        if table:
-            cols = {r['name'] for r in c.execute('PRAGMA table_info(facts)').fetchall()}
-            if 'expires_at' in cols:
-                # julianday, not string compare — the column mixes writer
-                # formats (date-only, ISO-T+offset, model-verbatim); a 'T'
-                # separator sorts above datetime('now')'s space on the expiry
-                # day itself, so same-day expiries would survive the day.
-                cursor = c.execute(
-                    "DELETE FROM facts WHERE expires_at IS NOT NULL "
-                    "AND expires_at != '' AND julianday(expires_at) IS NOT NULL "
-                    "AND julianday(expires_at) <= julianday('now')"
-                )
-                brain_commit(c)
-                purged = cursor.rowcount
+        purged = _expire_facts()
         if purged:
             logger.info('Facts expiry sweep: purged %d expired facts', purged)
         services['facts_expiry_sweep'] = {'ok': True, 'purged': purged}

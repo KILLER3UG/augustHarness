@@ -1,101 +1,55 @@
-"""Key-value memory blob + FTS search domain."""
+"""Key-value memory blob + internal machine state — file-backed.
+
+``memory_store`` (the KV table) is ``<state>/kv.json``; ``internal_state`` is
+``<state>/internal-state.json``. Both are whole-file JSON row stores whose
+rows keep the SQL-era shape (``key`` / ``value`` / ``updated_at``), with the
+value kept JSON-ENCODED exactly as the database column was — the
+serialization-traps rule in docs/agent/memory.md applies unchanged, and the
+search helper below matches the raw text the same way the old FTS index did.
+"""
+
 from __future__ import annotations
 
 import json
 import re
-import sqlite3
+from typing import cast
 
 from app.lib.paths import assertPytestDataDirIsolated
-from app.services.deferred_writes import defer_commit
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
-from app.services.memory_schema import ensure_schema
+from app.services.memory_store import tables
+from app.services.memory_store.timeutil import utc_now_text
 from app.services.memory_store.wire import _json
 from app.type_aliases import JsonValue
 
 
 def init() -> None:
-    """Create all tables on first use (migrates camel→snake if needed)."""
-    ensure_schema(_conn())
+    """The schema step of the SQL era. Files need no schema; the homes are
+    created on demand by every read/write. Kept because main.py and the
+    importers call it — a deliberate no-op."""
 
 
-def _write_with_fts_recovery(
-    conn: sqlite3.Connection, sql: str, params: tuple[object, ...]
-) -> None:
-    """Run a `memory_store` write, and repair the search index if it vetoed it.
-
-    `memory_store` carries an AFTER INSERT/UPDATE/DELETE trigger that
-    maintains `memory_store_fts`. In SQLite a trigger that raises aborts the
-    statement that fired it, so a search index that cannot be opened takes the
-    durable row down with it — the wrong way round, because the index is
-    derived and rebuildable from the very table it indexes.
-
-    On ANY SQLite error from the write: roll back, rebuild the index from the
-    base table, and retry once. Whatever goes wrong, the ORIGINAL error is
-    what escapes if the retry does not succeed, so a broken database is never
-    reported as a successful write.
-
-    Deliberately not pattern-matching the error text. The same corrupt state
-    reports `vtable constructor failed` on one SQLite build, `SQL logic error`
-    on another and `database disk image is malformed` on a third, so a
-    string filter works on the machine it was written on and nowhere else —
-    which is precisely how the first attempt at this shipped a fix that passed
-    locally and did nothing in CI. Probing the index instead is not better: a
-    MATCH query can still succeed on a half-built index. Rebuilding is
-    idempotent, lossless and cheap, and this is an error path that should
-    essentially never run, so the honest trade is a possible wasted rebuild on
-    an unrelated error in exchange for never losing a row to a cache.
-
-    THAT LAST TRADE WAS THE BUG, and it took five CI failures to see it.
-    "Rebuild on any error" is not a cheap idempotent repair — it is five
-    `DROP TABLE` statements plus a `CREATE VIRTUAL TABLE` against a file that
-    every other thread in the process also has open, executed on a REQUEST
-    path. A write that failed only because the file was momentarily busy
-    (`database is locked` after the busy timeout, which on a 4-vCPU CI runner
-    is routine) therefore escalated to destructive DDL, and the DROP is
-    exactly what makes some *other* connection's next statement fail with
-    `vtable constructor failed`. The recovery path was manufacturing the
-    symptom it was written to cure, which is why it survived locally — no
-    local run has the contention — and failed on CI five times across five
-    different tests, whichever one happened to be writing memory.
-
-    So the rebuild is now conditional on the index actually being broken:
-    `fts_index_intact` checks structurally (the vtable entry plus all four
-    shadow tables) rather than by parsing the error, which keeps the property
-    this function exists for — a genuinely half-built index still gets rebuilt
-    and the row still lands — while a transient failure no longer costs the
-    file five drops. An intact index means the error was not the index, so the
-    write is simply retried, which is the correct response to contention.
-    """
-    try:
-        conn.execute(sql, params)
-        return
-    except (sqlite3.OperationalError, sqlite3.DatabaseError) as first:
-        try:
-            conn.rollback()
-        except sqlite3.Error:
-            # A rollback on a connection with no open transaction is not
-            # interesting; whatever the write needs is what has to work.
-            pass
-        from app.services.memory_schema import fts_index_intact, rebuild_fts_index
-
-        # A whole index means this error was never about the index, so do not
-        # do DDL about it. The write is retried either way.
-        if fts_index_intact(conn) and _retry_write(conn, sql, params):
-            return
-        if not rebuild_fts_index(conn):
-            raise first
-        if not _retry_write(conn, sql, params):
-            raise first
+def _load(path) -> list[dict[str, object]]:
+    return tables.load_rows(path)
 
 
-def _retry_write(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> bool:
-    """One more attempt at the write. False means it failed again."""
-    try:
-        conn.execute(sql, params)
-    except (sqlite3.OperationalError, sqlite3.DatabaseError):
-        return False
-    return True
+def _upsert(path, key: str, json_text: str) -> None:
+    with tables.store_lock(str(path)):
+        rows = _load(path)
+        now = utc_now_text()
+        for row in rows:
+            if str(row.get('key') or '') == key:
+                row['value'] = json_text
+                row['updated_at'] = now
+                break
+        else:
+            rows.append({'key': key, 'value': json_text, 'updated_at': now})
+        tables.save_rows(path, rows)
+
+
+def _get_row(path, key: str) -> dict[str, object] | None:
+    for row in tables.load_rows(path):
+        if str(row.get('key') or '') == key:
+            return row
+    return None
 
 
 def save_internal(key: str, value: JsonValue) -> None:
@@ -107,77 +61,137 @@ def save_internal(key: str, value: JsonValue) -> None:
     """
     # Surface tests that bypass the autouse isolatedData fixture.
     assertPytestDataDirIsolated('memory_store.save_internal')
-    conn = _conn()
-    # An upsert, NOT `INSERT OR REPLACE`. REPLACE removes the conflicting row
-    # without firing its AFTER DELETE trigger, so `memory_store_fts` — an
-    # external-content index, kept in sync by triggers — keeps a posting for a
-    # rowid that no longer exists. The index then raises
-    # `fts5: missing row N from content table` for any search that matches that
-    # stale term, which is every overwrite of an existing key. `set_internal_state`
-    # below already uses this form.
-    _write_with_fts_recovery(
-        conn,
-        "INSERT INTO memory_store (key, value, updated_at) VALUES (?, ?, datetime('now')) "
-        'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-        (key, _json(value)),
-    )
-    brain_commit(conn)
+    _upsert(tables.kv_file(), key, _json(value))
 
 
 def get_memory(key: str) -> JsonValue | None:
     """Get a value from memory by key."""
-    conn = _conn()
-    row = conn.execute('SELECT value FROM memory_store WHERE key = ?', (key,)).fetchone()
-    if row:
+    row = _get_row(tables.kv_file(), key)
+    if row is None:
+        return None
+    raw = row.get('value')
+    if isinstance(raw, str):
         try:
-            return json.loads(row['value'])
-        except (json.JSONDecodeError, TypeError):
-            return row['value']
-    return None
+            return cast(JsonValue, json.loads(raw))
+        except (ValueError, TypeError):
+            return cast(JsonValue, raw)
+    return cast(JsonValue, raw)
+
+
+def delete_memory(key: str) -> bool:
+    """Remove one KV row. True when a row was actually removed — the manage
+    door's ``deleted`` answer is a receipt, not a verdict."""
+    path = tables.kv_file()
+    with tables.store_lock(str(path)):
+        rows = _load(path)
+        kept = [row for row in rows if str(row.get('key') or '') != key]
+        if len(kept) == len(rows):
+            return False
+        tables.save_rows(path, kept)
+        return True
+
+
+def purge_kv(keep_keys: tuple[str, ...] | list[str] = ()) -> int:
+    """Drop every KV row except ``keep_keys`` (the privacy purge's residual
+    sweep). Returns the rows removed."""
+    path = tables.kv_file()
+    with tables.store_lock(str(path)):
+        rows = _load(path)
+        keep = {str(k) for k in keep_keys}
+        kept = [row for row in rows if str(row.get('key') or '') in keep]
+        removed = len(rows) - len(kept)
+        if removed:
+            tables.save_rows(path, kept)
+        return removed
+
+
+def kv_rows() -> list[dict[str, object]]:
+    """Every KV row (the browse/summary doors page this)."""
+    return _load(tables.kv_file())
 
 
 def set_internal_state(key: str, value: JsonValue) -> None:
-    """Write machine state to ``internal_state``.
+    """Write machine state to ``internal-state.json``.
 
     Maintenance/cron/daemon bookkeeping lives here — never in the
-    user-visible ``memory_store`` KV and never in facts. Not exposed to
-    the Brain stores UI; only reachable via the Settings raw-state lookup.
+    user-visible KV and never in facts. Not exposed to the Brain stores UI;
+    only reachable via the Settings raw-state lookup.
     """
-    conn = _conn()
-    conn.execute(
-        "INSERT INTO internal_state (key, value, updated_at) VALUES (?, ?, datetime('now')) "
-        'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-        (key, _json(value)),
-    )
-    # P4.2: internal_state is machine bookkeeping, not read back
-    # cross-thread within the turn — debounce the commit (≤2s).
-    defer_commit(conn)
+    _upsert(tables.internal_state_file(), key, _json(value))
 
 
 def get_internal_state(key: str) -> JsonValue | None:
     """Read a row from ``internal_state`` (None when absent)."""
-    conn = _conn()
-    row = conn.execute('SELECT value FROM internal_state WHERE key = ?', (key,)).fetchone()
-    if row:
+    row = _get_row(tables.internal_state_file(), key)
+    if row is None:
+        return None
+    raw = row.get('value')
+    if isinstance(raw, str):
         try:
-            return json.loads(row['value'])
-        except (json.JSONDecodeError, TypeError):
-            return row['value']
+            return cast(JsonValue, json.loads(raw))
+        except (ValueError, TypeError):
+            return cast(JsonValue, raw)
+    return cast(JsonValue, raw)
+
+
+def lookup_any(key: str) -> dict[str, object] | None:
+    """The raw-state lookup row: internal_state first (machine state wins),
+    then the KV store. ``source`` names which store answered."""
+    for source, path in (
+        ('internal_state', tables.internal_state_file()),
+        ('memory_store', tables.kv_file()),
+    ):
+        row = _get_row(path, key)
+        if row is not None:
+            return {
+                'value': row.get('value'),
+                'updated_at': row.get('updated_at') or '',
+                'source': source,
+            }
     return None
 
 
 def _fts_match_query(query: str) -> str:
-    """Build a safe FTS5 MATCH expression from free text (prefix OR tokens).
+    """The search-term list the old FTS5 MATCH expression built.
 
-    Tokens are split on whitespace AND non-alphanumeric boundaries: the
-    default unicode61 tokenizer indexes ``my note`` as two tokens, so a
-    merged query token like ``my-note`` matched NEITHER and silently fell
-    back to LIKE (audit finding).
+    The FTS index is gone; the matcher is now a plain Python term match (see
+    ``fts_match``), but the tokenizer's CONTRACT is unchanged — tokens split
+    on whitespace AND non-alphanumeric boundaries, so a merged query token
+    like ``my-note`` still matches ``my note`` — and the model-facing session
+    search calls this to decide whether a query has searchable tokens at all.
     """
     tokens = [t for t in re.split(r'[^\w]+', query or '') if t]
     if not tokens:
         return ''
-    # Quote tokens so punctuation does not break MATCH parsing.
     return ' OR '.join(f'"{t.replace(chr(34), "")}"*' for t in tokens if t.replace('"', ''))
 
 
+def fts_match(text: str, query: str) -> bool:
+    """Case-insensitive term match over a stored value's text.
+
+    The KV FTS helper's replacement: a query term (whitespace/symbol-split,
+    prefix-matched — the same vocabulary ``_fts_match_query`` tokenized)
+    matches when any term appears in ``text``. A query with no searchable
+    tokens matches nothing, exactly as the empty MATCH expression did.
+    """
+    terms = [t for t in re.split(r'[^\w]+', (query or '').lower()) if t]
+    if not terms:
+        return False
+    haystack = (text or '').lower()
+    return any(term in haystack for term in terms)
+
+
+__all__ = [
+    'delete_memory',
+    'fts_match',
+    'get_internal_state',
+    'get_memory',
+    'init',
+    'kv_rows',
+    'lookup_any',
+    'purge_kv',
+    'save_internal',
+    'set_internal_state',
+    '_fts_match_query',
+    '_upsert',
+]

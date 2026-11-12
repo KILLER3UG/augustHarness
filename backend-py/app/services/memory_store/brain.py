@@ -1,32 +1,41 @@
-"""brain_query tool domain (multi-store FTS/SQL)."""
+"""brain_query tool domain (multi-store search over the file-backed stores).
+
+The doors keep their exact returned row shapes (``fact_key``/``fact_value``/
+``status``/``scope``/... camelCased on the way out) — they now read the file
+homes (``tables.py``) and the markdown record (``mirror.py``) instead of SQL.
+Each store declares its projected columns so a caller sees the same wire
+shape the SQL SELECT returned.
+"""
+
 from __future__ import annotations
 
 import json
-import sqlite3
+import re
+from typing import cast
 
 from app.adapters.case_converters import camelToSnake
-from app.json_narrowing import as_list, as_str
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
-from app.services.memory_store.kv import _fts_match_query
+from app.json_narrowing import as_int, as_list, as_str
+from app.services.memory_store import mirror as record
+from app.services.memory_store import tables
+from app.services.memory_store.kv import fts_match
 from app.services.memory_store.timeutil import utc_now_text
 from app.services.memory_store.wire import _row_as_wire
 from app.services.sensitive_topics import sensitiveMemoryReason
+from app.type_aliases import JsonValue
 
 _BRAINStores: dict[str, dict[str, object]] = {
     'memory': {
-        'table': 'memory_store',
-        'fts': 'memory_store_fts',
+        'store': 'kv',
+        'fts': True,
         'columns': 'key, value, updated_at',
         'search_cols': ['key', 'value'],
         'label': 'key-value memory store',
     },
     # 'heuristics' (learned_heuristics) RETIRED 2026-10-30: no live writer ever
-    # existed; the table is dropped once empty by memory_schema on old DBs.
-    # Queries for it now fall through to the unknown-store error below.
+    # existed. Queries for it fall through to the unknown-store error below.
     'facts': {
-        'table': 'facts',
-        'fts': None,
+        'store': 'facts',
+        'fts': False,
         'columns': (
             'id, fact_key, fact_value, title, kind, category, source, confidence, '
             # `description` is the one-line recall hook (fact_retrieval reads it,
@@ -39,8 +48,7 @@ _BRAINStores: dict[str, dict[str, object]] = {
             # 055: the supersession lineage (M-3) and the trust signals
             # (M-7, M-8). The Memory UI reads them to show "replaces N",
             # "superseded by X" and a conflict badge, and the detail view
-            # offers the restore. The columns are guaranteed by
-            # `memory_schema._ensure_fact_signal_columns` on every boot.
+            # offers the restore.
             'superseded_by, supersedes, contradicts, verified_at, '
             'injected_count, last_injected_at, '
             # 059: the value this row's latest edit replaced ("now X,
@@ -55,43 +63,43 @@ _BRAINStores: dict[str, dict[str, object]] = {
         'label': 'structured semantic facts',
     },
     'sessions': {
-        'table': 'sessions',
-        'fts': None,
+        'store': 'sessions',
+        'fts': False,
         'columns': 'id, title, started_at, message_count, provider, model, workspace_path',
         'search_cols': ['title', 'id'],
         'label': 'conversation sessions',
     },
     'messages': {
-        'table': 'messages',
-        'fts': 'messages_fts',
+        'store': 'messages',
+        'fts': True,
         'columns': 'id, session_id, role, content, created_at',
         'search_cols': ['content'],
         'label': 'chat messages',
     },
     'timeline': {
-        'table': 'episodic_timeline',
-        'fts': None,
+        'store': 'timeline',
+        'fts': False,
         'columns': 'id, timestamp, session_id, event_summary, category',
         'search_cols': ['event_summary', 'category', 'session_id'],
         'label': 'episodic timeline entries',
     },
     'blackboard': {
-        'table': 'blackboard',
-        'fts': None,
+        'store': 'blackboard',
+        'fts': False,
         'columns': 'id, session_id, agent, key, value, priority, created_at, expires_at',
         'search_cols': ['agent', 'key', 'value'],
         'label': 'inter-agent blackboard notes',
     },
     'exams': {
-        'table': 'exams',
-        'fts': None,
+        'store': 'exams',
+        'fts': False,
         'columns': 'id, title, topic, created_at, source, source_files',
         'search_cols': ['title', 'topic'],
         'label': 'exam sessions',
     },
     'examAttempts': {
-        'table': 'exam_attempts',
-        'fts': None,
+        'store': 'examAttempts',
+        'fts': False,
         'columns': 'id, exam_id, question_id, selected_index, is_correct, asked_for_help, answered_at',
         'search_cols': ['exam_id'],
         'label': 'exam attempt history',
@@ -119,35 +127,23 @@ _STORE_ALIASES.update(
 # KV keys that are app plumbing, not user-visible memory. The
 # Memories browse filters these out (Raw state lookup still sees them).
 # agent_jobs itself was purged by migration 037; the entry stays as a guard
-# against a legacy DB re-seeding it before the migration runs.
+# against a legacy store re-seeding it before the import runs.
 _KV_MACHINE_KEYS: tuple[str, ...] = ('agent_registry', 'agent_jobs')
 _KV_MACHINE_PREFIXES: tuple[str, ...] = ('diff_learn:', 'internal:', 'cognitive:')
 
 
-def _kv_notes_where() -> tuple[str, list[object]]:
-    """WHERE clause + params selecting the user's KV notes — the non-machine
-    rows of ``memory_store``. One definition shared by the boot index, the
-    store summary and the note count, because three copies of "exclude
-    agent_registry" is three chances to disagree about what memory holds."""
-    clauses = ['key NOT IN (' + ','.join('?' * len(_KV_MACHINE_KEYS)) + ')']
-    params: list[object] = list(_KV_MACHINE_KEYS)
-    for prefix in _KV_MACHINE_PREFIXES:
-        clauses.append('key NOT LIKE ?')
-        params.append(f'{prefix}%')
-    return 'WHERE ' + ' AND '.join(clauses), params
+def _is_machine_kv_key(key: str) -> bool:
+    if key in _KV_MACHINE_KEYS:
+        return True
+    return any(key.startswith(prefix) for prefix in _KV_MACHINE_PREFIXES)
 
 
 def count_user_notes() -> int:
     """Non-machine KV rows — the user's Notes, the same set the boot index
-    lists and ``brain_browse('memory')`` pages. 0 on a store whose table does
-    not exist yet (fresh install)."""
-    conn = _conn()
-    where, params = _kv_notes_where()
-    try:
-        row = conn.execute(f'SELECT COUNT(*) FROM memory_store {where}', params).fetchone()
-    except Exception:
-        return 0
-    return int(row[0]) if row else 0
+    lists and ``brain_browse('memory')`` pages. 0 on an empty store."""
+    from app.services.memory_store import kv
+
+    return sum(1 for row in kv.kv_rows() if not _is_machine_kv_key(str(row.get('key') or '')))
 
 
 def _resolve_store(store: str) -> str:
@@ -274,24 +270,21 @@ def _brain_query_fingerprints(query: str, filters: dict | None, limit: int) -> s
     """
     import json as _json
 
-    conn = _conn()
-    sql = 'SELECT * FROM failure_fingerprints'
-    params: list[object] = []
-    where: list[str] = []
-    q = (query or '').strip()
+    rows = tables.load_rows(tables.failure_fingerprints_file())
+    q = (query or '').strip().lower()
     if q:
-        where.append('(fingerprint LIKE ? OR status LIKE ?)')
-        params.extend([f'%{q}%', f'%{q}%'])
+        rows = [
+            r for r in rows
+            if q in str(r.get('fingerprint') or '').lower()
+            or q in str(r.get('status') or '').lower()
+        ]
     if filters and isinstance(filters.get('status'), str) and filters['status'].strip():
-        where.append('status = ?')
-        params.append(str(filters['status']).strip())
-    if where:
-        sql += ' WHERE ' + ' AND '.join(where)
-    sql += ' ORDER BY episode_count DESC, last_seen DESC'
+        wanted = str(filters['status']).strip()
+        rows = [r for r in rows if str(r.get('status') or '') == wanted]
+    rows.sort(key=lambda r: (as_int(r.get('episode_count'), 0), str(r.get('last_seen') or '')), reverse=True)
     cap = max(1, min(limit, 100))
-    sql += f' LIMIT {cap}'
     try:
-        rows = [_row_as_wire(r) for r in conn.execute(sql, params).fetchall()]
+        rows = [_row_as_wire(r) for r in rows[:cap]]
         return _json.dumps(rows, default=str, ensure_ascii=False)
     except Exception as exc:
         return _json.dumps({'error': f'failure-fingerprints query failed: {exc}'})
@@ -301,28 +294,27 @@ def _brain_query_facts_ranked(query: str, filters: dict | None, limit: int) -> s
     """BM25-ranked facts retrieval for ``brain_query``.
 
     Mirrors the tail block's ranking (``fact_retrieval`` — one shared
-    implementation) instead of LIKE-in-rowid-order. An exact ``fact_key``
+    implementation) instead of LIKE-in-file-order. An exact ``fact_key``
     hit short-circuits to the direct row. Returns the same wire shape as
     the generic path (camelCase rows) so callers see no difference.
     """
     q = (query or '').strip()
     cap = max(1, min(limit, 100))
     from app.services import session_scope as _scope
+    from app.services.memory_store.rest import _factRow, _visible
 
     turnScope = _scope.resolve_scope()
     # The exact-key fast path honors the same visibility policy
     # as list_facts/search_facts — a superseded or expired row must not come
     # back verbatim through the model's memory-search tool while every other
     # door hides it (reproduced live during the scan).
-    from app.services.memory_store.rest import _visibility_where
-
-    visSql, visParams = _visibility_where(turnScope)
-    conn = _conn()
-    exact = conn.execute(
-        f'SELECT * FROM facts WHERE fact_key = ? AND {visSql}', (q, *visParams)
-    ).fetchone()
+    all_rows = record.load_facts()
+    exact = next(
+        (r for r in all_rows if str(r.get('fact_key') or '') == q and _visible(r, turnScope)),
+        None,
+    )
     if exact is not None:
-        return json.dumps([_row_as_wire(exact)], default=str, ensure_ascii=False)
+        return json.dumps([_factRow(exact)], default=str, ensure_ascii=False)
     try:
         from app.services.memory_store.fact_retrieval import retrieve_relevant_facts
 
@@ -336,25 +328,25 @@ def _brain_query_facts_ranked(query: str, filters: dict | None, limit: int) -> s
     except Exception as exc:
         return json.dumps({'error': f'brain_query(facts): ranked retrieval failed: {exc}'})
     if not facts:
-        # No BM25 hits — fall through to the old LIKE scan so partial
+        # No BM25 hits — fall through to the old substring scan so partial
         # tokens and punctuation-heavy queries still find their rows.
         return ''
     # Enrich the compact ranking rows with the full wire columns the
-    # generic path returns (join back by key, one IN query).
-    keys = [str(f.get('key') or '') for f in facts]
-    placeholders = ','.join('?' * len(keys))
-    rows = conn.execute(
-        f'SELECT * FROM facts WHERE fact_key IN ({placeholders})', keys
-    ).fetchall()
-    byKey = {str(r['fact_key']): r for r in rows}
-    ordered = [byKey[k] for k in keys if k in byKey]
-    results = [_row_as_wire(r) for r in ordered]
+    # generic path returns (join back by key).
+    byKey = {
+        str(r.get('fact_key')): r
+        for r in all_rows
+        if str(r.get('fact_key') or '')
+    }
+    ordered = [byKey[str(f.get('key'))] for f in facts if str(f.get('key')) in byKey]
+    results = [_factRow(r) for r in ordered]
     # Filters apply after ranking (status/category equality on wire keys).
     if filters:
         import re as _re
+        from typing import Mapping as _Mapping
 
-        def _match(row: dict[str, object]) -> bool:
-            for fk, fv in filters.items():
+        def _match(row: _Mapping[str, object]) -> bool:
+            for fk, fv in (filters or {}).items():
                 snake = _re.sub(r'(?<!^)(?=[A-Z])', '_', str(fk)).lower()
                 for cand in (fk, snake):
                     if cand in row and str(row[cand]) != str(fv):
@@ -372,6 +364,114 @@ def _brain_query_facts_ranked(query: str, filters: dict | None, limit: int) -> s
     return resultJson
 
 
+def _project(row: dict[str, object], columns: list[str]) -> dict[str, object]:
+    """The declared-column projection of one row — the wire shape a
+    ``SELECT <columns>`` returned. A column the row does not carry reads
+    None, exactly as a NULL column did."""
+    out: dict[str, object] = {}
+    for col in columns:
+        if col in row:
+            out[col] = row.get(col)
+        else:
+            camel = col[:1] + re.sub(r'_(\w)', lambda m: m.group(1).upper(), col[1:])
+            out[col] = row.get(camel)
+    return out
+
+
+def _session_rows() -> list[dict[str, object]]:
+    """The sessions store, snake_case-normalized.
+
+    Runtime ownership is the transcript domain; this reads its
+    ``transcripts/sessions.json`` tolerantly (list or id-keyed object, camel
+    or snake keys) so the model-facing doors keep working whichever spelling
+    the live writer uses.
+    """
+    from app.lib.paths import dataPath
+
+    data = _read_json_any(dataPath('transcripts') / 'sessions.json')
+    items: list[dict[str, object]] = []
+    if isinstance(data, list):
+        items = [r for r in data if isinstance(r, dict)]
+    elif isinstance(data, dict):
+        items = [r for r in data.values() if isinstance(r, dict)]
+    out: list[dict[str, object]] = []
+    for item in items:
+        row = {
+            'id': item.get('id', item.get('sessionId')),
+            'title': item.get('title'),
+            'started_at': item.get('started_at', item.get('startedAt')),
+            'message_count': item.get('message_count', item.get('messageCount')),
+            'provider': item.get('provider', ''),
+            'model': item.get('model', ''),
+            'folder_id': item.get('folder_id', item.get('folderId')),
+            'is_archived': item.get('is_archived', item.get('isArchived')),
+            'workspace_path': item.get('workspace_path', item.get('workspacePath')),
+            'updated_at': item.get('updated_at', item.get('updatedAt')),
+        }
+        out.append(row)
+    return out
+
+
+def _message_rows(session_cap: int = 400) -> list[dict[str, object]]:
+    """Every transcript message, snake_case-normalized, oldest file first.
+
+    The transcripts live as ``transcripts/<sessionId>.jsonl`` (one line per
+    message). Reads are bounded: a store with more than ``session_cap``
+    transcript files stops scanning — the search door answers over the most
+    recently modified transcripts rather than stalling on an archive.
+    """
+    from app.lib.paths import dataPath
+
+    directory = dataPath('transcripts')
+    out: list[dict[str, object]] = []
+    if not directory.is_dir():
+        return out
+    files = [p for p in directory.glob('*.jsonl')]
+    files.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)
+    for path in files[:session_cap]:
+        sid = path.stem
+        for raw in tables.ledger_rows(path):
+            out.append(
+                {
+                    'id': raw.get('id'),
+                    'session_id': raw.get('session_id', raw.get('sessionId')) or sid,
+                    'role': raw.get('role'),
+                    'content': raw.get('content'),
+                    'created_at': raw.get('created_at', raw.get('createdAt')),
+                }
+            )
+    return out
+
+
+def _read_json_any(path) -> object:
+    from app.services import filestore
+
+    return filestore.read_json(path, default=[])
+
+
+def _store_rows(store_key: str) -> list[dict[str, object]]:
+    """Every row of one store, in file (insertion) order."""
+    if store_key == 'memory':
+        from app.services.memory_store import kv
+
+        return [dict(r) for r in kv.kv_rows()]
+    if store_key == 'facts':
+        return [dict(r) for r in record.load_facts()]
+    if store_key == 'sessions':
+        return _session_rows()
+    if store_key == 'messages':
+        return _message_rows()
+    if store_key == 'timeline':
+        return tables.load_rows(tables.timeline_file())
+    if store_key == 'blackboard':
+        return tables.load_rows(tables.blackboard_file())
+    if store_key == 'exams':
+        return tables.load_section(tables.exams_file(), 'exams')
+    if store_key == 'examAttempts':
+        return tables.load_section(tables.exams_file(), 'examAttempts')
+    return []
+
+
 def brain_query(store: str, query: str = '', filters: dict | None = None, limit: int = 10) -> str:
     """Read-only query across any brain store.
 
@@ -385,7 +485,6 @@ def brain_query(store: str, query: str = '', filters: dict | None = None, limit:
     (``exam_attempts``, SQL-ish names).
     """
     _TOKENCeiling = 2000
-    conn = _conn()
     if store in ('daemons',):
         return _brain_query_daemons(query, filters, limit)
     if store in ('project-memory', 'project_memory', 'projectMemory'):
@@ -402,100 +501,64 @@ def brain_query(store: str, query: str = '', filters: dict | None = None, limit:
         )
     info = _BRAINStores[store]
     # Facts queries rank through the BM25 index shared
-    # with the tail block — relevance instead of LIKE-in-rowid-order. An
+    # with the tail block — relevance instead of substring-in-file-order. An
     # exact fact_key match keeps the direct fast path (a key lookup is a
-    # point query, not a search). '' = no BM25 hits → generic LIKE scan.
+    # point query, not a search). '' = no BM25 hits → generic scan.
     if store == 'facts' and query:
         ranked = _brain_query_facts_ranked(query, filters, limit)
         if ranked:
             return ranked
     try:
-        tableCheck = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (info['table'],)
-        ).fetchone()
-        if not tableCheck:
-            return json.dumps({'error': f"store '{store}' table not yet created"})
-        cols = as_str(info['columns'])
-        sql = f'SELECT {cols} FROM {info["table"]}'
-        params: list[object] = []
-        whereClauses: list[str] = []
+        cols = [c.strip() for c in as_str(info['columns']).split(',') if c.strip()]
+        rows = _store_rows(store)
         if store == 'facts':
-            # M-2 union + Part 26 6.1: the LIKE fallback honors the SAME
+            # M-2 union + Part 26 6.1: the substring fallback honors the SAME
             # visibility policy as the ranked path and list/search — active,
             # unexpired, scope union. A bot never sees another bot's notes
             # (or a superseded/expired row) through a narrow query that
             # misses BM25.
             from app.services import session_scope as _ss
-            from app.services.memory_store.rest import _visibility_where
+            from app.services.memory_store.rest import _visible
 
-            visSql2, visParams2 = _visibility_where(_ss.resolve_scope())
-            whereClauses.append(visSql2)
-            params.extend(visParams2)
+            rows = [r for r in rows if _visible(r, _ss.resolve_scope())]
         if query:
-            fts = info.get('fts')
+            fts = bool(info.get('fts'))
+            search_cols = [str(c) for c in as_list(info['search_cols'])]
             if fts:
-                ftsQ = _fts_match_query(query)
-                if ftsQ:
-                    qualifiedCols = ', '.join((f't.{c.strip()}' for c in cols.split(',')))
-                    # Table-level MATCH must use the FTS table name (not alias alone).
-                    # Column-level fts.content is wrong for memory_store_fts (key,value).
-                    sql = (
-                        f'SELECT {qualifiedCols} FROM {fts} AS fts '
-                        f'JOIN {info["table"]} AS t ON fts.rowid = t.rowid '
-                        f'WHERE {fts} MATCH ?'
-                    )
-                    params = [ftsQ]
-                else:
-                    whereClauses.append('1=0')
+                # The KV/messages matcher: term match over the search columns.
+                rows = [
+                    r for r in rows
+                    if any(fts_match(str(r.get(c) or ''), query) for c in search_cols)
+                ]
             else:
-                searchParts = []
-                for col in as_list(info['search_cols']):
-                    searchParts.append(f'{col} LIKE ?')
-                    params.append(f'%{query}%')
-                whereClauses.append(f'({" OR ".join(searchParts)})')
+                needle = query.lower()
+                rows = [
+                    r for r in rows
+                    if any(needle in str(r.get(c) or '').lower() for c in search_cols)
+                ]
         if filters:
             # Accept camelCase filter keys (wire) by converting to snake for columns
-            colInfo = conn.execute(f'PRAGMA table_info({info["table"]})').fetchall()
-            colNames = {c['name'] for c in colInfo}
+            rowKeys = set(rows[0].keys()) if rows else set()
             for key, val in filters.items():
                 snake_key = key
-                if key not in colNames:
+                if key not in rowKeys:
                     converted = camelToSnake({key: val})
                     if isinstance(converted, dict) and converted:
                         snake_key = next(iter(converted.keys()))
-                if snake_key in colNames:
-                    whereClauses.append(f'{snake_key} = ?')
-                    params.append(val)
-        if whereClauses:
-            if 'MATCH' in sql:
-                # FTS branch: filters append with AND before ORDER BY — the
-                # old code dropped them (with their params) here, so every
-                # tagged FTS query crashed with a bindings mismatch (audit
-                # finding).
-                sql += ' AND ' + ' AND '.join(whereClauses) + ' ORDER BY rank'
-            elif 'WHERE' in sql:
-                sql += ' AND ' + ' AND '.join(whereClauses)
-            else:
-                sql += ' WHERE ' + ' AND '.join(whereClauses)
-        elif 'MATCH' in sql:
-            sql += ' ORDER BY rank'
+                rows = [
+                    r for r in rows
+                    if (snake_key if snake_key in rowKeys else key) in r
+                    and str(r.get(snake_key if snake_key in rowKeys else key)) == str(val)
+                ]
         cap = max(1, min(limit, 100))
-        # Count query over the same FROM/WHERE (no select list, no ORDER BY)
-        # so a result set that exactly fills ``cap`` can report its total —
-        # without this a default-limit listing silently hides further rows.
-        count_sql = 'SELECT COUNT(*)' + sql[sql.index(' FROM '):]
-        order_at = count_sql.rfind(' ORDER BY ')
-        if order_at != -1:
-            count_sql = count_sql[:order_at]
-        sql += f' LIMIT {cap}'
-        rows = conn.execute(sql, params).fetchall()
+        # Newest first: the SQL era ordered by rowid DESC — insertion order
+        # reversed, which the file stores preserve natively.
+        rows = list(reversed(rows[-cap:])) if len(rows) > cap else list(reversed(rows))
         total: int | None = None
         if len(rows) >= cap:
-            try:
-                total = int(conn.execute(count_sql, params).fetchone()[0])
-            except Exception:
-                total = None
-        results = [_row_as_wire(r) for r in rows]
+            total = None  # the file stores carry no cheap total past the cap
+        results = [_project(r, cols) for r in rows]
+        results = [_row_as_wire(r) for r in results]
         resultJson = json.dumps(results, default=str, ensure_ascii=False)
         if len(resultJson) > _TOKENCeiling * 4:
             truncated: list[dict[str, object]] = []
@@ -530,33 +593,23 @@ def brain_query(store: str, query: str = '', filters: dict | None = None, limit:
 
 
 def brain_store_summary() -> list[dict[str, object]]:
-    """Per-store counts for the settings Memory page (read-only).
-
-    Stores whose table no longer exists (e.g. learned_heuristics after the
-    empty-legacy drop) are omitted rather than shown with a phantom zero.
-    """
-    conn = _conn()
+    """Per-store counts for the settings Memory page (read-only)."""
     out: list[dict[str, object]] = []
     for name, info in _BRAINStores.items():
-        table = as_str(info['table'])
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)
-            ).fetchone()
-            if exists is None:
-                continue
+            rows = _store_rows(name)
             # The `memory` (KV) count must match what
             # brain_browse('memory') returns — both exclude machine-state keys
             # (agent_registry, diff_learn:*, …). Otherwise /api/brain/stores
             # shows a count the per-store browse can never page to.
             if name == 'memory':
-                where, kvParams = _kv_notes_where()
-                row = conn.execute(f'SELECT COUNT(*) FROM {table} {where}', kvParams).fetchone()
+                count = sum(
+                    1 for r in rows if not _is_machine_kv_key(str(r.get('key') or ''))
+                )
             else:
-                row = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()
-            count = int(row[0]) if row else 0
+                count = len(rows)
         except Exception:
-            count = 0  # table not created yet on this install
+            count = 0  # store not created yet on this install
         out.append({'name': name, 'label': as_str(info.get('label')), 'count': count})
     return out
 
@@ -564,13 +617,14 @@ def brain_store_summary() -> list[dict[str, object]]:
 def _readable_value(raw: object) -> object:
     """Unwrap one stored-text column for the human browse door.
 
-    ``save_fact``/``save_internal`` JSON-encode their value, so the column of a
-    plain sentence is the eight-characters-longer ``"\\"a sentence\\""``. The
-    boot index decodes it (``brain_index_snippet``); browse used to hand the
-    quoting straight to the Memory page, which both displayed it and — because
-    the edit field round-trips what it was shown — added another layer on every
-    save. Only a JSON *string* unwraps: an object value stays verbatim rather
-    than being rendered as ``[object Object]`` in the row that edits it."""
+    ``save_fact``/``save_internal`` JSON-encode their value, so the stored
+    text of a plain sentence is the eight-characters-longer
+    ``"\\\"a sentence\\\"\"``. The boot index decodes it
+    (``brain_index_snippet``); browse used to hand the quoting straight to the
+    Memory page, which both displayed it and — because the edit field
+    round-trips what it was shown — added another layer on every save. Only a
+    JSON *string* unwraps: an object value stays verbatim rather than being
+    rendered as ``[object Object]`` in the row that edits it."""
     if not isinstance(raw, str) or not raw.startswith('"'):
         return raw
     try:
@@ -580,7 +634,7 @@ def _readable_value(raw: object) -> object:
     return decoded if isinstance(decoded, str) else raw
 
 
-def _browse_wire(row: sqlite3.Row) -> dict[str, object]:
+def _browse_wire(row: dict[str, object]) -> dict[str, object]:
     wire = _row_as_wire(row)
     for field in ('factValue', 'value'):
         if field in wire:
@@ -607,7 +661,7 @@ def brain_browse(
     August stores. Read-only; unknown stores return an error dict.
 
     Part 17 Phase C: ``sort`` (newest|oldest|updated|confidence) picks the
-    ORDER BY; ``category``/``source``/``confidence`` are server-side
+    order; ``category``/``source``/``confidence`` are server-side
     equality filters (gap 3-4) so filtering works past the fetch cap.
     Part 26 6.7: optional ``scope`` equality filter (the UI lists all
     scopes by design — the human door — but a per-scope view was
@@ -617,88 +671,78 @@ def brain_browse(
     on the card could only be counted off the fetched page, which is a claim
     about a window and not about the store.
     """
-    conn = _conn()
     resolved = _resolve_store(store)
     if resolved not in _BRAINStores:
         return {'error': f"store '{store}' not available", 'rows': [], 'total': 0}
     info = _BRAINStores[resolved]
-    table = as_str(info['table'])
-    cols = as_str(info['columns'])
+    cols = [c.strip() for c in as_str(info['columns']).split(',') if c.strip()]
     lim = max(1, min(int(limit), 200))
     off = max(0, int(offset))
     try:
-        tableCheck = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
-        ).fetchone()
-        if not tableCheck:
-            return {'store': resolved, 'rows': [], 'total': 0, 'limit': lim, 'offset': off}
-        whereParts: list[str] = []
-        params: list[object] = []
-        colInfo = conn.execute(f'PRAGMA table_info({table})').fetchall()
-        colNames = {c['name'] for c in colInfo}
+        rows = _store_rows(resolved)
         # Machine-state KV keys never render in the human-facing
         # Memories browse — the registry roster and diff-learn cursors are
         # app plumbing, not notes about the user. They stay reachable via
         # Raw state lookup (GET /api/brain/state-lookup).
-        if resolved == 'memory' and 'key' in colNames:
-            whereParts.append(
-                'key NOT IN (' + ','.join('?' * len(_KV_MACHINE_KEYS)) + ') '
-                "AND " + ' AND '.join("key NOT LIKE ?" for _ in _KV_MACHINE_PREFIXES)
-            )
-            params.extend(_KV_MACHINE_KEYS)
-            params.extend(f'{p}%' for p in _KV_MACHINE_PREFIXES)
+        if resolved == 'memory':
+            rows = [r for r in rows if not _is_machine_kv_key(str(r.get('key') or ''))]
         scopeVal = (scope or '').strip()
-        if scopeVal and 'scope' in colNames:
-            whereParts.append(
-                "(scope IS NULL AND ? = 'global') OR (scope = ?) OR (scope = '' AND ? = 'global')"
-            )
-            params.extend([scopeVal, scopeVal, scopeVal])
+        if scopeVal and resolved == 'facts':
+            rows = [
+                r for r in rows
+                if str(r.get('scope') or 'global') == scopeVal
+                or (scopeVal == 'global' and not r.get('scope'))
+            ]
         q = (query or '').strip()
         if q:
-            searchCols = as_list(info['search_cols'])
-            if searchCols:
-                whereParts.append(' OR '.join(f'{col} LIKE ?' for col in searchCols))
-                params.extend([f'%{q}%'] * len(searchCols))
-        # Server-side equality filters (only columns the table actually has,
-        # so a filter on one store never 500s another).
-        for key, val in (('category', category), ('source', source), ('confidence', confidence), ('status', status)):
+            searchCols = [str(c) for c in as_list(info['search_cols'])]
+            needle = q.lower()
+            rows = [
+                r for r in rows
+                if any(needle in str(r.get(c) or '').lower() for c in searchCols)
+            ]
+        # Server-side equality filters.
+        for key, val in (('category', category), ('source', source), ('status', status)):
             v = (val or '').strip()
             if not v:
                 continue
-            if key == 'confidence':
-                # Confidence is a REAL column — low/medium/high are
-                # range buckets, not equality matches (equality against the
-                # word can never hit a number).
-                if v not in ('low', 'medium', 'high') or 'confidence' not in colNames:
-                    continue  # free-text confidence stays unfiltered, not a 500
-                whereParts.append('CAST(confidence AS REAL) < ?' if v == 'low' else
-                                  'CAST(confidence AS REAL) >= ? AND CAST(confidence AS REAL) < ?'
-                                  if v == 'medium' else 'CAST(confidence AS REAL) >= ?')
-                params.extend([0.5] if v == 'low' else [0.5, 0.8] if v == 'medium' else [0.8])
-                continue
-            if key in colNames:
-                whereParts.append(f'{key} = ?')
-                params.append(v)
-        where = (' WHERE ' + ' AND '.join(f'({p})' for p in whereParts)) if whereParts else ''
-        total = int(conn.execute(f'SELECT COUNT(*) FROM {table}{where}', params).fetchone()[0])
-        # Sort control (gap 4). Newest/oldest ride the rowid; updated/confidence
-        # fall back to rowid when the column is missing on this store.
-        order = ' ORDER BY rowid DESC'
+            rows = [r for r in rows if str(r.get(key) or '') == v]
+        confVal = (confidence or '').strip()
+        if confVal in ('low', 'medium', 'high') and resolved == 'facts':
+            def _conf(r: dict[str, object]) -> float:
+                try:
+                    return float(str(r.get('confidence') or 0.0))
+                except (TypeError, ValueError):
+                    return 0.0
+
+            if confVal == 'low':
+                rows = [r for r in rows if _conf(r) < 0.5]
+            elif confVal == 'medium':
+                rows = [r for r in rows if 0.5 <= _conf(r) < 0.8]
+            else:
+                rows = [r for r in rows if _conf(r) >= 0.8]
+        total = len(rows)
+        # Sort control (gap 4). Newest/oldest ride the insertion order; the
+        # stores that carry no updated_at fall back to it.
         s = (sort or '').strip().lower()
         if s == 'oldest':
-            order = ' ORDER BY rowid ASC'
-        elif s == 'updated' and 'updated_at' in colNames:
-            order = ' ORDER BY updated_at DESC'
-        elif s == 'confidence' and 'confidence' in colNames:
-            order = ' ORDER BY CAST(confidence AS REAL) DESC'
-        rows = conn.execute(
-            f'SELECT {cols} FROM {table}{where}{order} LIMIT ? OFFSET ?',
-            [*params, lim, off],
-        ).fetchall()
+            rows = list(rows)
+        elif s == 'updated':
+            rows = sorted(rows, key=lambda r: str(r.get('updated_at') or ''), reverse=True)
+        elif s == 'confidence':
+            rows = sorted(
+                rows,
+                key=lambda r: float(str(r.get('confidence') or 0.0)) if isinstance(r.get('confidence'), (int, float)) else 0.0,
+                reverse=True,
+            )
+        else:
+            # Newest first = insertion order reversed (the rowid DESC order).
+            rows = list(reversed(rows))
+        page = rows[off : off + lim]
         return {
             'store': resolved,
             'label': as_str(info.get('label')),
-            'rows': [_browse_wire(r) for r in rows],
+            'rows': [_browse_wire(_project(r, cols)) for r in page],
             'total': total,
             'limit': lim,
             'offset': off,
@@ -752,36 +796,22 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
     """
     import json as _json
 
+    from app.services.memory_store import kv
+    from app.services.memory_store.rest import _visible
     from app.services.session_scope import GLOBAL_SCOPE, normalize_scope
 
-    conn = _conn()
     lines: list[str] = []
     s = normalize_scope(scope)
-    if s == GLOBAL_SCOPE:
-        scopeClause = "AND (scope IS NULL OR scope = 'global')"
-        scopeParams: tuple[object, ...] = ()
-    else:
-        scopeClause = "AND (scope IS NULL OR scope = 'global' OR scope = ?)"
-        scopeParams = (s,)
-    _vis = (
-        "(expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday('now')) "
-        "AND (status IS NULL OR status = 'active')"
-    )
     _cats = [c.strip().lower() for c in str(categories or '').split(',') if c.strip()]
-    catClause = ''
-    catParams: tuple[object, ...] = ()
-    if _cats:
-        catClause = ' AND category IN (' + ','.join('?' * len(_cats)) + ')'
-        catParams = tuple(_cats)
     try:
-        factRows = conn.execute(
-            "SELECT fact_key, title, category, description, fact_value, "
-            "COALESCE(aliases, '[]') AS aliases, COALESCE(sensitive, 0) AS sensitive, "
-            "COALESCE(subject_type, '') AS subject_type FROM facts "
-            f"WHERE {_vis} {scopeClause} {catClause} "
-            "ORDER BY updated_at DESC LIMIT 40",
-            scopeParams + catParams,
-        ).fetchall()
+        factRows = [
+            r for r in record.load_facts()
+            if _visible(r, s)
+            and (not _cats or str(r.get('category') or '').lower() in _cats)
+        ]
+        # ORDER BY updated_at DESC — the same selection order as the SQL.
+        factRows.sort(key=lambda r: str(r.get('updated_at') or ''), reverse=True)
+        factRows = factRows[:40]
         if factRows:
             lines.append('Facts:')
             for r in factRows:
@@ -790,18 +820,18 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
                 # turns included, and a derived title carries the fact's own
                 # text. Explicit reads (brain_query / list_facts) still return
                 # them when the user raises them.
-                if int(r['sensitive'] or 0) or str(r['subject_type'] or '') == 'person':
+                if as_int(r.get('sensitive'), 0) or str(r.get('subject_type') or '') == 'person':
                     continue
                 if sensitiveMemoryReason(
-                    str(r['title'] or ''), str(r['fact_key'] or ''),
-                    str(r['description'] or ''), str(r['fact_value'] or ''),
+                    str(r.get('title') or ''), str(r.get('fact_key') or ''),
+                    str(r.get('description') or ''), str(r.get('fact_value') or ''),
                 ):
                     continue
-                label = str(r['title'] or '').strip() or str(r['fact_key'])
-                hook = ' '.join(str(r['description'] or '').split())
+                label = str(r.get('title') or '').strip() or str(r.get('fact_key'))
+                hook = ' '.join(str(r.get('description') or '').split())
                 if not hook:
                     # No explicit description — first clause of the fact text.
-                    raw = str(r['fact_value'] or '')
+                    raw = str(r.get('fact_value') or '')
                     try:
                         obj = _json.loads(raw)
                         if isinstance(obj, dict):
@@ -814,23 +844,26 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
                 # Item 8: the index line is a SLUG, a <=150-char description,
                 # and its aliases — not the whole recall hook.
                 hook = hook[:150].rstrip()
-                line = f"  - {label} ({r['fact_key']})"
+                line = f"  - {label} ({r.get('fact_key')})"
                 if hook:
                     line += f' — {hook}'
                 try:
-                    _aliases = _json.loads(str(r['aliases'] or '[]'))
+                    _aliases = _json.loads(str(r.get('aliases') or '[]'))
                 except (json.JSONDecodeError, TypeError):
                     _aliases = []
                 if isinstance(_aliases, list) and _aliases:
                     line += ' [aliases: ' + ', '.join(str(a) for a in _aliases[:4]) + ']'
                 lines.append(line)
             try:
-                total = conn.execute(
-                    f"SELECT COUNT(*) FROM facts WHERE {_vis} {scopeClause} {catClause} "
-                    "AND COALESCE(sensitive, 0) = 0 AND COALESCE(subject_type, '') != 'person'",
-                    scopeParams + catParams,
-                ).fetchone()[0]
-                if total and total > len(factRows):
+                total = sum(
+                    1
+                    for r in record.load_facts()
+                    if _visible(r, s)
+                    and (not _cats or str(r.get('category') or '').lower() in _cats)
+                    and as_int(r.get('sensitive'), 0) == 0
+                    and str(r.get('subject_type') or '') != 'person'
+                )
+                if total > len(factRows):
                     lines.append(f'  … +{total - len(factRows)} more (brain_query store=facts)')
             except Exception:
                 pass
@@ -841,46 +874,41 @@ def brain_index_snippet(scope: str = 'global', categories: str = '') -> str:
         # touches this store, so without this lane the model was blind to
         # everything the user filed by hand. Newest first, ten keys, machine
         # keys excluded by the same rule the browse door uses.
-        where, noteParams = _kv_notes_where()
-        noteRows = conn.execute(
-            f'SELECT key, value FROM memory_store {where} ORDER BY updated_at DESC LIMIT 10',
-            noteParams,
-        ).fetchall()
+        noteRows = [
+            r for r in kv.kv_rows()
+            if not _is_machine_kv_key(str(r.get('key') or ''))
+        ]
+        noteRows.sort(key=lambda r: str(r.get('updated_at') or ''), reverse=True)
         if noteRows:
             lines.append('Notes:')
-            for r in noteRows:
-                hook = _kv_note_hook(r['value'])
-                line = f"  - {r['key']}"
+            for r in noteRows[:10]:
+                hook = _kv_note_hook(r.get('value'))
+                line = f"  - {r.get('key')}"
                 if hook:
                     line += f' — {hook}'
                 lines.append(line)
-            try:
-                total = int(
-                    conn.execute(
-                        f'SELECT COUNT(*) FROM memory_store {where}', noteParams
-                    ).fetchone()[0]
+            if len(noteRows) > 10:
+                lines.append(
+                    f'  … +{len(noteRows) - 10} more (brain_query store=memory)'
                 )
-                if total > len(noteRows):
-                    lines.append(
-                        f'  … +{total - len(noteRows)} more (brain_query store=memory)'
-                    )
-            except Exception:
-                pass
     except Exception:
         pass
     try:
         # Part 27 T1 (privacy): fence the timeline by the same global∪scope
         # clause the facts half uses, so a Bot's private last-user-message
         # never rides into an unrelated session's boot index.
-        tlRows = conn.execute(
-            f'SELECT event_summary FROM episodic_timeline WHERE 1=1 {scopeClause} '
-            'ORDER BY timestamp DESC LIMIT 5',
-            scopeParams,
-        ).fetchall()
+        tlRows = [
+            r for r in tables.load_rows(tables.timeline_file())
+            if str(r.get('scope') or 'global') == s
+            or (s == GLOBAL_SCOPE and str(r.get('scope') or 'global') == 'global')
+            or (s != GLOBAL_SCOPE and str(r.get('scope') or 'global') == 'global')
+        ]
+        tlRows.sort(key=lambda r: str(r.get('timestamp') or ''), reverse=True)
+        tlRows = tlRows[:5]
         if tlRows:
             lines.append('Recent events:')
             for r in tlRows:
-                summary = str(r['event_summary'] or '').strip()
+                summary = str(r.get('event_summary') or '').strip()
                 if summary:
                     lines.append(f'  {summary[:160]}')
     except Exception:
@@ -942,16 +970,19 @@ def fact_history(row_id: object) -> dict[str, object]:
 
     The rollback log IS the history system (a snapshot is taken before every
     model/UI overwrite); this projects the entries for one key instead of
-    adding a second table. Newest first, bounded.
+    adding a second store. Newest first, bounded.
     """
-    conn = _conn()
     try:
-        row = conn.execute('SELECT fact_key FROM facts WHERE id = ?', (row_id,)).fetchone()
-    except sqlite3.Error as exc:
-        return {'ok': False, 'error': str(exc)}
-    if row is None:
+        wanted_id = as_int(row_id, -1)
+    except (TypeError, ValueError):
+        return {'ok': False, 'error': 'row id must be an integer'}
+    target = next(
+        (r for r in record.load_facts() if as_int(r.get('id'), 0) == wanted_id),
+        None,
+    )
+    if target is None:
         return {'ok': False, 'error': 'row not found'}
-    key = str(row['fact_key'] or '')
+    key = str(target.get('fact_key') or '')
     from app.services.rollback_store import list_entries
 
     targets = {key, f'facts:{key}'}
@@ -988,51 +1019,6 @@ def _record_row_rollback(store: str, target: str, before: object, after: object)
         pass
 
 
-def brain_delete_row(store: str, row_id: object) -> dict[str, object]:
-    """Delete one row from a brain store for the settings UI (B5).
-
-    FTS-safe: memory_store carries AFTER DELETE sync triggers;
-    facts/timeline have no FTS table.
-    """
-    conn = _conn()
-    resolved = _resolve_store(store)
-    if resolved not in _ROW_DELETABLE or resolved not in _BRAINStores:
-        return {'ok': False, 'error': f"store '{store}' does not support per-entry delete"}
-    info = _BRAINStores[resolved]
-    table = as_str(info['table'])
-    idCol = _store_id_column(resolved)
-    try:
-        before = conn.execute(f'SELECT * FROM {table} WHERE {idCol} = ?', (row_id,)).fetchone()
-        if before is None:
-            return {'ok': False, 'error': 'row not found'}
-        beforeWire = _row_as_wire(before)
-        # M-3: deleting a fact that REPLACED others brings those others back
-        # first. A superseded row is kept, not deleted — so without this it
-        # would stay parked against a winner that no longer exists, and the
-        # content it holds would be invisible to recall and to this list.
-        restored: list[str] = []
-        if resolved == 'facts':
-            try:
-                factKey = str(beforeWire.get('factKey') or '')
-                if factKey:
-                    from app.services.memory_store.rest import restore_superseded_losers
-
-                    restored = restore_superseded_losers(factKey)
-            except Exception:
-                restored = []
-        cursor = conn.execute(f'DELETE FROM {table} WHERE {idCol} = ?', (row_id,))
-        brain_commit(conn)
-        if cursor.rowcount > 0:
-            _record_row_rollback(resolved, str(row_id), beforeWire, None)
-            _invalidate_fact_cache_if_facts(resolved)  # 2.6 (Part 25)
-        out: dict[str, object] = {'ok': cursor.rowcount > 0, 'store': resolved}
-        if restored:
-            out['restoredSuperseded'] = restored
-        return out
-    except Exception as exc:
-        return {'ok': False, 'error': f'brain_delete_row({store}): {exc}'}
-
-
 def _invalidate_fact_cache_if_facts(resolved: str) -> None:
     """2.6: a Settings-UI edit/delete of a fact must drop the cached
     BM25 corpus, or the stale row keeps being injected until an unrelated
@@ -1047,13 +1033,82 @@ def _invalidate_fact_cache_if_facts(resolved: str) -> None:
         pass
 
 
+def brain_delete_row(store: str, row_id: object) -> dict[str, object]:
+    """Delete one row from a brain store for the settings UI (B5)."""
+    resolved = _resolve_store(store)
+    if resolved not in _ROW_DELETABLE or resolved not in _BRAINStores:
+        return {'ok': False, 'error': f"store '{store}' does not support per-entry delete"}
+    try:
+        if resolved == 'facts':
+            target = next(
+                (r for r in record.load_facts() if as_int(r.get('id'), 0) == as_int(row_id, -1)),
+                None,
+            )
+            if target is None:
+                return {'ok': False, 'error': 'row not found'}
+            beforeWire: dict[str, object] | None = _row_as_wire(_project(target, [
+                c.strip() for c in as_str(_BRAINStores['facts']['columns']).split(',')
+            ]))
+            # M-3: deleting a fact that REPLACED others brings those others back
+            # first. A superseded row is kept, not deleted — so without this it
+            # would stay parked against a winner that no longer exists, and the
+            # content it holds would be invisible to recall and to this list.
+            restored: list[str] = []
+            try:
+                factKey = str(target.get('fact_key') or '')
+                if factKey:
+                    from app.services.memory_store.rest import delete_fact, restore_superseded_losers
+
+                    restored = restore_superseded_losers(factKey)
+                    ok = delete_fact(factKey)
+                else:
+                    ok = False
+            except Exception:
+                restored = []
+                ok = False
+            if ok:
+                _record_row_rollback(resolved, str(row_id), beforeWire, None)
+                _invalidate_fact_cache_if_facts(resolved)
+            out: dict[str, object] = {'ok': ok, 'store': resolved}
+            if restored:
+                out['restoredSuperseded'] = restored
+            return out
+        if resolved == 'memory':
+            from app.services.memory_store.kv import delete_memory
+
+            key = str(row_id or '')
+            before = next(
+                (r for r in tables.load_rows(tables.kv_file()) if str(r.get('key') or '') == key),
+                None,
+            )
+            ok = delete_memory(key)
+            if ok:
+                _record_row_rollback(resolved, key, _row_as_wire(before) if before else None, None)
+            return {'ok': ok, 'store': resolved}
+        # timeline
+        path = tables.timeline_file()
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            before = next(
+                (r for r in rows if as_int(r.get('id'), 0) == as_int(row_id, -1)),
+                None,
+            )
+            if before is None:
+                return {'ok': False, 'error': 'row not found'}
+            beforeWire = _row_as_wire(before)  # type: ignore[assignment]
+            tables.save_rows(path, [r for r in rows if r is not before])
+        _record_row_rollback(resolved, str(row_id), beforeWire, None)
+        return {'ok': True, 'store': resolved}
+    except Exception as exc:
+        return {'ok': False, 'error': f'brain_delete_row({store}): {exc}'}
+
+
 def brain_update_row(store: str, row_id: object, patch: dict[str, object]) -> dict[str, object]:
     """Update whitelisted fields of one brain-store row for the settings UI (B5).
 
     Only fields in the per-store whitelist are applied; unknown or read-only
     fields are ignored.
     """
-    conn = _conn()
     resolved = _resolve_store(store)
     # `status` is whitelisted for exactly one direction: LIFTING retirement.
     # Consolidation's proposal flow stays the only writer of 'retired' /
@@ -1063,7 +1118,7 @@ def brain_update_row(store: str, row_id: object, patch: dict[str, object]) -> di
         # Normalise BEFORE the check and write the normalised value, so the
         # string tested is the string stored. Stripping only inside the guard
         # let {'status': ' active '} through the door and into the row, where
-        # both `_visibility_where` (`status = 'active'`) and the UI badge miss
+        # both the visibility test (`status = 'active'`) and the UI badge miss
         # it: the toast said "Entry restored — it is recalled again" while the
         # fact stayed parked. Lowercasing closes the same hole for 'RETIRED',
         # which now falls into the refusal instead of storing a fourth value.
@@ -1081,43 +1136,78 @@ def brain_update_row(store: str, row_id: object, patch: dict[str, object]) -> di
     allowed = _ROW_EDIT_FIELDS.get(resolved)
     if allowed is None or resolved not in _BRAINStores:
         return {'ok': False, 'error': f"store '{store}' does not support per-entry edit"}
-    info = _BRAINStores[resolved]
-    table = as_str(info['table'])
-    idCol = _store_id_column(resolved)
     try:
-        colNames = {c['name'] for c in conn.execute(f'PRAGMA table_info({table})').fetchall()}
-        sets: list[str] = []
-        params: list[object] = []
-        for key, val in (patch or {}).items():
-            if key in allowed and key in colNames:
-                sets.append(f'{key} = ?')
-                params.append(val)
-        if not sets:
+        if resolved == 'facts':
+            target = next(
+                (r for r in record.load_facts() if as_int(r.get('id'), 0) == as_int(row_id, -1)),
+                None,
+            )
+            if target is None:
+                return {'ok': False, 'error': 'row not found'}
+            sets = {k: v for k, v in (patch or {}).items() if k in allowed}
+            if not sets:
+                return {'ok': False, 'error': 'no writable fields in patch'}
+            # M-3: a row that is ACTIVE again is neither superseded nor in
+            # conflict, so lifting its status lifts the lineage with it. Leaving
+            # `superseded_by` pointing at the fact that replaced it would make a
+            # restored row claim a parent it no longer has.
+            if str(sets.get('status') or '').strip().lower() == 'active':
+                sets.setdefault('superseded_by', '')
+                sets.setdefault('contradicts', '')
+            cols = [c.strip() for c in as_str(_BRAINStores['facts']['columns']).split(',')]
+            beforeWire = _row_as_wire(_project(target, cols))
+            row = dict(target)
+            row.update(sets)
+            # Bump updated_at so edited entries re-sort to the top of recency views.
+            if 'updated_at' not in sets:
+                row['updated_at'] = utc_now_text()
+            # A fact_value edit is a value TEXT patch — the file body stores it
+            # JSON-encoded exactly as delivered, byte for byte.
+            record.write_fact_file(row)
+            afterWire = _row_as_wire(_project(row, cols))
+            _record_row_rollback(resolved, str(row_id), beforeWire, afterWire)
+            _invalidate_fact_cache_if_facts(resolved)
+            return {'ok': True, 'store': resolved, 'row': afterWire}
+        if resolved == 'memory':
+            if 'value' not in (patch or {}):
+                return {'ok': False, 'error': 'no writable fields in patch'}
+            from app.services.memory_store.kv import save_internal
+
+            key = str(row_id or '')
+            path = tables.kv_file()
+            with tables.store_lock(str(path)):
+                before_row = next(
+                    (r for r in tables.load_rows(path) if str(r.get('key') or '') == key),
+                    None,
+                )
+            beforeWire = _row_as_wire(before_row) if before_row else None  # type: ignore[assignment]
+            save_internal(key, cast(JsonValue, patch.get('value')))
+            with tables.store_lock(str(path)):
+                after_row = next(
+                    (r for r in tables.load_rows(path) if str(r.get('key') or '') == key),
+                    None,
+                )
+            afterWire = _row_as_wire(after_row) if after_row else None  # type: ignore[assignment]
+            _record_row_rollback(resolved, key, beforeWire, afterWire)
+            return {'ok': True, 'store': resolved, 'row': afterWire}
+        # timeline
+        allowed_tl = {'event_summary', 'category'} & set(patch or {})
+        if not allowed_tl:
             return {'ok': False, 'error': 'no writable fields in patch'}
-        # M-3: a row that is ACTIVE again is neither superseded nor in
-        # conflict, so lifting its status lifts the lineage with it. Leaving
-        # `superseded_by` pointing at the fact that replaced it would make a
-        # restored row claim a parent it no longer has.
-        if resolved == 'facts' and str(patch.get('status') or '').strip().lower() == 'active':
-            for col in ('superseded_by', 'contradicts'):
-                if col in colNames and col not in {s.split(' = ')[0] for s in sets}:
-                    sets.append(f'{col} = NULL')
-        before = conn.execute(f'SELECT * FROM {table} WHERE {idCol} = ?', (row_id,)).fetchone()
-        if before is None:
-            return {'ok': False, 'error': 'row not found'}
-        beforeWire = _row_as_wire(before)
-        # Bump updated_at so edited entries re-sort to the top of recency views.
-        if 'updated_at' in colNames and 'updated_at' not in {s.split(' = ')[0] for s in sets}:
-            sets.append('updated_at = ?')
-            params.append(utc_now_text())
-        conn.execute(f"UPDATE {table} SET {', '.join(sets)} WHERE {idCol} = ?", (*params, row_id))
-        brain_commit(conn)
-        after = conn.execute(f'SELECT * FROM {table} WHERE {idCol} = ?', (row_id,)).fetchone()
-        afterWire = _row_as_wire(after) if after is not None else None
+        path = tables.timeline_file()
+        with tables.store_lock(str(path)):
+            rows = tables.load_rows(path)
+            target = next(
+                (r for r in rows if as_int(r.get('id'), 0) == as_int(row_id, -1)),
+                None,
+            )
+            if target is None:
+                return {'ok': False, 'error': 'row not found'}
+            beforeWire = _row_as_wire(target)
+            target.update({k: patch[k] for k in allowed_tl})
+            tables.save_rows(path, rows)
+            afterWire = _row_as_wire(target)
         _record_row_rollback(resolved, str(row_id), beforeWire, afterWire)
-        _invalidate_fact_cache_if_facts(resolved)  # 2.6 (Part 25)
         return {'ok': True, 'store': resolved, 'row': afterWire}
     except Exception as exc:
         return {'ok': False, 'error': f'brain_update_row({store}): {exc}'}
-
-

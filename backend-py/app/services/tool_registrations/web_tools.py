@@ -298,19 +298,18 @@ def _urlProvenance(url: str) -> str:
         if target in _searchSuppliedUrls.get(sessionId, ()):
             return 'search'
     try:
-        from app.services.memory_conn import conn as _conn
+        from app.services.memory_store import get_messages
 
-        rows = _conn().execute(
-            'SELECT content FROM messages WHERE role = ? AND session_id = ?'
-            ' ORDER BY id DESC LIMIT ?',
-            ('user', sessionId, _PROVENANCE_SCAN_MESSAGES),
-        ).fetchall()
+        msgs = get_messages(sessionId, limit=_PROVENANCE_SCAN_MESSAGES)
+        # get_messages reads oldest-first; the provenance scan wants the NEWEST
+        # user messages, so walk the tail.
+        rows = [m for m in msgs if str(m.get('role') or '') == 'user'][-_PROVENANCE_SCAN_MESSAGES:]
     except Exception:
         # No transcript (a sub-agent with no session, a fresh install) is not
         # evidence that the model invented the URL — say `unseen`, never raise.
         rows = []
     for row in rows:
-        if target in {_normUrl(m) for m in _URL_IN_TEXT_RE.findall(as_str(row['content'], ''))}:
+        if target in {_normUrl(m) for m in _URL_IN_TEXT_RE.findall(as_str(row.get('content'), ''))}:
             return 'user'
     return 'unseen'
 

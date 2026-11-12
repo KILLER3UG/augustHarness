@@ -4,6 +4,10 @@ A workstream is a persistent named work item. Each worker run appends one
 episode (structured handoff) and discards its execution transcript. Later
 workers on the same stream receive prior episodes, not tool traces.
 
+The ``workstreams`` / ``workstream_episodes`` tables became one JSON state
+file, ``<dataDir>/state/workstreams.json`` — keyed by sessionId, then
+workstream name, each carrying its integer id and ordered episode list.
+
 Also validates spawn batches as DAGs (dependsOn / same-batch source streams).
 """
 
@@ -12,10 +16,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+from pathlib import Path
 from typing import Any
 
 from app.json_narrowing import as_list, as_str
-from app.services.memory_conn import commit as brain_commit
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,42 @@ DEFAULT_EPISODE_SCHEMA: dict[str, Any] = {
 }
 
 _NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$')
+
+_FILE = 'workstreams.json'
+_LOCK = threading.RLock()
+
+
+def _path() -> Path:
+    return home(STATE_DIR) / _FILE
+
+
+def _load() -> dict[str, dict[str, dict[str, Any]]]:
+    raw = read_json(_path(), default={})
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    if isinstance(raw, dict):
+        for sid, streams in raw.items():
+            if isinstance(sid, str) and isinstance(streams, dict):
+                clean = {n: s for n, s in streams.items() if isinstance(n, str) and isinstance(s, dict)}
+                if clean:
+                    out[sid] = clean
+    return out
+
+
+def _save(data: dict[str, dict[str, dict[str, Any]]]) -> None:
+    write_json(_path(), data)
+
+
+def _next_stream_id(data: dict[str, dict[str, dict[str, Any]]]) -> int:
+    best = 0
+    for streams in data.values():
+        for stream in streams.values():
+            try:
+                value = int(stream.get('id') or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > best:
+                best = value
+    return best + 1
 
 
 class WorkstreamError(ValueError):
@@ -116,27 +158,30 @@ def plan_waves(work_items: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     return waves
 
 
-def _conn():
-    from app.services.memory_store import _conn as mem_conn
+def _stamp() -> str:
+    import time
 
-    return mem_conn()
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())
 
 
 def ensure_workstream(session_id: str, name: str) -> int:
     name = normalize_name(name)
-    conn = _conn()
-    row = conn.execute(
-        'SELECT id FROM workstreams WHERE session_id = ? AND name = ?',
-        (session_id, name),
-    ).fetchone()
-    if row:
-        return int(row['id'])
-    cur = conn.execute(
-        'INSERT INTO workstreams (session_id, name) VALUES (?, ?)',
-        (session_id, name),
-    )
-    brain_commit(conn)
-    return int(cur.lastrowid)
+    with _LOCK:
+        data = _load()
+        streams = data.setdefault(session_id, {})
+        existing = streams.get(name)
+        if existing:
+            return int(existing.get('id') or 0)
+        ws_id = _next_stream_id(data)
+        streams[name] = {
+            'id': ws_id,
+            'name': name,
+            'created_at': _stamp(),
+            'updated_at': _stamp(),
+            'episodes': [],
+        }
+        _save(data)
+        return ws_id
 
 
 def append_episode(
@@ -150,25 +195,38 @@ def append_episode(
     next_action: str = '',
     raw_json: str = '',
 ) -> dict[str, Any]:
-    ws_id = ensure_workstream(session_id, name)
-    conn = _conn()
-    seq_row = conn.execute(
-        'SELECT COALESCE(MAX(seq), 0) AS m FROM workstream_episodes WHERE workstream_id = ?',
-        (ws_id,),
-    ).fetchone()
-    seq = int(seq_row['m'] if seq_row else 0) + 1
-    arts = json.dumps(artifacts or [], ensure_ascii=False)
-    conn.execute(
-        'INSERT INTO workstream_episodes '
-        '(workstream_id, seq, task_id, status, summary, artifacts, next_action, raw_json) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        (ws_id, seq, task_id, status, summary[:8000], arts, next_action[:2000], raw_json[:16000]),
-    )
-    conn.execute(
-        "UPDATE workstreams SET updated_at = datetime('now') WHERE id = ?",
-        (ws_id,),
-    )
-    brain_commit(conn)
+    with _LOCK:
+        name = normalize_name(name)
+        data = _load()
+        streams = data.setdefault(session_id, {})
+        stream = streams.get(name)
+        if not stream:
+            ws_id = _next_stream_id(data)
+            stream = {
+                'id': ws_id,
+                'name': name,
+                'created_at': _stamp(),
+                'updated_at': _stamp(),
+                'episodes': [],
+            }
+            streams[name] = stream
+        episodes: list[dict[str, Any]] = list(stream.get('episodes') or [])
+        seq = max((int(e.get('seq') or 0) for e in episodes), default=0) + 1
+        episodes.append(
+            {
+                'seq': seq,
+                'task_id': task_id,
+                'status': status,
+                'summary': summary[:8000],
+                'artifacts': json.dumps(artifacts or [], ensure_ascii=False),
+                'next_action': next_action[:2000],
+                'raw_json': raw_json[:16000],
+                'created_at': _stamp(),
+            }
+        )
+        stream['episodes'] = episodes
+        stream['updated_at'] = _stamp()
+        _save(data)
     return {
         'workstream': name,
         'seq': seq,
@@ -184,22 +242,15 @@ def list_episodes(session_id: str, name: str, *, limit: int = 20) -> list[dict[s
         name = normalize_name(name)
     except WorkstreamError:
         return []
-    conn = _conn()
-    row = conn.execute(
-        'SELECT id FROM workstreams WHERE session_id = ? AND name = ?',
-        (session_id, name),
-    ).fetchone()
-    if not row:
+    with _LOCK:
+        stream = _load().get(session_id, {}).get(name)
+    if not stream:
         return []
-    rows = conn.execute(
-        'SELECT seq, task_id, status, summary, artifacts, next_action, created_at, raw_json '
-        'FROM workstream_episodes WHERE workstream_id = ? ORDER BY seq ASC',
-        (int(row['id']),),
-    ).fetchall()
+    rows = list(stream.get('episodes') or [])
     out: list[dict[str, Any]] = []
     for r in rows[-limit:]:
         try:
-            arts = json.loads(r['artifacts'] or '[]')
+            arts = json.loads(str(r.get('artifacts') or '[]'))
         except Exception:
             arts = []
         skills: list[str] = []
@@ -207,7 +258,7 @@ def list_episodes(session_id: str, name: str, *, limit: int = 20) -> list[dict[s
         criteria_met = False
         auto_hop = False
         try:
-            raw = json.loads(r['raw_json'] or '{}')
+            raw = json.loads(str(r.get('raw_json') or '{}'))
             if isinstance(raw, dict):
                 skills = [str(s) for s in (raw.get('skills') or []) if s][:12]
                 unmet = as_str(raw.get('unmet'), '')
@@ -217,13 +268,13 @@ def list_episodes(session_id: str, name: str, *, limit: int = 20) -> list[dict[s
             pass
         out.append(
             {
-                'seq': int(r['seq']),
-                'taskId': r['task_id'] or '',
-                'status': r['status'] or '',
-                'summary': r['summary'] or '',
+                'seq': int(r.get('seq') or 0),
+                'taskId': str(r.get('task_id') or ''),
+                'status': str(r.get('status') or ''),
+                'summary': str(r.get('summary') or ''),
                 'artifacts': arts if isinstance(arts, list) else [],
-                'next': r['next_action'] or '',
-                'createdAt': r['created_at'] or '',
+                'next': str(r.get('next_action') or ''),
+                'createdAt': str(r.get('created_at') or ''),
                 'skills': skills,
                 'unmet': unmet,
                 'criteriaMet': criteria_met,
@@ -319,15 +370,25 @@ def weave_sources(session_id: str, source_names: list[str]) -> str:
     return '\n\n'.join(blocks)
 
 
+def list_session_ids() -> list[str]:
+    """Every session that owns at least one workstream.
+
+    Reader for the cross-session attention summary (harness_ops).
+    """
+    return list(_load().keys())
+
+
 def list_workstreams(session_id: str) -> list[dict[str, Any]]:
-    conn = _conn()
-    rows = conn.execute(
-        'SELECT name, updated_at FROM workstreams WHERE session_id = ? ORDER BY updated_at DESC',
-        (session_id,),
-    ).fetchall()
+    with _LOCK:
+        streams = _load().get(session_id, {})
+        rows = sorted(
+            streams.values(),
+            key=lambda s: str(s.get('updated_at') or ''),
+            reverse=True,
+        )
+        named = [(str(s.get('name') or ''), str(s.get('updated_at') or '')) for s in rows]
     out: list[dict[str, Any]] = []
-    for r in rows:
-        name = r['name']
+    for name, updated_at in named:
         ep = latest_episode(session_id, name)
         dirty = False
         if ep:
@@ -349,7 +410,7 @@ def list_workstreams(session_id: str) -> list[dict[str, Any]]:
         out.append(
             {
                 'name': name,
-                'updatedAt': r['updated_at'],
+                'updatedAt': updated_at,
                 'latest': ep,
                 'dirty': dirty,
                 'specialist': spec,

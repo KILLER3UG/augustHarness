@@ -8,6 +8,10 @@ Trigger grammar (plain text, matched case-insensitively):
     session starts (workspace-aware: ``<X>`` matches the workspace name).
   * anything else — treated as "on open" with a workspace match.
 
+The ``recurring_tasks`` / ``recurring_task_runs`` tables became one JSON
+state file, ``<dataDir>/state/recurring-tasks.json`` — ``{'tasks': [...],
+'runs': {taskId: [fires]}}`` with the per-task run window capped at 20.
+
 Firing never raises: it records ``last_fired_at`` and returns the messages
 so the caller can surface them (SSE → notification bell / toast).
 """
@@ -16,10 +20,12 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
-from app.json_narrowing import as_str
-from app.services.memory_conn import commit as brain_commit
+from app.json_narrowing import as_int, as_str
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +33,32 @@ _INTERVAL_RE = re.compile(r'every\s+(\d+)\s*(minute|minutes|min|hour|hours|hr|da
 _OPEN_RE = re.compile(r'(when\s+i\s+open|when\s+opening|on\s+open|whenever\s+i\s+open)', re.IGNORECASE)
 _DAY_SECONDS = 24 * 60 * 60
 
+_FILE = 'recurring-tasks.json'
+_LOCK = threading.RLock()
 
-def _conn():
-    from app.services.memory_store import _conn as getConn
 
-    return getConn()
+def _path() -> Path:
+    return home(STATE_DIR) / _FILE
+
+
+def _load() -> tuple[list[dict], dict[str, list]]:
+    """(tasks, runs-by-taskId) — validated on read."""
+    raw = read_json(_path(), default={})
+    if not isinstance(raw, dict):
+        return ([], {})
+    tasks_raw = raw.get('tasks')
+    runs_raw = raw.get('runs')
+    tasks = [t for t in (tasks_raw or []) if isinstance(t, dict)] if isinstance(tasks_raw, list) else []
+    runs = (
+        {str(k): v for k, v in runs_raw.items() if isinstance(v, list)}
+        if isinstance(runs_raw, dict)
+        else {}
+    )
+    return (tasks, runs)
+
+
+def _save(tasks: list[dict], runs: dict[str, list]) -> None:
+    write_json(_path(), {'tasks': tasks, 'runs': runs})
 
 
 def _now_iso() -> str:
@@ -39,21 +66,23 @@ def _now_iso() -> str:
 
 
 def list_tasks(active_only: bool = True) -> list[dict]:
-    try:
-        if active_only:
-            rows = _conn().execute(
-                'SELECT id, trigger, message, model, active, created_at, last_fired_at '
-                'FROM recurring_tasks WHERE active = 1 ORDER BY id DESC'
-            ).fetchall()
-        else:
-            rows = _conn().execute(
-                'SELECT id, trigger, message, model, active, created_at, last_fired_at '
-                'FROM recurring_tasks ORDER BY id DESC'
-            ).fetchall()
-        return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.debug('recurring tasks list failed: %s', exc)
-        return []
+    with _LOCK:
+        tasks, _runs = _load()
+    if active_only:
+        tasks = [t for t in tasks if int(t.get('active') or 0) == 1]
+    tasks.sort(key=lambda t: int(t.get('id') or 0), reverse=True)
+    return [
+        {
+            'id': t.get('id'),
+            'trigger': t.get('trigger'),
+            'message': t.get('message'),
+            'model': t.get('model'),
+            'active': t.get('active'),
+            'created_at': t.get('created_at'),
+            'last_fired_at': t.get('last_fired_at'),
+        }
+        for t in tasks
+    ]
 
 
 def add_task(trigger: str, message: str, model: str = '') -> int | None:
@@ -62,13 +91,22 @@ def add_task(trigger: str, message: str, model: str = '') -> int | None:
     if not trigger or not message:
         return None
     try:
-        conn = _conn()
-        conn.execute(
-            'INSERT INTO recurring_tasks (trigger, message, model) VALUES (?, ?, ?)',
-            (trigger[:300], message[:2000], (model or '').strip()[:120]),
-        )
-        brain_commit(conn)
-        return conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        with _LOCK:
+            tasks, runs = _load()
+            next_id = 1 + max((as_int(t.get('id'), 0) for t in tasks), default=0)
+            tasks.append(
+                {
+                    'id': next_id,
+                    'trigger': trigger[:300],
+                    'message': message[:2000],
+                    'model': (model or '').strip()[:120],
+                    'active': 1,
+                    'created_at': _now_iso(),
+                    'last_fired_at': None,
+                }
+            )
+            _save(tasks, runs)
+            return next_id
     except Exception as exc:
         logger.error('recurring task add failed: %s', exc)
         return None
@@ -76,11 +114,14 @@ def add_task(trigger: str, message: str, model: str = '') -> int | None:
 
 def delete_task(task_id: int) -> bool:
     try:
-        conn = _conn()
-        cur = conn.execute('DELETE FROM recurring_tasks WHERE id = ?', (task_id,))
-        conn.execute('DELETE FROM recurring_task_runs WHERE task_id = ?', (task_id,))
-        brain_commit(conn)
-        return cur.rowcount > 0
+        with _LOCK:
+            tasks, runs = _load()
+            kept = [t for t in tasks if as_int(t.get('id'), 0) != as_int(task_id, 0)]
+            if len(kept) == len(tasks):
+                return False
+            runs.pop(str(task_id), None)
+            _save(kept, runs)
+            return True
     except Exception as exc:
         logger.debug('recurring task delete failed: %s', exc)
         return False
@@ -90,13 +131,17 @@ def set_active(task_id: int, active: bool) -> bool:
     """Pause (False) / resume (True) one task — parity with the automations
     store's pause/resume; a paused task never fires."""
     try:
-        conn = _conn()
-        cur = conn.execute(
-            'UPDATE recurring_tasks SET active = ? WHERE id = ?',
-            (1 if active else 0, task_id),
-        )
-        brain_commit(conn)
-        return cur.rowcount > 0
+        with _LOCK:
+            tasks, runs = _load()
+            changed = False
+            for t in tasks:
+                if as_int(t.get('id'), 0) == as_int(task_id, 0):
+                    t['active'] = 1 if active else 0
+                    changed = True
+            if not changed:
+                return False
+            _save(tasks, runs)
+            return True
     except Exception as exc:
         logger.debug('recurring task set_active failed: %s', exc)
         return False
@@ -105,31 +150,22 @@ def set_active(task_id: int, active: bool) -> bool:
 def get_runs(task_id: int, limit: int = 20) -> list[dict]:
     """Newest-first per-fire history (write-time capped to 20 rows)."""
     try:
-        rows = _conn().execute(
-            'SELECT fired_at, message FROM recurring_task_runs '
-            'WHERE task_id = ? ORDER BY id DESC LIMIT ?',
-            (task_id, max(1, min(int(limit or 20), 20))),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        with _LOCK:
+            _tasks, runs = _load()
+        fires = list(runs.get(str(task_id)) or [])[-max(1, min(int(limit or 20), 20)) :]
+        fires.reverse()
+        return [{'fired_at': f.get('fired_at'), 'message': f.get('message')} for f in fires if isinstance(f, dict)]
     except Exception as exc:
         logger.debug('recurring task runs read failed: %s', exc)
         return []
 
 
-def _record_run(conn, task_id: object, message: str) -> None:
-    """Insert one fire into the ledger and cap the per-task window."""
-    try:
-        conn.execute(
-            'INSERT INTO recurring_task_runs (task_id, fired_at, message) VALUES (?, ?, ?)',
-            (task_id, _now_iso(), message[:300]),
-        )
-        conn.execute(
-            'DELETE FROM recurring_task_runs WHERE task_id = ? AND id NOT IN '
-            '(SELECT id FROM recurring_task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 20)',
-            (task_id, task_id),
-        )
-    except Exception:
-        pass  # history is diagnostic — never costs a fire
+def _record_run(runs: dict[str, list], task_id: object, message: str) -> None:
+    """Append one fire to the per-task window (capped at 20 rows)."""
+    key = str(task_id)
+    fires = list(runs.get(key) or [])
+    fires.append({'fired_at': _now_iso(), 'message': message[:300]})
+    runs[key] = fires[-20:]
 
 
 def _interval_seconds(trigger: str) -> int | None:
@@ -185,8 +221,6 @@ def check_and_fire(session_id: str, workspace_path: str = '') -> list[tuple[str,
     """
     fired: list[tuple[str, str]] = []
     try:
-        from pathlib import Path
-
         workspace_name = Path(workspace_path).name if workspace_path else ''
         now = datetime.now(timezone.utc)
         for task in list_tasks(active_only=True):
@@ -219,13 +253,16 @@ def check_and_fire(session_id: str, workspace_path: str = '') -> list[tuple[str,
                 if not _matches_workspace(trigger, workspace_name):
                     continue
             try:
-                conn = _conn()
-                conn.execute(
-                    'UPDATE recurring_tasks SET last_fired_at = ? WHERE id = ?',
-                    (_now_iso(), task['id']),
-                )
-                _record_run(conn, task['id'], message)
-                brain_commit(conn)
+                with _LOCK:
+                    tasks, runs = _load()
+                    target = next(
+                        (t for t in tasks if as_int(t.get('id'), 0) == as_int(task.get('id'), 0)), None
+                    )
+                    if target is None:
+                        continue
+                    target['last_fired_at'] = _now_iso()
+                    _record_run(runs, target.get('id'), message)
+                    _save(tasks, runs)
             except Exception as exc:
                 # Do NOT fall through to fired.append(). `last_fired_at` is the
                 # only thing standing between this task and firing again on the

@@ -32,7 +32,8 @@ import threading
 from contextvars import ContextVar
 from typing import Any
 
-from app.services.memory_conn import conn as _conn
+from app.json_narrowing import as_int
+from app.services.memory_store import mirror as record
 from app.services.memory_store.rest import PROFILE_FACT_KIND
 from app.services.sensitive_topics import sensitiveMemoryReason
 from app.services.tools.retrieval import QUERY_STOPWORDS as _QUERY_STOPWORDS
@@ -136,7 +137,8 @@ def _load_index(scope: str = 'global') -> dict[str, Any]:
     'global' scope degenerates to global-only (the pre-M-2 behavior, and
     every legacy row carries DEFAULT 'global').
     """
-    from app.services.session_scope import GLOBAL_SCOPE, normalize_scope
+    from app.services.memory_store.rest import _visible
+    from app.services.session_scope import normalize_scope
 
     scope = normalize_scope(scope)
     with _lock:
@@ -148,46 +150,34 @@ def _load_index(scope: str = 'global') -> dict[str, Any]:
     rows: list[dict[str, object]] = []
     corpus: list[list[str]] = []
     try:
-        conn = _conn()
         # M-1 usage decoupling: the cached corpus carries tokens + text only
         # — never use_count/last_used_at. Usage is fetched per query for the
         # candidate set (see _usage_for), so touch_fact_usage no longer
         # invalidates this cache and the per-turn full-corpus rebuild cliff
-        # is gone.
-        if scope == GLOBAL_SCOPE:
-            scopeClause = "AND (scope IS NULL OR scope = 'global')"
-            params: tuple[object, ...] = ()
-        else:
-            scopeClause = "AND (scope IS NULL OR scope = 'global' OR scope = ?)"
-            params = (scope,)
-        factRows = conn.execute(
-            "SELECT fact_key, fact_value, title, kind, category, description, source, "
-            "COALESCE(verified_at, '') AS verified_at, "
-            "COALESCE(scope, 'global') AS scope, COALESCE(updated_at, '') AS updated_at, "
-            "COALESCE(aliases, '[]') AS aliases, COALESCE(subject_type, '') AS subject_type, "
-            "COALESCE(tag, '') AS tag, COALESCE(sensitive, 0) AS sensitive FROM facts "
-            "WHERE (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday('now')) "
-            "AND (status IS NULL OR status = 'active') "
-            f"{scopeClause}",
-            params,
-        ).fetchall()
+        # is gone. The rows come off the markdown record (one file per fact)
+        # through the same visibility predicate every other read door uses.
+        factRows = [
+            row
+            for row in record.load_facts()
+            if _visible(row, scope)
+        ]
         for r in factRows:
-            body = _fact_body_text(r['fact_value'])
-            title = str(r['title'] or '').strip()
-            key = str(r['fact_key'] or '')
-            desc = ' '.join(str(r['description'] or '').split())
-            _sensitiveFlag = int(r['sensitive'] or 0)
+            body = _fact_body_text(r.get('fact_value'))
+            title = str(r.get('title') or '').strip()
+            key = str(r.get('fact_key') or '')
+            desc = ' '.join(str(r.get('description') or '').split())
+            _sensitiveFlag = as_int(r.get('sensitive'), 0)
             # Sensitive rows never ride the recall corpus — the tail, the
             # always-on profile lane and the alias pre-read all read THIS
             # list, and all three are surfaces an unrelated turn sees. The
             # durable `sensitive` flag (056) catches rows whose detector
             # wording has since changed; the live detector catches rows
-            # written before the flag or by a raw-SQL path. Explicit reads
+            # written before the flag or by a raw write path. Explicit reads
             # stay unfiltered: a model or human who asks by name gets it.
             if _sensitiveFlag or sensitiveMemoryReason(title, key, desc, body):
                 continue
             try:
-                aliases = json.loads(str(r['aliases'] or '[]'))
+                aliases = json.loads(str(r.get('aliases') or '[]'))
             except (json.JSONDecodeError, TypeError):
                 aliases = []
             if not isinstance(aliases, list):
@@ -207,28 +197,28 @@ def _load_index(scope: str = 'global') -> dict[str, Any]:
                     'title': title,
                     'description': desc,
                     'body': body,
-                    'source': str(r['source'] or ''),
-                    'verified_at': str(r['verified_at'] or ''),
-                    'kind': str(r['kind'] or 'fact'),
-                    'category': str(r['category'] or 'general'),
+                    'source': str(r.get('source') or ''),
+                    'verified_at': str(r.get('verified_at') or ''),
+                    'kind': str(r.get('kind') or 'fact'),
+                    'category': str(r.get('category') or 'general'),
                     'aliases': [str(a) for a in aliases],
-                    'subject_type': str(r['subject_type'] or ''),
-                    'tag': str(r['tag'] or ''),
+                    'subject_type': str(r.get('subject_type') or ''),
+                    'tag': str(r.get('tag') or ''),
                     'sensitive': bool(_sensitiveFlag),
                     # Carry the row's true scope — recall metrics
                     # and the transcript chip mislabeled bot-private recalls
                     # as 'global' (the hardcoded label).
-                    'scope': str(r['scope'] or 'global'),
+                    'scope': str(r.get('scope') or 'global'),
                     # Recency for the always-on profile lane. Safe to cache:
                     # updated_at only changes on a fact write, which already
                     # invalidates this corpus (unlike usage, which M-1 keeps
                     # out of the cache — see _usage_for).
-                    'updated_at': str(r['updated_at'] or ''),
+                    'updated_at': str(r.get('updated_at') or ''),
                 }
             )
             corpus.append(tokens)
     except Exception as exc:
-        # A transient failure (DB locked, mid-migration, a malformed row) must
+        # A transient failure (a malformed row, an unreadable file) must
         # NOT be cached as "there is no memory". The corpus cache is invalidated
         # only by a fact write, so one bad moment used to disable BM25 recall
         # AND the always-on profile lane until the next write — silently, since
@@ -406,27 +396,40 @@ def _usage_decay(last_used_at: str) -> float:
         return 1.0
 
 
+def _rows_by_key() -> dict[str, dict[str, object]]:
+    """Every stored row, keyed by fact key (first row wins on a same-key
+    different-scope pair — the same precedence a bare key lookup applies).
+
+    One scan serves the four per-candidate fetches below; at this store's
+    scale (tens to hundreds of files) a scan per query is the cheap option
+    and needs no cache to invalidate.
+    """
+    out: dict[str, dict[str, object]] = {}
+    for row in record.load_facts():
+        key = str(row.get('fact_key') or '')
+        if key and key not in out:
+            out[key] = dict(row)
+    return out
+
+
 def _usage_for(keys: list[str]) -> dict[str, tuple[int, str]]:
     """Fresh ``(use_count, last_used_at)`` for a candidate key set.
 
     M-1 usage decoupling: usage no longer lives in the cached corpus, so
-    ranking fetches it per query with one cheap SELECT over the candidates
-    (≤200 — far above the k=5 window, so the boost can only reshuffle
-    within the BM25-strongest set).
+    ranking fetches it per query for the candidates (≤200 — far above the
+    k=5 window, so the boost can only reshuffle within the BM25-strongest
+    set).
     """
     out: dict[str, tuple[int, str]] = {}
     uniq = [k for k in dict.fromkeys(keys) if k][:200]
     if not uniq:
         return out
     try:
-        placeholders = ','.join('?' for _ in uniq)
-        rows = _conn().execute(
-            f'SELECT fact_key, use_count, last_used_at FROM facts '
-            f'WHERE fact_key IN ({placeholders})',
-            uniq,
-        ).fetchall()
-        for r in rows:
-            out[str(r['fact_key'])] = (int(r['use_count'] or 0), str(r['last_used_at'] or ''))
+        rows = _rows_by_key()
+        for key in uniq:
+            row = rows.get(key)
+            if row is not None:
+                out[key] = (as_int(row.get('use_count'), 0), str(row.get('last_used_at') or ''))
     except Exception as exc:
         logging.debug('candidate usage fetch failed: %s', exc)
     return out
@@ -439,7 +442,7 @@ def _confidence_for(keys: list[str]) -> dict[str, float]:
     fact after it was written, confidence is what the writing door believed when
     it wrote it (`remember` stores 0.7 for a model-authored fact,
     `turn_outcomes` 0.6 for an inferred lesson, an explicit user statement 1.0).
-    Missing rows read 1.0, the column default, so a fact with no recorded
+    Missing rows read 1.0, the record default, so a fact with no recorded
     belief is never penalised for the absence.
     """
     out: dict[str, float] = {}
@@ -447,14 +450,12 @@ def _confidence_for(keys: list[str]) -> dict[str, float]:
     if not uniq:
         return out
     try:
-        placeholders = ','.join('?' for _ in uniq)
-        rows = _conn().execute(
-            f'SELECT fact_key, confidence FROM facts WHERE fact_key IN ({placeholders})',
-            uniq,
-        ).fetchall()
-        for r in rows:
-            raw = r['confidence']
-            out[str(r['fact_key'])] = 1.0 if raw is None else float(raw)
+        rows = _rows_by_key()
+        for key in uniq:
+            row = rows.get(key)
+            if row is not None:
+                raw = row.get('confidence')
+                out[key] = 1.0 if raw is None else float(raw)  # type: ignore[arg-type]
     except Exception as exc:
         logging.debug('candidate confidence fetch failed: %s', exc)
     return out
@@ -463,23 +464,17 @@ def _confidence_for(keys: list[str]) -> dict[str, float]:
 def _hot_usage() -> dict[str, tuple[int, str]]:
     """``(use_count, last_used_at)`` for EVERY fact with a non-zero use_count.
 
-    A deliberately different query shape from :func:`_usage_for`, and the
+    A deliberately different shape from :func:`_usage_for`, and the
     reason is item 14. Once the usage boost is allowed to promote a fact that
     did not match lexically, the boost has to be known for the whole corpus and
     not just the BM25-strongest 200 — otherwise the promotion it exists to
     enable is structurally impossible, which is the bug.
-
-    ``WHERE use_count > 0`` keeps the result set to the facts that have ever
-    been used, and avoids the 999-placeholder ceiling an IN-list over a few
-    thousand facts would hit on SQLite.
     """
     out: dict[str, tuple[int, str]] = {}
     try:
-        rows = _conn().execute(
-            'SELECT fact_key, use_count, last_used_at FROM facts WHERE use_count > 0'
-        ).fetchall()
-        for r in rows:
-            out[str(r['fact_key'])] = (int(r['use_count'] or 0), str(r['last_used_at'] or ''))
+        for key, row in _rows_by_key().items():
+            if as_int(row.get('use_count'), 0) > 0:
+                out[key] = (as_int(row.get('use_count'), 0), str(row.get('last_used_at') or ''))
     except Exception as exc:
         logging.debug('hot usage fetch failed: %s', exc)
     return out
@@ -516,8 +511,8 @@ def _usage_map(keys: list[str]) -> dict[str, tuple[int, str]]:
 def _disuse_for(keys: list[str]) -> dict[str, int]:
     """``injected_count`` per candidate key (M-7).
 
-    How many times a fact has been INJECTED into a ranked recall. A fact
-    that is injected again and again and never quoted is a stale-but-plausible
+    How many times a fact has been INJECTED into a ranked recall. A fact that
+    is injected again and again and never quoted is a stale-but-plausible
     entry holding rank: the usage boost only ever rewards, so nothing in the
     scorer ever pushed such a fact down.
 
@@ -530,15 +525,13 @@ def _disuse_for(keys: list[str]) -> dict[str, int]:
     if not uniq:
         return out
     try:
-        placeholders = ','.join('?' for _ in uniq)
-        rows = _conn().execute(
-            f'SELECT fact_key, injected_count FROM facts WHERE fact_key IN ({placeholders})',
-            uniq,
-        ).fetchall()
-        for r in rows:
-            out[str(r['fact_key'])] = int(r['injected_count'] or 0)
+        rows = _rows_by_key()
+        for key in uniq:
+            row = rows.get(key)
+            if row is not None:
+                out[key] = as_int(row.get('injected_count'), 0)
     except Exception as exc:
-        # A DB without migration 055 has no counter — no signal, no penalty.
+        # A record without the counter carries no signal — no penalty.
         logging.debug('candidate disuse fetch failed: %s', exc)
     return out
 
@@ -551,23 +544,26 @@ def record_injection(keys: list[str]) -> int:
     the usage signal: ``use_count`` says a fact was useful, this says a fact
     was SHOWN and (maybe) never used.
     """
+    from datetime import datetime, timezone
+
     uniq = [k for k in dict.fromkeys(keys) if k][:50]
     if not uniq:
         return 0
+    touched = 0
     try:
-        placeholders = ','.join('?' for _ in uniq)
-        cur = _conn().execute(
-            'UPDATE facts SET injected_count = COALESCE(injected_count, 0) + 1, '
-            f"last_injected_at = datetime('now') WHERE fact_key IN ({placeholders})",
-            uniq,
-        )
-        from app.services.memory_conn import commit as _commit
-
-        _commit(_conn())
-        return cur.rowcount or 0
+        stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        wanted = set(uniq)
+        for row in record.load_facts():
+            if str(row.get('fact_key') or '') not in wanted:
+                continue
+            row['injected_count'] = as_int(row.get('injected_count'), 0) + 1
+            row['last_injected_at'] = stamp
+            record.write_fact_file(row)
+            touched += 1
     except Exception as exc:
         logging.debug('injection counter write failed: %s', exc)
         return 0
+    return touched
 
 
 def _disuse_constants() -> tuple[float, int, int]:
@@ -1217,29 +1213,30 @@ def build_memory_delta_block(
     if not since or budget <= headerCost:
         return ''
     try:
-        conn = _conn()
+        from app.services.memory_store.rest import _visible
+
         if scope and scope != 'global':
-            scopeClause = "AND (scope IS NULL OR scope = 'global' OR scope = ?)"
-            scopeParams: tuple[object, ...] = (scope,)
+            union = scope
         else:
-            scopeClause = "AND (scope IS NULL OR scope = 'global')"
-            scopeParams = ()
-        rows = conn.execute(
-            "SELECT fact_key, fact_value, title, kind, category, description, source, "
-            "COALESCE(verified_at, '') AS verified_at, "
-            "COALESCE(scope, 'global') AS scope, COALESCE(updated_at, '') AS updated_at, "
-            "COALESCE(sensitive, 0) AS sensitive, COALESCE(subject_type, '') AS subject_type "
-            "FROM facts "
-            "WHERE (expires_at IS NULL OR expires_at = '' OR julianday(expires_at) > julianday('now')) "
-            "AND (status IS NULL OR status = 'active') "
-            "AND COALESCE(sensitive, 0) = 0 AND COALESCE(subject_type, '') != 'person' "
+            union = 'global'
+        candidates = [
+            row
+            for row in record.load_facts()
+            if _visible(row, union)
             # Fixed-width UTC text sorts chronologically; string comparison
-            # keeps microseconds, which julianday() rounds to milliseconds.
-            "AND updated_at > ? "
-            f"{scopeClause} "
-            "ORDER BY updated_at DESC, id DESC LIMIT ?",
-            (since, *scopeParams, _DELTA_MAX_FACTS),
-        ).fetchall()
+            # keeps microseconds, which the SQL era's julianday() rounded to
+            # milliseconds.
+            and str(row.get('updated_at') or '') > since
+            and as_int(row.get('sensitive'), 0) == 0
+            and str(row.get('subject_type') or '') != 'person'
+        ]
+        # The SQL ORDER BY (updated_at DESC, id DESC) — same deterministic
+        # tie-break list_facts pages by.
+        candidates.sort(
+            key=lambda r: (str(r.get('updated_at') or ''), as_int(r.get('id'), 0)),
+            reverse=True,
+        )
+        rows = candidates[:_DELTA_MAX_FACTS]
     except Exception as exc:
         # A transient read failure must not look like "nothing was written";
         # next turn retries, and the warning names the degradation.
@@ -1249,20 +1246,20 @@ def build_memory_delta_block(
     cost = headerCost
     skipped = exclude_keys or frozenset()
     for r in rows:
-        if int(r['sensitive'] or 0) or sensitiveMemoryReason(
-            str(r['title'] or ''), str(r['fact_key'] or ''),
-            str(r['description'] or ''), _fact_body_text(r['fact_value']),
+        if as_int(r.get('sensitive'), 0) or sensitiveMemoryReason(
+            str(r.get('title') or ''), str(r.get('fact_key') or ''),
+            str(r.get('description') or ''), _fact_body_text(r.get('fact_value')),
         ):
             continue
         row: dict[str, object] = {
-            'key': str(r['fact_key'] or ''),
-            'title': str(r['title'] or '').strip(),
-            'body': _fact_body_text(r['fact_value']),
-            'source': str(r['source'] or ''),
-            'verified_at': str(r['verified_at'] or ''),
-            'kind': str(r['kind'] or 'fact'),
-            'category': str(r['category'] or 'general'),
-            'scope': str(r['scope'] or 'global'),
+            'key': str(r.get('fact_key') or ''),
+            'title': str(r.get('title') or '').strip(),
+            'body': _fact_body_text(r.get('fact_value')),
+            'source': str(r.get('source') or ''),
+            'verified_at': str(r.get('verified_at') or ''),
+            'kind': str(r.get('kind') or 'fact'),
+            'category': str(r.get('category') or 'general'),
+            'scope': str(r.get('scope') or 'global'),
         }
         if row['key'] in skipped:
             continue
@@ -1419,21 +1416,43 @@ def recall_quality(days: int = 30) -> dict[str, object]:
         'byFact': [],
     }
     try:
-        from app.services.memory_conn import conn
+        from app.services.memory_store import tables
 
-        rows = conn().execute(
-            'SELECT facts_injected FROM turn_outcomes '
-            "WHERE ts >= datetime('now', ?) AND facts_injected IS NOT NULL AND facts_injected != ''",
-            (f'-{windowDays} days',),
-        ).fetchall()
+        outcome_rows = tables.ledger_rows(tables.turn_outcomes_file())
     except Exception as exc:
         logging.debug('recall quality aggregate failed: %s', exc)
         return empty
 
+    rows: list[dict[str, object]] = []
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=windowDays)
+    for r in outcome_rows:
+        # The turn-outcomes ledger is the transcript domain's runtime home;
+        # this read is tolerant of both key spellings (the one-time SQLite
+        # import writes the camelCase wire rows, the runtime writer may
+        # carry either).
+        ts_raw = str(r.get('ts') or r.get('createdAt') or r.get('created_at') or '')
+        injected_raw = r.get('factsInjected', r.get('facts_injected'))
+        if not ts_raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+        if stamp < cutoff:
+            continue
+        if injected_raw in (None, ''):
+            continue
+        rows.append({'facts_injected': injected_raw})
+
     keys: list[str] = []
     for r in rows:
+        raw = r['facts_injected']
         try:
-            parsed = json.loads(str(r['facts_injected'] or '[]'))
+            parsed = json.loads(str(raw)) if isinstance(raw, str) else raw
         except (TypeError, ValueError):
             continue
         if isinstance(parsed, list):
@@ -1443,21 +1462,14 @@ def recall_quality(days: int = 30) -> dict[str, object]:
         return empty
 
     try:
-        from app.services.memory_conn import conn
-
-        usedRows = conn().execute(
-            f"SELECT fact_key, use_count, last_used_at FROM facts "
-            f"WHERE fact_key IN ({','.join('?' for _ in keys)})",
-            keys,
-        ).fetchall()
+        used = {
+            key: (as_int(row.get('use_count'), 0), str(row.get('last_used_at') or ''))
+            for key, row in _rows_by_key().items()
+            if key in set(keys)
+        }
     except Exception as exc:
         logging.debug('recall quality usage fetch failed: %s', exc)
         return empty
-
-    used = {
-        str(r['fact_key']): (int(r['use_count'] or 0), str(r['last_used_at'] or ''))
-        for r in usedRows
-    }
     # Present in the corpus at all. A key that has since been forgotten is
     # neither a hit nor a miss we can judge — it left the index entirely.
     judged = [k for k in keys if k in used]

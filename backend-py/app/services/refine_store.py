@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.json_narrowing import as_dict, as_int, as_list, as_str
-from app.services.memory_conn import commit as brain_commit
 
 logger = logging.getLogger(__name__)
 
@@ -52,17 +51,16 @@ _MAX_EDITS_PER_PASS = 20
 RefineProducer = Callable[[list[dict[str, str]]], Awaitable[str]]
 
 
-# Storage — brain SQLite (migration 040).
+# Storage — dataDir files (the SQLite container is retired).
 #
-# Entries live in ``refine_entries`` (one row per entry; ``doc`` is the full
-# entry JSON with its version list — the shape from the old JSON-directory
-# era is preserved verbatim so callers never changed). The journal lives in
-# ``refine_ledger``. One-time import: the first use copies any legacy
-# ``dataDir/refine_store/entries`` files, then renames the legacy directory
-# aside (visible, idempotent, nothing silently lost). Rationale: the
-# learning loop's other stores (episodes, facts, outcomes, proposals) are
-# SQL — cross-store joins (provenance, the promote judge, privacy wipe)
-# only work in one container.
+# Entries live in ``<state>/refine-entries.json`` (one JSON object per entry;
+# the full entry JSON with its version list — the shape from the old
+# JSON-directory era is preserved verbatim so callers never changed). The
+# journal lives in ``<state>/refine-ledger.jsonl``. One-time import: the first
+# use copies any surviving legacy ``dataDir/refine_store/entries`` files, then
+# renames the legacy directory aside (visible, idempotent, nothing silently
+# lost). Rationale: the store outlived its SQL detour and is back where it
+# started — plain files beside everything else the brain keeps.
 
 # Imported bases tracked per part: the entries dir and the ledger file are
 # separate touches, and a store first opened by list_entries (no ledger)
@@ -74,34 +72,16 @@ _IMPORTED_ENTRIES: set[str] = set()
 _IMPORTED_LEDGER: set[str] = set()
 
 
-def _conn():
-    from app.services.memory_conn import conn
+def _entries_file():
+    from app.services.memory_store import tables
 
-    return conn()
+    return tables.state_file('refine-entries.json')
 
 
-def _ensure_schema() -> None:
-    """Tables come from migration 040 at schema init; this covers contexts
-    that touch the store before a full init (tests, scripts)."""
-    conn = _conn()
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS refine_entries ('
-        '  id TEXT PRIMARY KEY, kind TEXT NOT NULL, scope TEXT NOT NULL,'
-        "  session_id TEXT DEFAULT '', updated_at TEXT DEFAULT '',"
-        '  doc TEXT NOT NULL)'
-    )
-    conn.execute(
-        'CREATE INDEX IF NOT EXISTS idx_refine_entries_scope '
-        'ON refine_entries(scope, updated_at)'
-    )
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS refine_ledger ('
-        '  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, actor TEXT, action TEXT,'
-        "  entry_id TEXT DEFAULT '', target_key TEXT DEFAULT '', kind TEXT DEFAULT '',"
-        "  scope TEXT DEFAULT '', detail TEXT DEFAULT '', raw TEXT)"
-    )
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_refine_ledger_at ON refine_ledger(at)')
-    brain_commit(conn)
+def _ledger_file():
+    from app.services.memory_store import tables
+
+    return tables.state_file('refine-ledger.jsonl')
 
 
 def _store_dir() -> Path:
@@ -112,24 +92,31 @@ def _store_dir() -> Path:
     return d
 
 
-def _import_legacy(ledger_to_sql: bool) -> None:
-    """One-time copy of pre-SQLite JSON into the tables.
+def _import_legacy(ledger_to_files: bool) -> None:
+    """One-time copy of the pre-SQLite JSON layout into the file stores.
 
-    INSERT OR IGNORE makes a crashed half-import finish on the next call;
-    the directory rename makes it once-per-install and keeps the old data
-    visible for manual recovery."""
+    The ``dataDir/refine_store/`` directory was the store BEFORE migration 040
+    moved it into the brain database; with the database retired, the files are
+    the store again and any surviving legacy layout imports once. The directory
+    rename makes it once-per-install and keeps the old data visible for manual
+    recovery. (Process-global bools would break per-test dataDir isolation —
+    the key is the store base path.)
+    """
+    from app.services import filestore
+    from app.services.memory_store import tables
+
     base = _store_dir()
     key = str(base)
     needEntries = key not in _IMPORTED_ENTRIES
-    needLedger = ledger_to_sql and key not in _IMPORTED_LEDGER
+    needLedger = ledger_to_files and key not in _IMPORTED_LEDGER
     if not needEntries and not needLedger:
         return
-    _ensure_schema()
-    conn = _conn()
     legacy = base / 'entries'
     n = 0
     if needEntries:
         _IMPORTED_ENTRIES.add(key)
+        rows = [r for r in tables.load_rows(_entries_file()) if r.get('id')]
+        known = {str(r.get('id')) for r in rows}
         for path in sorted(legacy.glob('ref_*.json')) if legacy.is_dir() else []:
             try:
                 entry = json.loads(path.read_text(encoding='utf-8'))
@@ -137,22 +124,13 @@ def _import_legacy(ledger_to_sql: bool) -> None:
                 continue
             if not isinstance(entry, dict) or not entry.get('id'):
                 continue
-            try:
-                conn.execute(
-                    'INSERT OR IGNORE INTO refine_entries '
-                    '(id, kind, scope, session_id, updated_at, doc) VALUES (?, ?, ?, ?, ?, ?)',
-                    (
-                        str(entry['id']),
-                        as_str(entry.get('kind')),
-                        as_str(entry.get('scope')),
-                        as_str(entry.get('sessionId')),
-                        as_str(entry.get('updatedAt')),
-                        json.dumps(entry, ensure_ascii=False),
-                    ),
-                )
-                n += 1
-            except Exception:
-                logger.debug('refine legacy import failed for %s', path, exc_info=True)
+            if str(entry['id']) in known:
+                continue
+            rows.append(entry)
+            known.add(str(entry['id']))
+            n += 1
+        if n:
+            filestore.write_json(_entries_file(), rows)
         try:
             legacy.rename(base / 'entries.migrated')
         except OSError:
@@ -166,83 +144,51 @@ def _import_legacy(ledger_to_sql: bool) -> None:
             except Exception:
                 continue
             if isinstance(row, dict):
-                _ledger_insert(conn, row)
+                tables.append_ledger(_ledger_file(), row)
         try:
             old_ledger.rename(base / 'ledger.jsonl.migrated')
         except OSError:
             pass
-    try:
-        brain_commit(conn)
-    except Exception:
-        logger.debug('refine legacy import commit failed', exc_info=True)
     if n:
-        logger.info('refine_store imported %d legacy entr(y/ies) into SQLite', n)
-
-
-def _ledger_insert(conn, row: dict[str, Any]) -> None:
-    conn.execute(
-        'INSERT INTO refine_ledger (at, actor, action, entry_id, target_key, kind, scope, detail, raw) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        (
-            as_str(row.get('at')),
-            as_str(row.get('actor')),
-            as_str(row.get('action')),
-            as_str(row.get('entryId')),
-            as_str(row.get('target_key')),
-            as_str(row.get('kind')),
-            as_str(row.get('scope')),
-            as_str(row.get('detail')),
-            json.dumps(row, ensure_ascii=False),
-        ),
-    )
+        logger.info('refine_store imported %d legacy entr(y/ies) into the file store', n)
 
 
 def _append_ledger(row: dict[str, Any]) -> None:
     try:
-        _import_legacy(ledger_to_sql=False)
-        _ledger_insert(_conn(), row)
-        _conn()
-        brain_commit(_conn())
+        from app.services.memory_store import tables
+
+        _import_legacy(ledger_to_files=False)
+        tables.append_ledger(_ledger_file(), row)
     except Exception:
         logger.debug('refine_store ledger append failed', exc_info=True)
 
 
 def read_ledger(limit: int = 20) -> list[dict[str, Any]]:
     try:
-        _import_legacy(ledger_to_sql=True)
-        rows = _conn().execute(
-            'SELECT raw FROM refine_ledger ORDER BY id DESC LIMIT ?', (int(limit),)
-        ).fetchall()
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            try:
-                parsed = as_dict(json.loads(str(r['raw'])))
-            except Exception:
-                continue
-            if parsed:
-                out.append(parsed)
-        out.reverse()  # oldest-first, the JSONL reader's contract
-        return out
+        from app.services.memory_store import tables
+
+        _import_legacy(ledger_to_files=True)
+        rows = [
+            as_dict(r)
+            for r in tables.ledger_rows(_ledger_file())
+        ]
+        rows = [r for r in rows if r]
+        return rows[-int(limit):] if limit else []  # oldest-first, the JSONL reader's contract
     except Exception:
         logger.debug('refine_store ledger read failed', exc_info=True)
         return []
 
 
 def _write_entry(entry: dict[str, Any]) -> None:
-    _import_legacy(ledger_to_sql=False)
-    _conn().execute(
-        'INSERT OR REPLACE INTO refine_entries (id, kind, scope, session_id, updated_at, doc) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        (
-            as_str(entry.get('id')),
-            as_str(entry.get('kind')),
-            as_str(entry.get('scope')),
-            as_str(entry.get('sessionId')),
-            as_str(entry.get('updatedAt')),
-            json.dumps(entry, ensure_ascii=False),
-        ),
-    )
-    brain_commit(_conn())
+    from app.services import filestore
+    from app.services.memory_store import tables
+
+    _import_legacy(ledger_to_files=False)
+    path = _entries_file()
+    with tables.store_lock(str(path)):
+        rows = [r for r in tables.load_rows(path) if str(r.get('id')) != str(entry.get('id'))]
+        rows.append(entry)
+        filestore.write_json(path, rows)
 
 
 def _now() -> str:
@@ -309,17 +255,15 @@ def _append_version(entry: dict[str, Any], version: dict[str, Any]) -> None:
 
 
 def get_entry(entry_id: str) -> dict[str, Any] | None:
-    _import_legacy(ledger_to_sql=False)
-    row = _conn().execute(
-        'SELECT doc FROM refine_entries WHERE id = ?', ((entry_id or '').strip(),)
-    ).fetchone()
-    if row is None:
-        return None
-    try:
-        entry = json.loads(str(row['doc']))
-        return entry if isinstance(entry, dict) and entry.get('id') else None
-    except Exception:
-        return None
+    from app.services.memory_store import tables
+
+    _import_legacy(ledger_to_files=False)
+    wanted = (entry_id or '').strip()
+    for row in tables.load_rows(_entries_file()):
+        if str(row.get('id') or '') != wanted:
+            continue
+        return row if row.get('id') else None
+    return None
 
 
 def latest_version(entry: dict[str, Any]) -> dict[str, Any]:
@@ -465,30 +409,22 @@ def list_entries(
     include_deleted: bool = False,
 ) -> list[dict[str, Any]]:
     """Summaries of matching entries, local-before-global, newest first."""
-    _import_legacy(ledger_to_sql=False)
-    clauses: list[str] = []
-    params: list[Any] = []
-    if scope:
-        clauses.append('scope = ?')
-        params.append(scope)
-    if kind:
-        clauses.append('kind = ?')
-        params.append(kind)
-    sql = 'SELECT doc FROM refine_entries'
-    if clauses:
-        sql += ' WHERE ' + ' AND '.join(clauses)
+    _import_legacy(ledger_to_files=False)
+    from app.services.memory_store import tables
+
     try:
-        rows = _conn().execute(sql, params).fetchall()
+        _import_legacy(ledger_to_files=False)
+        rows = tables.load_rows(_entries_file())
     except Exception:
-        logger.debug('refine_store list_entries query failed', exc_info=True)
+        logger.debug('refine_store list_entries read failed', exc_info=True)
         return []
     out: list[dict[str, Any]] = []
-    for row in rows:
-        try:
-            entry = json.loads(str(row['doc']))
-        except Exception:
-            continue
+    for entry in rows:
         if not isinstance(entry, dict) or not entry.get('id'):
+            continue
+        if scope and entry.get('scope') != scope:
+            continue
+        if kind and entry.get('kind') != kind:
             continue
         if session_id and entry.get('scope') == 'local' and entry.get('sessionId') != session_id:
             continue

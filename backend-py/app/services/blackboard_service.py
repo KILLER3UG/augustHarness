@@ -1,8 +1,7 @@
-"""
-Blackboard service — inter-agent shared cognitive workspace (Phase 10.1).
+"""Blackboard service — inter-agent shared cognitive workspace (Phase 10.1).
 
 Allows the main loop and background daemons to share real-time state via
-a SQLite table. TTL-based cleanup. Session-scoped.
+``<state>/blackboard.json``. TTL-based cleanup. Session-scoped.
 
 v2: Adaptive TTL (`max(poll_interval*2, 60s)` or 3 turns), `ack` parameter
 on read to delete-on-read, and Tier 3 injection support.
@@ -15,18 +14,20 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
-from app.services.memory_conn import commit as brain_commit
+from app.json_narrowing import as_int
+from app.services.memory_store import tables
+from app.services.memory_store.timeutil import utc_now_text
+from app.services.memory_store.wire import _row_as_wire
 from app.type_aliases import BlackboardNoteDict
 
-
-def _conn():
-    from app.services.memory_store import _conn as getConn
-
-    return getConn()
+_ROW_COLUMNS = (
+    'id', 'session_id', 'agent', 'key', 'value', 'priority',
+    'created_at', 'expires_at', 'workspace_path', 'folder_id',
+)
 
 
 def computeTtl(pollInterval: int) -> str:
-    """v2: Adaptive TTL = max(poll_interval * 2, 60). Returns ISO timestamp string.
+    """v2: Adaptive TTL = max(poll_interval * 2, 60). Returns timestamp string.
 
     A CI watcher polling every 30s gets notes that live >= 60s.
     A fast env-watcher polling every 2s gets notes that live >= 4s.
@@ -50,6 +51,14 @@ def _resolve_workspace_path(sessionId: str, workspacePath: str | None) -> str:
     return ''
 
 
+def _rows() -> list[dict[str, object]]:
+    return tables.load_rows(tables.blackboard_file())
+
+
+def _save(rows: list[dict[str, object]]) -> None:
+    tables.save_rows(tables.blackboard_file(), rows)
+
+
 def writeNote(
     sessionId: str,
     agent: str,
@@ -68,7 +77,6 @@ def writeNote(
     When `persist='workspace'`, the note is visible to the next session in the
     same workspace (handoff) and expires after 7 days.
     """
-    conn = _conn()
     expires = None
     if persist == 'workspace':
         if ttlSeconds and ttlSeconds > 0:
@@ -89,11 +97,24 @@ def writeNote(
             fid = str(getattr(sess, 'folderId', '') or getattr(sess, 'folder_id', '') or '')
     except Exception:
         pass
-    conn.execute(
-        'INSERT INTO blackboard (session_id, agent, key, value, priority, expires_at, workspace_path, folder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        (sessionId, agent, key, json.dumps(value) if not isinstance(value, str) else value, priority, expires, ws_path, fid),
-    )
-    brain_commit(conn)
+    path = tables.blackboard_file()
+    with tables.store_lock(str(path)):
+        rows = _rows()
+        rows.append(
+            {
+                'id': tables.next_id(rows),
+                'session_id': sessionId,
+                'agent': agent,
+                'key': key,
+                'value': json.dumps(value) if not isinstance(value, str) else value,
+                'priority': priority,
+                'created_at': utc_now_text(),
+                'expires_at': expires,
+                'workspace_path': ws_path,
+                'folder_id': fid,
+            }
+        )
+        _save(rows)
 
 
 def readNotes(
@@ -110,34 +131,31 @@ def readNotes(
     When `includeWorkspace` is true, notes with persist=workspace in the same
     workspace_path are also returned (tagged workspace).
     """
-    from app.services.memory_store import _row_as_wire
-
-    conn = _conn()
-    _cleanupExpired(conn)
-    ws_path = _resolve_workspace_path(sessionId, None) if includeWorkspace else ''
-    if includeWorkspace and ws_path:
-        query = 'SELECT * FROM blackboard WHERE (session_id = ? OR workspace_path = ?)'
-        params: list[object] = [sessionId, ws_path]
-    else:
-        query = 'SELECT * FROM blackboard WHERE session_id = ?'
-        params = [sessionId]
-    if agent:
-        query += ' AND agent = ?'
-        params.append(agent)
-    if key:
-        query += ' AND key = ?'
-        params.append(key)
-    query += ' ORDER BY priority DESC, created_at DESC'
-    rows = conn.execute(query, params).fetchall()
-    notes: list[dict[str, object]] = [_row_as_wire(r) for r in rows]
-    if ack and notes:
-        for n in notes:
-            # Workspace-persisted notes are not deleted on ack — they live until TTL.
-            if n.get('workspacePath'):
-                continue
-            if n.get('id'):
-                conn.execute('DELETE FROM blackboard WHERE id = ?', (n['id'],))
-        brain_commit(conn)
+    path = tables.blackboard_file()
+    with tables.store_lock(str(path)):
+        _cleanupExpired()
+        ws_path = _resolve_workspace_path(sessionId, None) if includeWorkspace else ''
+        rows = _rows()
+        if includeWorkspace and ws_path:
+            rows = [
+                r for r in rows
+                if str(r.get('session_id') or '') == sessionId or str(r.get('workspace_path') or '') == ws_path
+            ]
+        else:
+            rows = [r for r in rows if str(r.get('session_id') or '') == sessionId]
+        if agent:
+            rows = [r for r in rows if str(r.get('agent') or '') == agent]
+        if key:
+            rows = [r for r in rows if str(r.get('key') or '') == key]
+        rows.sort(key=lambda r: (as_int(r.get('priority'), 0), str(r.get('created_at') or '')), reverse=True)
+        notes: list[dict[str, object]] = [_row_as_wire({c: r.get(c) for c in _ROW_COLUMNS}) for r in rows]
+        if ack and notes:
+            keep: list[dict[str, object]] = []
+            for r in rows:
+                # Workspace-persisted notes are not deleted on ack — they live until TTL.
+                if r.get('workspace_path'):
+                    keep.append(r)
+            _save(keep)
     return cast('list[BlackboardNoteDict]', notes)
 
 
@@ -146,28 +164,44 @@ def clearNotes(sessionId: str, agent: str = '', scope: str = 'session') -> int:
 
     When scope='workspace', also clears workspace-persisted notes for the session's workspace.
     """
-    conn = _conn()
-    if scope == 'workspace':
-        ws_path = _resolve_workspace_path(sessionId, None)
-        if ws_path:
+    path = tables.blackboard_file()
+    with tables.store_lock(str(path)):
+        rows = _rows()
+        if scope == 'workspace':
+            ws_path = _resolve_workspace_path(sessionId, None)
+            if not ws_path:
+                return 0
             if agent:
-                cursor = conn.execute(
-                    'DELETE FROM blackboard WHERE workspace_path = ? AND agent = ?', (ws_path, agent)
-                )
+                kept = [
+                    r for r in rows
+                    if not (str(r.get('workspace_path') or '') == ws_path and str(r.get('agent') or '') == agent)
+                ]
             else:
-                cursor = conn.execute('DELETE FROM blackboard WHERE workspace_path = ?', (ws_path,))
-            brain_commit(conn)
-            return cursor.rowcount
-        return 0
-    if agent:
-        cursor = conn.execute('DELETE FROM blackboard WHERE session_id = ? AND agent = ?', (sessionId, agent))
-    else:
-        cursor = conn.execute('DELETE FROM blackboard WHERE session_id = ?', (sessionId,))
-    brain_commit(conn)
-    return cursor.rowcount
+                kept = [r for r in rows if str(r.get('workspace_path') or '') != ws_path]
+            removed = len(rows) - len(kept)
+            if removed:
+                _save(kept)
+            return removed
+        if agent:
+            kept = [
+                r for r in rows
+                if not (str(r.get('session_id') or '') == sessionId and str(r.get('agent') or '') == agent)
+            ]
+        else:
+            kept = [r for r in rows if str(r.get('session_id') or '') != sessionId]
+        removed = len(rows) - len(kept)
+        if removed:
+            _save(kept)
+        return removed
 
 
-def _cleanupExpired(conn) -> None:
-    """Delete expired notes."""
-    conn.execute("DELETE FROM blackboard WHERE expires_at IS NOT NULL AND expires_at < datetime('now')")
-    brain_commit(conn)
+def _cleanupExpired() -> None:
+    """Delete expired notes (called under the store lock)."""
+    rows = _rows()
+    now = utc_now_text()
+    kept = [
+        r for r in rows
+        if not (r.get('expires_at') and str(r.get('expires_at')) < now)
+    ]
+    if len(kept) != len(rows):
+        _save(kept)

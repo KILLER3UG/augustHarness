@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import sqlite3
 from pathlib import Path
 
 from app.json_narrowing import as_int, as_str
@@ -1516,35 +1515,131 @@ def _sessionSearchCoerce(args: dict[str, object], names: tuple[str, ...]) -> dic
     return out
 
 
-def _sessionSearchRows(
-    where: str,
-    params: list[object],
-    limit: int,
-    order: str = 'ASC',
-) -> list[sqlite3.Row]:
-    """One bounded read of the messages FTS join.
+def _jsonl_rows(path: Path) -> list[dict[str, object]]:
+    from app.services.memory_store import tables
 
-    ``messages_fts`` is external content over ``messages``; the MATCH predicate
-    names the real FTS table (a column- or alias-level MATCH is the anti-pattern
-    the hygiene script exists to catch), and the base table supplies the columns
-    so the response carries the same wire shape ``brain_query(store=messages)``
-    returns. The session title is a LEFT JOIN — a message whose session row is
-    gone still has transcript text worth finding, and dropping it would hide the
-    hit entirely.
+    return tables.ledger_rows(path)
+
+
+def _transcript_message_rows(session_cap: int = 400) -> list[dict[str, object]]:
+    """Every transcript message row (snake_case), newest-modified file first.
+
+    The transcripts are ``transcripts/<sessionId>.jsonl`` (one line per
+    message); reads are bounded the same way ``brain_query(store=messages)``
+    bounds them — at most ``session_cap`` transcript files.
     """
-    from app.services.memory_conn import conn as _conn
+    from app.lib.paths import dataPath
 
-    sql = (
-        'SELECT m.id, m.session_id, m.role, m.content, m.created_at, '
-        's.title AS session_title '
-        f'FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid '
-        'LEFT JOIN sessions s ON s.id = m.session_id '
-        f'WHERE {where} ORDER BY m.id {order} LIMIT ?'
-    )
-    return _conn().execute(sql, [*params, limit]).fetchall()
+    directory = dataPath('transcripts')
+    rows: list[dict[str, object]] = []
+    if not directory.is_dir():
+        return rows
+    files = sorted(
+        directory.glob('*.jsonl'),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+        reverse=True,
+    )[:session_cap]
+    for path in files:
+        sid = path.stem
+        for raw in _jsonl_rows(path):
+            row = dict(raw)
+            if not str(row.get('session_id') or ''):
+                row['session_id'] = sid
+            rows.append(row)
+    return rows
 
 
-def _sessionSearchMessage(row: sqlite3.Row, full: bool = True) -> dict[str, object]:
+def _session_title_by_id() -> dict[str, str]:
+    """Session id → title, from the sessions store (the LEFT JOIN stand-in —
+    a message whose session row is gone still has transcript text worth
+    finding, so a missing title just reads '')."""
+    titles: dict[str, str] = {}
+    try:
+        from app.services.memory_store import list_sessions
+
+        for session in list_sessions() or []:
+            sid = str(
+                getattr(session, 'id', '')
+                or (session.get('id') if isinstance(session, dict) else '')
+                or ''
+            )
+            if not sid:
+                continue
+            title = str(
+                getattr(session, 'title', '')
+                or (session.get('title') if isinstance(session, dict) else '')
+                or ''
+            )
+            titles[sid] = title
+    except Exception:
+        pass
+    return titles
+
+
+def _search_terms(query: str) -> list[str]:
+    """The searchable terms of a free-text query (the FTS tokenizer's
+    vocabulary — whitespace/symbol split). Empty when the query has no
+    searchable tokens."""
+    return [t for t in re.split(r'[^\w]+', query or '') if t.replace('"', '')]
+
+
+def _sessionSearchRows(
+    session_ids: set[str] | None,
+    role: str,
+    before_id: int,
+    after_id: int,
+    terms: list[str],
+    limit: int,
+    newest_first: bool = True,
+) -> list[dict[str, object]]:
+    """One bounded scan of the transcript rows.
+
+    The FTS index is gone with the database; the matcher is a case-insensitive
+    term match over the content text (the same vocabulary
+    ``kv._fts_match_query`` tokenizes), and the session title rides in from
+    the sessions store the way the SQL LEFT JOIN carried it. The response
+    keeps the same wire shape ``brain_query(store=messages)`` returns.
+    """
+    from app.services.memory_store.kv import fts_match
+
+    titles = _session_title_by_id()
+    rows = _transcript_message_rows()
+    out: list[dict[str, object]] = []
+    for row in rows:
+        sid = str(row.get('session_id') or '')
+        if session_ids is not None and sid not in session_ids:
+            continue
+        if role and str(row.get('role') or '') != role:
+            continue
+        mid = as_int(row.get('id'), 0)
+        if before_id and (not mid or mid >= before_id):
+            continue
+        if after_id and (not mid or mid <= after_id):
+            continue
+        content_text = str(row.get('content') or '')
+        try:
+            decoded = json.loads(content_text)
+            if isinstance(decoded, str):
+                content_text = decoded
+        except (TypeError, ValueError):
+            pass
+        if terms and not fts_match(content_text, ' '.join(terms)):
+            continue
+        out.append(
+            {
+                'id': mid,
+                'session_id': sid,
+                'role': str(row.get('role') or ''),
+                'content': content_text,
+                'created_at': str(row.get('created_at') or ''),
+                'session_title': titles.get(sid, ''),
+            }
+        )
+    out.sort(key=lambda r: as_int(r.get('id'), 0), reverse=newest_first)
+    return out[: max(1, int(limit))]
+
+
+def _sessionSearchMessage(row: dict[str, object], full: bool = True) -> dict[str, object]:
     """One message as the wire shape, with a bounded content preview.
 
     The preview is a plain prefix rather than ``snippet()``: the FTS5 snippet
@@ -1560,7 +1655,7 @@ def _sessionSearchMessage(row: sqlite3.Row, full: bool = True) -> dict[str, obje
     """
     wire = dict(row)
     try:
-        content = json.loads(wire.get('content') or '')
+        content = json.loads(str(wire.get('content') or ''))
         if isinstance(content, str):
             wire['content'] = content
     except (TypeError, ValueError):
@@ -1579,7 +1674,7 @@ def _sessionSearchMessage(row: sqlite3.Row, full: bool = True) -> dict[str, obje
 
 
 def _sessionSearchPreview(
-    rows: list[sqlite3.Row], full: bool = True
+    rows: list[dict[str, object]], full: bool = True
 ) -> list[dict[str, object]]:
     return [_sessionSearchMessage(r, full=full) for r in rows]
 
@@ -1688,14 +1783,12 @@ def _sessionSearchDiscovery(
     before_id: int,
     after_id: int,
 ) -> str:
-    """Discovery shape: FTS5 matches over messages, narrowed by session/role."""
+    """Discovery shape: term matches over transcript messages, narrowed by session/role."""
     import json as _json
 
-    from app.services.memory_store.kv import _fts_match_query
-
     lim = max(1, min(limit, _SESSION_SEARCH_MAX_LIMIT))
-    ftsQuery = _fts_match_query(query)
-    if not ftsQuery:
+    terms = _search_terms(query)
+    if not terms:
         return _json.dumps(
             {
                 'mode': 'search',
@@ -1704,21 +1797,15 @@ def _sessionSearchDiscovery(
                 'note': 'query has no searchable tokens (punctuation/short words only).',
             }
         )
-    where = 'messages_fts MATCH ?'
-    params: list[object] = [ftsQuery]
-    if session_id:
-        where += ' AND m.session_id = ?'
-        params.append(session_id)
-    if role:
-        where += ' AND m.role = ?'
-        params.append(role)
-    if before_id:
-        where += ' AND m.id < ?'
-        params.append(before_id)
-    if after_id:
-        where += ' AND m.id > ?'
-        params.append(after_id)
-    rows = _sessionSearchRows(where, params, lim, order='DESC')
+    rows = _sessionSearchRows(
+        {session_id} if session_id else None,
+        role,
+        before_id,
+        after_id,
+        terms,
+        lim,
+        newest_first=True,
+    )
     messages = _sessionSearchPreview(rows, full=False)
     return _json.dumps(
         {
@@ -1744,9 +1831,9 @@ def _sessionSearchScroll(session_id: str, before_id: int, after_id: int) -> str:
     import json as _json
 
     if after_id:
-        where = 'm.session_id = ? AND m.id > ?'
-        params: list[object] = [session_id, after_id]
-        rows = _sessionSearchRows(where, params, _SESSION_SEARCH_MAX_WINDOW, order='ASC')
+        rows = _sessionSearchRows(
+            {session_id}, '', before_id, after_id, [], _SESSION_SEARCH_MAX_WINDOW, newest_first=False
+        )
         messages = _sessionSearchPreview(rows)
         endId = messages[-1]['id'] if messages else 0
         return _json.dumps(
@@ -1764,12 +1851,9 @@ def _sessionSearchScroll(session_id: str, before_id: int, after_id: int) -> str:
             default=str,
             ensure_ascii=False,
         )
-    where = 'm.session_id = ?'
-    params = [session_id]
-    if before_id:
-        where += ' AND m.id < ?'
-        params.append(before_id)
-    rows = _sessionSearchRows(where, params, _SESSION_SEARCH_MAX_WINDOW, order='DESC')
+    rows = _sessionSearchRows(
+        {session_id}, '', before_id or 0, 0, [], _SESSION_SEARCH_MAX_WINDOW, newest_first=True
+    )
     messages = _sessionSearchPreview(rows)
     # DESC is the fetch order for "walk back"; the transcript reads forward.
     messages.reverse()
@@ -1792,6 +1876,19 @@ def _sessionSearchScroll(session_id: str, before_id: int, after_id: int) -> str:
         default=str,
         ensure_ascii=False,
     )
+
+
+def _message_counts() -> dict[str, int]:
+    """Per-session transcript line counts (the COUNT-grouped query's stand-in)."""
+    from app.lib.paths import dataPath
+
+    counts: dict[str, int] = {}
+    directory = dataPath('transcripts')
+    if not directory.is_dir():
+        return counts
+    for path in directory.glob('*.jsonl'):
+        counts[path.stem] = len(_jsonl_rows(path))
+    return counts
 
 
 def _sessionSearchBrowse(
@@ -1823,7 +1920,6 @@ def _sessionSearchBrowse(
     """
     import json as _json
 
-    from app.services.memory_conn import conn as _conn
     from app.services.workbench import workbench as _wb
 
     lim = max(1, min(as_int(limit, _SESSION_SEARCH_DEFAULT_BROWSE_LIMIT),
@@ -1847,27 +1943,49 @@ def _sessionSearchBrowse(
     except Exception as exc:
         errors.append(f'workbench sessions: {type(exc).__name__}: {exc}')
     try:
-        rows = _conn().execute(
-            'SELECT s.id, s.title, s.updated_at, s.started_at, s.is_archived, '
-            'COUNT(m.id) AS msg_count '
-            'FROM sessions s LEFT JOIN messages m ON m.session_id = s.id '
-            'GROUP BY s.id ORDER BY COALESCE(s.updated_at, s.started_at) DESC '
-            'LIMIT ? OFFSET ?',
-            (off + lim, 0),
-        ).fetchall()
-        for row in rows:
-            sid = str(row['id'] or '')
+        from app.services.memory_store import list_sessions
+
+        # Message counts come from the transcript files themselves (one line
+        # count per session) rather than the stored ``message_count``, which
+        # the workbench writes from its in-memory copy and which a row written
+        # through the message path never updates.
+        counts = _message_counts()
+        for session in list_sessions() or []:
+            sid = str(
+                getattr(session, 'id', '')
+                or (session.get('id') if isinstance(session, dict) else '')
+                or ''
+            )
             if not sid or sid in items:
                 continue
+            title = str(
+                getattr(session, 'title', '')
+                or (session.get('title') if isinstance(session, dict) else '')
+                or ''
+            )
+            updated = str(
+                getattr(session, 'updatedAt', '')
+                or (session.get('updatedAt') if isinstance(session, dict) else '')
+                or ''
+            )
+            started = str(
+                getattr(session, 'startedAt', '')
+                or (session.get('startedAt') if isinstance(session, dict) else '')
+                or ''
+            )
+            archived = bool(
+                getattr(session, 'isArchived', None)
+                or (session.get('isArchived') if isinstance(session, dict) else False)
+            )
             items[sid] = {
                 'sessionId': sid,
-                'title': str(row['title'] or '')[:120],
-                'messageCount': int(row['msg_count'] or 0),
-                'updatedAt': str(row['updated_at'] or row['started_at'] or ''),
-                'isArchived': bool(row['is_archived']),
+                'title': title[:120],
+                'messageCount': counts.get(sid, 0),
+                'updatedAt': updated or started,
+                'isArchived': archived,
             }
     except Exception as exc:
-        errors.append(f'sessions table: {type(exc).__name__}: {exc}')
+        errors.append(f'sessions store: {type(exc).__name__}: {exc}')
     sessions = sorted(
         items.values(),
         key=lambda x: str(x.get('updatedAt') or ''),

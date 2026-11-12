@@ -1,4 +1,9 @@
-"""Usage analytics and statistics endpoints backed by real SQLite usage_events."""
+"""Usage analytics and statistics endpoints backed by the usage-events ledger.
+
+The ``usage_events`` table became ``<dataDir>/telemetry/usage-events.jsonl``
+(one JSON line per event, the row the table carried); ``memory_store.rest``
+owns the writer, this router owns the aggregates.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from app.services import memory_store
-from app.services.memory_store.rest import _conn
+from app.services.memory_store import tables
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
 
@@ -18,6 +23,19 @@ def _parse_range_cutoff(range_str: str) -> tuple[datetime, str]:
     days = 7 if range_str == "7d" else 30
     cutoff = now - timedelta(days=days)
     return cutoff, cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _window_rows(cutoff_str: str) -> list[dict[str, Any]]:
+    """Usage rows with created_at in the window (newest last, file order)."""
+    return [
+        row
+        for row in tables.ledger_rows(tables.usage_events_file())
+        if str(row.get("created_at") or "") >= cutoff_str
+    ]
+
+
+def _tokens(row: dict[str, Any]) -> int:
+    return int(row.get("input_tokens") or 0) + int(row.get("output_tokens") or 0)
 
 
 @router.get("")
@@ -53,68 +71,39 @@ def get_sessions_usage(
 
 
 @router.get("/stats")
-def get_usage_stats(range: str = Query("30d")) -> dict[str, Any]:
+def get_usage_stats(range: str = Query("30d")) -> dict[str, Any]:  # noqa: A002 — public query name
     """Get real summary statistics for the specified time range."""
     _, cutoff_str = _parse_range_cutoff(range)
-    conn = _conn()
+    rows = _window_rows(cutoff_str)
 
     # Total tokens, sessions, messages in the range
-    row = conn.execute(
-        """
-        SELECT
-            COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
-            COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit,
-            COALESCE(SUM(cache_miss_tokens), 0) AS cache_miss,
-            COUNT(DISTINCT session_id) AS session_count,
-            COUNT(*) AS message_count,
-            COUNT(DISTINCT strftime('%Y-%m-%d', created_at)) AS active_days
-        FROM usage_events
-        WHERE created_at >= ?
-        """,
-        (cutoff_str,),
-    ).fetchone()
-
-    total_tokens = int(row["total_tokens"]) if row else 0
-    session_count = int(row["session_count"]) if row else 0
-    message_count = int(row["message_count"]) if row else 0
-    active_days = int(row["active_days"]) if row else 0
+    total_tokens = sum(_tokens(r) for r in rows)
+    cache_hit = sum(int(r.get("cache_hit_tokens") or 0) for r in rows)
+    cache_miss = sum(int(r.get("cache_miss_tokens") or 0) for r in rows)
+    session_count = len({str(r.get("session_id") or "") for r in rows if r.get("session_id")})
+    message_count = len(rows)
+    active_dates_set = {str(r.get("created_at") or "")[:10] for r in rows}
+    active_days = len({d for d in active_dates_set if d})
     # The cache split, in the SAME key names `memory_store.get_usage` already
     # uses. These columns were written and never read here, so a session that
     # re-read 60k cached tokens looked identical to one that re-sent them: the
     # page could not explain why its own cost was low. `totalTokens` stays
     # BILLED tokens (input + output) — folding cache reads into it would move
     # every historical number on the page and double-count the prompt.
-    cache_hit = int(row["cache_hit"]) if row else 0
-    cache_miss = int(row["cache_miss"]) if row else 0
     cache_total = cache_hit + cache_miss
 
     # Peak tokens in a single day
-    peak_row = conn.execute(
-        """
-        SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS day_tokens
-        FROM usage_events
-        WHERE created_at >= ?
-        GROUP BY strftime('%Y-%m-%d', created_at)
-        ORDER BY day_tokens DESC
-        LIMIT 1
-        """,
-        (cutoff_str,),
-    ).fetchone()
-    peak_tokens = int(peak_row["day_tokens"]) if peak_row else 0
+    by_day: dict[str, int] = {}
+    for r in rows:
+        day = str(r.get("created_at") or "")[:10]
+        if day:
+            by_day[day] = by_day.get(day, 0) + _tokens(r)
+    peak_tokens = max(by_day.values()) if by_day else 0
 
     # Current streak & longest streak (within the selected range — the
     # card is labeled by range, so an unbounded streak would contradict
     # the range-limited numbers next to it).
-    day_rows = conn.execute(
-        """
-        SELECT DISTINCT strftime('%Y-%m-%d', created_at) AS day
-        FROM usage_events
-        WHERE created_at >= ?
-        ORDER BY day DESC
-        """,
-        (cutoff_str,),
-    ).fetchall()
-    active_dates = {r["day"] for r in day_rows}
+    active_dates = {d for d in by_day}
 
     today = datetime.now(timezone.utc).date()
     current_streak = 0
@@ -136,7 +125,10 @@ def get_usage_stats(range: str = Query("30d")) -> dict[str, Any]:
     run = 0
     prev_day: date | None = None
     for day_str in sorted(active_dates):
-        d = datetime.strptime(day_str, '%Y-%m-%d').date()
+        try:
+            d = datetime.strptime(day_str, '%Y-%m-%d').date()
+        except ValueError:
+            continue
         if prev_day is not None and (d - prev_day).days == 1:
             run += 1
         else:
@@ -145,20 +137,19 @@ def get_usage_stats(range: str = Query("30d")) -> dict[str, Any]:
         prev_day = d
 
     # Favorite model in this range
-    fav_row = conn.execute(
-        """
-        SELECT model, COALESCE(SUM(input_tokens + output_tokens), 0) AS model_tokens
-        FROM usage_events
-        WHERE created_at >= ? AND model IS NOT NULL AND model != ''
-        GROUP BY model
-        ORDER BY model_tokens DESC
-        LIMIT 1
-        """,
-        (cutoff_str,),
-    ).fetchone()
+    by_model_tokens: dict[str, int] = {}
+    for r in rows:
+        model = str(r.get("model") or "")
+        if not model:
+            continue
+        by_model_tokens[model] = by_model_tokens.get(model, 0) + _tokens(r)
+    fav_model: str | None = None
+    fav_tokens = 0
+    for model, tokens in sorted(by_model_tokens.items(), key=lambda kv: -kv[1]):
+        fav_model = model
+        fav_tokens = tokens
+        break
 
-    fav_model = fav_row["model"] if fav_row else None
-    fav_tokens = int(fav_row["model_tokens"]) if fav_row else 0
     fav_share = (fav_tokens / total_tokens * 100.0) if total_tokens > 0 else 0.0
 
     return {
@@ -180,7 +171,7 @@ def get_usage_stats(range: str = Query("30d")) -> dict[str, Any]:
 
 
 @router.get("/heatmap")
-def get_usage_heatmap(range: str = Query("30d")) -> dict[str, Any]:
+def get_usage_heatmap(range: str = Query("30d")) -> dict[str, Any]:  # noqa: A002 — public query name
     """Get daily token activity for the heatmap grid.
 
     The 52-week grid always shows a full year, so ``range`` is accepted
@@ -189,66 +180,44 @@ def get_usage_heatmap(range: str = Query("30d")) -> dict[str, Any]:
     """
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
-    conn = _conn()
 
-    rows = conn.execute(
-        """
-        SELECT 
-            strftime('%Y-%m-%d', created_at) AS day,
-            COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens
-        FROM usage_events
-        WHERE created_at >= ?
-        GROUP BY day
-        ORDER BY day ASC
-        """,
-        (cutoff,),
-    ).fetchall()
-
-    results = [{"date": r["day"], "count": int(r["total_tokens"])} for r in rows]
+    rows = _window_rows(cutoff)
+    by_day: dict[str, int] = {}
+    for r in rows:
+        day = str(r.get("created_at") or "")[:10]
+        if day:
+            by_day[day] = by_day.get(day, 0) + _tokens(r)
+    results = [{"date": day, "count": tokens} for day, tokens in sorted(by_day.items())]
     return {"results": results}
 
 
 @router.get("/by-model")
-def get_usage_by_model(range: str = Query("30d")) -> dict[str, Any]:
+def get_usage_by_model(range: str = Query("30d")) -> dict[str, Any]:  # noqa: A002 — public query name
     """Get per-model token breakdown and percentage share."""
     _, cutoff_str = _parse_range_cutoff(range)
-    conn = _conn()
+    rows = _window_rows(cutoff_str)
+    grand_total = sum(_tokens(r) for r in rows)
 
-    total_row = conn.execute(
-        """
-        SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS grand_total
-        FROM usage_events
-        WHERE created_at >= ?
-        """,
-        (cutoff_str,),
-    ).fetchone()
-    grand_total = int(total_row["grand_total"]) if total_row else 0
-
-    rows = conn.execute(
-        """
-        SELECT
-            COALESCE(model, 'unknown') AS model_name,
-            COALESCE(SUM(input_tokens + output_tokens), 0) AS model_tokens,
-            COALESCE(SUM(cache_hit_tokens), 0) AS model_cache_hit,
-            COALESCE(SUM(cache_miss_tokens), 0) AS model_cache_miss
-        FROM usage_events
-        WHERE created_at >= ?
-        GROUP BY model_name
-        ORDER BY model_tokens DESC
-        """,
-        (cutoff_str,),
-    ).fetchall()
+    agg: dict[str, dict[str, int]] = {}
+    for r in rows:
+        model_name = str(r.get("model") or "") or "unknown"
+        bucket = agg.setdefault(
+            model_name, {"tokens": 0, "cache_hit": 0, "cache_miss": 0}
+        )
+        bucket["tokens"] += _tokens(r)
+        bucket["cache_hit"] += int(r.get("cache_hit_tokens") or 0)
+        bucket["cache_miss"] += int(r.get("cache_miss_tokens") or 0)
 
     results = []
-    for r in rows:
-        tokens = int(r["model_tokens"])
+    for model_name, bucket in sorted(agg.items(), key=lambda kv: -kv[1]["tokens"]):
+        tokens = bucket["tokens"]
         pct = (tokens / grand_total * 100.0) if grand_total > 0 else 0.0
         results.append({
-            "model": r["model_name"],
+            "model": model_name,
             "tokens": tokens,
             "percent": pct,
-            "cacheHitTokens": int(r["model_cache_hit"]),
-            "cacheMissTokens": int(r["model_cache_miss"]),
+            "cacheHitTokens": bucket["cache_hit"],
+            "cacheMissTokens": bucket["cache_miss"],
         })
 
     return {"results": results}
@@ -261,21 +230,8 @@ def get_usage_by_day(range: str = Query("30d")) -> dict[str, Any]:  # noqa: A002
     now = datetime.now(timezone.utc).date()
     start_date = now - timedelta(days=num_days - 1)
     cutoff_str = start_date.strftime("%Y-%m-%d 00:00:00")
-    conn = _conn()
 
-    rows = conn.execute(
-        """
-        SELECT
-            strftime('%Y-%m-%d', created_at) AS day,
-            COALESCE(model, 'unknown') AS model_name,
-            COALESCE(SUM(input_tokens + output_tokens), 0) AS model_tokens
-        FROM usage_events
-        WHERE created_at >= ?
-        GROUP BY day, model_name
-        ORDER BY day ASC
-        """,
-        (cutoff_str,),
-    ).fetchall()
+    rows = _window_rows(cutoff_str)
 
     # The parameter name shadows the builtin range() — walk the calendar
     # instead of calling it.
@@ -286,9 +242,10 @@ def get_usage_by_day(range: str = Query("30d")) -> dict[str, Any]:  # noqa: A002
         d += timedelta(days=1)
 
     for r in rows:
-        d = r["day"]
-        if d in days_map:
-            days_map[d][r["model_name"]] = int(r["model_tokens"])
+        day = str(r.get("created_at") or "")[:10]
+        if day in days_map:
+            model_name = str(r.get("model") or "") or "unknown"
+            days_map[day][model_name] = days_map[day].get(model_name, 0) + _tokens(r)
 
     results = []
     for d_str in sorted(days_map.keys()):

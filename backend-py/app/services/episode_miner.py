@@ -2,9 +2,10 @@
 
 The self-improvement loop's deterministic half. Units are EPISODES, not
 conversations: failure→recovery, correction→accepted, and abandoned-approach
-windows mined from what is ALREADY stored — the ``messages`` transcripts,
-``turn_outcomes`` telemetry, and ``tool_guardrail_log``. No runtime change
-to the chat loop; the whole pass is asynchronous and post-hoc.
+windows mined from what is ALREADY stored — the ``transcripts/`` jsonl files
+(through the public ``get_messages`` door), the turn-outcomes telemetry, and
+the guardrail log. No runtime change to the chat loop; the whole pass is
+asynchronous and post-hoc.
 
 Phase B layers tier-1 on top: a fingerprint per episode (turn_outcomes'
 signature discipline generalized to ``cause-class:token`` shape), a fixed
@@ -12,10 +13,10 @@ six-criterion rubric scored with no model calls, and a cost gate — only the
 top slice (≤ flagRateCap, default 5%) within a daily escalation budget is
 flagged to tier 2, where the distiller judge (skill_distiller.py) runs.
 
-Tables: ``episodes`` + ``failure_fingerprints`` (migration 028). Fingerprints
-are brain_query-searchable via the shared store helpers below — the earlier
-draft's "add a memory section to the search tool" is CUT (2026-08-30).
-Retention: 90-day prune, called from the consolidation sweep (OQ 6 default).
+Stores: ``<state>/episodes.json`` + ``<telemetry>/failure-fingerprints.json``
+(the SQL-era episodes + failure_fingerprints tables). Fingerprints are
+brain_query-searchable via the shared store helpers below. Retention: 90-day
+prune, called from the consolidation sweep (OQ 6 default).
 """
 
 from __future__ import annotations
@@ -28,8 +29,7 @@ from typing import Any, cast
 
 from app.json_narrowing import as_int
 from app.lib.paths import assertPytestDataDirIsolated
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.services.memory_store import tables
 from app.services.message_sources import MACHINE_SOURCES as _MACHINE_SOURCES
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ def _messageText(content: object) -> str:
 
 
 def _loadContent(raw: object) -> object:
-    """Parse a stored content column; raw text passes through (§12 F-2 —
+    """Parse a stored content cell; raw text passes through (§12 F-2 —
     the app itself writes non-JSON rows, e.g. [Proxy Self-Heal] nudges)."""
     s = str(raw if raw is not None else '')
     if not s:
@@ -156,7 +156,7 @@ def _isMachineInjected(text: str) -> bool:
 def _isMachineRow(source: str, text: str) -> bool:
     """Provenance-first machine filter (audit C3/D7, migration 049).
 
-    The ``messages.source`` column is the authority: the loop tags its
+    The ``source`` field is the authority: the loop tags its
     plumbing once at write time (``harness_nudge``, ``queued_user``,
     ``subagent_results``), so no prefix list has to chase new block shapes.
     The legacy prefix filter remains ONLY for pre-049 rows whose source is
@@ -171,21 +171,28 @@ def _isMachineRow(source: str, text: str) -> bool:
 # ── window extraction ─────────────────────────────────────────
 
 
-def _errorReceipts(blocks_json: object) -> list[str]:
+def _errorReceipts(blocks: object) -> list[str]:
     """The failures this message's structured blocks record, as excerpts.
 
-    ``blocks_json`` (migration 047) carries the tool cards the harness itself
-    decided were errors — ``tool.status == 'error'``, written from
+    The structured payload (migration 047) carries the tool cards the harness
+    itself decided were errors — ``tool.status == 'error'``, written from
     ``normalize_tool_result``'s ``is_error`` verdict. That is the difference
     between "this call failed" and "this text contains the word traceback".
+
+    Accepts the stored ``blocksJson`` string, a decoded block list, or a full
+    decoded payload dict — whatever the caller's read door handed over.
     """
     from app.services.memory_store.transcript_blocks import decode_blocks
 
     out: list[str] = []
-    blocks = decode_blocks(blocks_json).get('blocks')
-    if not isinstance(blocks, list):
+    decoded: object = blocks
+    if isinstance(blocks, str):
+        decoded = decode_blocks(blocks).get('blocks')
+    elif isinstance(blocks, dict):
+        decoded = blocks.get('blocks', blocks)
+    if not isinstance(decoded, list):
         return out
-    for block in blocks:
+    for block in decoded:
         if not isinstance(block, dict) or block.get('type') != 'toolCall':
             continue
         tool = block.get('tool')
@@ -243,6 +250,27 @@ def _innerText(content: object) -> str:
     return ''
 
 
+def _session_messages(sessionId: str) -> list[dict[str, Any]]:
+    """One session's transcript rows through the public read door.
+
+    ``get_messages`` decodes the content cell and merges the structured
+    payload, so the miner sees the same shapes the live loop wrote — including
+    the ``source`` provenance and the ``blocks`` list the error receipts come
+    from.
+    """
+    from app.services.memory_store import get_messages
+
+    rows: list[dict[str, Any]] = []
+    try:
+        for m in get_messages(sessionId):
+            rows.append(dict(m))
+    except Exception:
+        logger.debug('episode miner: transcript read failed for %s', sessionId, exc_info=True)
+        return []
+    rows.sort(key=lambda r: as_int(r.get('id'), 0))
+    return rows
+
+
 def extract_episodes(sessionId: str) -> list[dict[str, Any]]:
     """Mine one session's stored transcript into episode windows.
 
@@ -253,16 +281,13 @@ def extract_episodes(sessionId: str) -> list[dict[str, Any]]:
         immediate re-correction
       * abandoned_approach — user abandon marker → continuation
     """
-    rows = _conn().execute(
-        'SELECT id, role, content, source, blocks_json FROM messages WHERE session_id = ? ORDER BY id',
-        (sessionId,),
-    ).fetchall()
+    rows = _session_messages(sessionId)
     # Content is parsed defensively — raw-text rows are real
     # (sessions.py stores str payloads verbatim) and must never abort mining.
-    parsed = [_loadContent(r['content']) for r in rows]
-    receipts: list[list[str]] = [_errorReceipts(r['blocks_json']) for r in rows]
+    parsed = [_loadContent(r.get('content')) for r in rows]
+    receipts: list[list[str]] = [_errorReceipts(r.get('blocksJson', r.get('blocks'))) for r in rows]
     msgs: list[tuple[int, str, str, str]] = [
-        (int(r['id']), str(r['role']), _messageText(p), str(r['source'] or ''))
+        (as_int(r.get('id'), 0), str(r.get('role') or ''), _messageText(p), str(r.get('source') or ''))
         for r, p in zip(rows, parsed)
     ]
     clean: list[bool] = [
@@ -346,6 +371,16 @@ def extract_episodes(sessionId: str) -> list[dict[str, Any]]:
 
 _SLUG_RE = re.compile('[a-z0-9]+')
 
+_FINGERPRINTS_FILE = tables.failure_fingerprints_file
+
+
+def _fingerprint_rows() -> list[dict[str, Any]]:
+    return [dict(r) for r in tables.load_rows(_FINGERPRINTS_FILE())]
+
+
+def _save_fingerprint_rows(rows: list[dict[str, Any]]) -> None:
+    tables.save_rows(_FINGERPRINTS_FILE(), rows)
+
 
 def _keyTokens(text: str, cap: int = 3) -> list[str]:
     """Normalized key tokens: slug-cased, stopword-stripped, by frequency —
@@ -390,23 +425,27 @@ def fingerprint_for(episode: dict[str, Any]) -> str:
 
 def upsert_fingerprint(fp: str) -> dict[str, Any]:
     """Insert or increment one fingerprint; returns its row."""
-    conn = _conn()
     now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """
-        INSERT INTO failure_fingerprints (fingerprint, episode_count, first_seen, last_seen, status)
-        VALUES (?, 1, ?, ?, 'open')
-        ON CONFLICT(fingerprint) DO UPDATE SET
-          episode_count = episode_count + 1,
-          last_seen = excluded.last_seen
-        """,
-        (fp, now, now),
-    )
-    brain_commit(conn)
-    row = conn.execute(
-        'SELECT * FROM failure_fingerprints WHERE fingerprint = ?', (fp,)
-    ).fetchone()
-    return dict(row) if row else {}
+    with tables.store_lock(str(_FINGERPRINTS_FILE())):
+        rows = _fingerprint_rows()
+        for row in rows:
+            if str(row.get('fingerprint') or '') == fp:
+                row['episode_count'] = int(row.get('episode_count') or 0) + 1
+                row['last_seen'] = now
+                _save_fingerprint_rows(rows)
+                return row
+        row = {
+            'id': tables.next_id(rows),
+            'fingerprint': fp,
+            'episode_count': 1,
+            'first_seen': now,
+            'last_seen': now,
+            'status': 'open',
+            'flagged': 0,
+        }
+        rows.append(row)
+        _save_fingerprint_rows(rows)
+        return row
 
 
 def paraphrase_dedupe(fp: str, text: str, existing: list[tuple[str, str]]) -> str:
@@ -437,6 +476,16 @@ def paraphrase_dedupe(fp: str, text: str, existing: list[tuple[str, str]]) -> st
 
 # ── storage helpers ──────────────────────────────────────────────────────
 
+_EPISODES_FILE = tables.episodes_file
+
+
+def _episode_rows() -> list[dict[str, Any]]:
+    return [dict(r) for r in tables.load_rows(_EPISODES_FILE())]
+
+
+def _save_episode_rows(rows: list[dict[str, Any]]) -> None:
+    tables.save_rows(_EPISODES_FILE(), rows)
+
 
 def _encodedEvents(episode: dict[str, Any]) -> str:
     return json.dumps(episode.get('events') or [], ensure_ascii=False)
@@ -447,10 +496,10 @@ def _existingEpisodeId(episode: dict[str, Any]) -> int | None:
 
     Identity is the window's CONTENT — (session, kind, events, outcome) — not
     ``start_message_id``. The workbench save rewrites the whole transcript as
-    DELETE-all + re-INSERT (``memory_store/sessions.py``), so the rowid of a
+    DELETE-all + re-INSERT (``memory_store/sessions.py``), so the id of a
     window's first message changes at every durability barrier; keying dedupe
     on it made every re-mine look like a new episode. Four real windows became
-    41 rows, and each pass re-incremented ``failure_fingerprints.episode_count``
+    41 rows, and each pass re-incremented the fingerprint's ``episode_count``
     — faking the recurrence that escalates a fingerprint to the distiller.
 
     ``start_message_id`` is still stored (nothing reads it: it is provenance
@@ -459,51 +508,51 @@ def _existingEpisodeId(episode: dict[str, Any]) -> int | None:
     session collapse into one episode. Cross-session recurrence — the signal
     that actually matters — is counted by ``_sameCauseSessions``.
     """
-    row = (
-        _conn()
-        .execute(
-            'SELECT id FROM episodes WHERE session_id = ? AND kind = ? AND outcome = ? AND events = ?',
-            (
-                str(episode.get('session_id', '')),
-                str(episode.get('kind', '')),
-                str(episode.get('outcome', 'unresolved')),
-                _encodedEvents(episode),
-            ),
-        )
-        .fetchone()
-    )
-    return int(row['id']) if row else None
+    for row in _episode_rows():
+        if (
+            str(row.get('session_id') or '') == str(episode.get('session_id', ''))
+            and str(row.get('kind') or '') == str(episode.get('kind', ''))
+            and str(row.get('outcome') or 'unresolved') == str(episode.get('outcome', 'unresolved'))
+            and str(row.get('events') or '') == _encodedEvents(episode)
+        ):
+            return as_int(row.get('id'), 0)
+    return None
 
 
 def save_episode(episode: dict[str, Any]) -> int:
     """Persist one mined episode (deduped on the window's content)."""
     # Surface tests that bypass the autouse isolatedData fixture.
     assertPytestDataDirIsolated('episode_miner.save_episode')
-    conn = _conn()
     existing = _existingEpisodeId(episode)
     if existing is not None:
         return existing
     now = datetime.now(timezone.utc).isoformat()
-    cur = conn.execute(
-        """
-        INSERT INTO episodes (session_id, kind, start_message_id, end_message_id,
-                              events, outcome, fingerprint_id, tier, scope, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-        """,
-        (
-            str(episode.get('session_id', '')),
-            str(episode.get('kind', '')),
-            int(as_int(episode.get('start_message_id', 0), 0)),
-            int(as_int(episode.get('end_message_id', 0), 0)),
-            _encodedEvents(episode),
-            str(episode.get('outcome', 'unresolved')),
-            str(episode.get('fingerprint_id', '')),
-            str(episode.get('scope', '') or ''),
-            now,
-        ),
-    )
-    brain_commit(conn)
-    return int(as_int(cur.lastrowid, 0))
+    path = _EPISODES_FILE()
+    with tables.store_lock(str(path)):
+        rows = _episode_rows()
+        row_id = tables.next_id(rows)
+        rows.append(
+            {
+                'id': row_id,
+                'session_id': str(episode.get('session_id', '')),
+                'kind': str(episode.get('kind', '')),
+                'start_message_id': as_int(episode.get('start_message_id', 0), 0),
+                'end_message_id': as_int(episode.get('end_message_id', 0), 0),
+                'events': _encodedEvents(episode),
+                'outcome': str(episode.get('outcome', 'unresolved')),
+                'fingerprint_id': str(episode.get('fingerprint_id', '')),
+                'tier': 1,
+                'scope': str(episode.get('scope', '') or ''),
+                'source': str(episode.get('source', '') or ''),
+                'tier1_result': None,
+                'judge_verdict': None,
+                'applied_label': None,
+                'quarantined': 0,
+                'created_at': now,
+            }
+        )
+        _save_episode_rows(rows)
+    return row_id
 
 
 def _episodeExists(episode: dict[str, Any]) -> bool:
@@ -516,24 +565,25 @@ def _episodeExists(episode: dict[str, Any]) -> bool:
 
 def _existingFingerprintTexts(limit: int = 25) -> list[tuple[str, str]]:
     """(fingerprint, excerpt-text) pairs for paraphrase dedupe, rebuilt from
-    the episodes table. §12 F-6 (related): record_episode used to read a
+    the episodes store. §12 F-6 (related): record_episode used to read a
     nonexistent ``last_excerpt`` column, so only the token-containment
     dedupe lane ever ran."""
     out: list[tuple[str, str]] = []
-    for r in _conn().execute(
-        """
-        SELECT fingerprint_id, events FROM episodes
-        WHERE fingerprint_id != ''
-        GROUP BY fingerprint_id HAVING MAX(id)
-        ORDER BY MAX(id) DESC LIMIT ?
-        """,
-        (int(limit),),
-    ).fetchall():
+    rows = [r for r in _episode_rows() if str(r.get('fingerprint_id') or '')]
+    rows.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
+    seen: set[str] = set()
+    for r in rows:
+        fp = str(r.get('fingerprint_id') or '')
+        if fp in seen:
+            continue
+        seen.add(fp)
+        if len(seen) > int(limit):
+            break
         try:
-            events = json.loads(str(r['events']))
+            events = json.loads(str(r.get('events') or '[]'))
         except Exception:
             events = []
-        out.append((str(r['fingerprint_id']), _episodeText({'events': events})))
+        out.append((fp, _episodeText({'events': events})))
     return out
 
 
@@ -556,15 +606,13 @@ def _episodeText(episode: dict[str, Any]) -> str:
 
 
 def recent_fingerprints(limit: int = 25) -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        'SELECT * FROM failure_fingerprints ORDER BY last_seen DESC LIMIT ?',
-        (int(limit),),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    rows = _fingerprint_rows()
+    rows.sort(key=lambda r: str(r.get('last_seen') or ''), reverse=True)
+    return rows[: int(limit)]
 
 
-def _parseEpisodeRow(row: Any) -> dict[str, Any]:
-    """DB row → dict with ``events`` parsed from its JSON column."""
+def _parseEpisodeRow(row: dict[str, Any]) -> dict[str, Any]:
+    """Store row → dict with ``events`` parsed from its JSON field."""
     ep = dict(row)
     try:
         ep['events'] = json.loads(str(ep.get('events') or '[]'))
@@ -577,40 +625,60 @@ def unscored_episodes(limit: int = 200) -> list[dict[str, Any]]:
     """Tier-1 episodes that have not been scored yet (no tier-1 result).
 
     §12 F-3: the rubric result lives in ``tier1_result`` — the tier-2
-    ``judge_verdict`` column must stay empty until the distiller judges, or
+    ``judge_verdict`` field must stay empty until the distiller judges, or
     the distiller's unjudged selector is empty by construction."""
-    rows = _conn().execute(
-        """
-        SELECT * FROM episodes
-        WHERE tier = 1 AND tier1_result IS NULL AND quarantined = 0
-        ORDER BY id DESC LIMIT ?
-        """,
-        (int(limit),),
-    ).fetchall()
-    return [_parseEpisodeRow(r) for r in rows]
+    rows = [
+        r for r in _episode_rows()
+        if int(r.get('tier') or 1) == 1
+        and r.get('tier1_result') is None
+        and int(r.get('quarantined') or 0) == 0
+    ]
+    rows.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
+    return [_parseEpisodeRow(r) for r in rows[: int(limit)]]
 
 
 def flagged_episodes(limit: int = 50) -> list[dict[str, Any]]:
-    rows = _conn().execute(
-        'SELECT * FROM episodes WHERE tier = 2 AND quarantined = 0 ORDER BY id DESC LIMIT ?',
-        (int(limit),),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    rows = [
+        r for r in _episode_rows()
+        if int(r.get('tier') or 1) == 2 and int(r.get('quarantined') or 0) == 0
+    ]
+    rows.sort(key=lambda r: as_int(r.get('id'), 0), reverse=True)
+    return rows[: int(limit)]
 
 
 def set_flagged(episodeId: int, flagged: bool) -> None:
-    conn = _conn()
-    conn.execute('UPDATE episodes SET tier = ? WHERE id = ?', (2 if flagged else 1, int(episodeId)))
-    brain_commit(conn)
+    path = _EPISODES_FILE()
+    with tables.store_lock(str(path)):
+        rows = _episode_rows()
+        for row in rows:
+            if as_int(row.get('id'), 0) == int(episodeId):
+                row['tier'] = 2 if flagged else 1
+                break
+        _save_episode_rows(rows)
 
 
 def set_judge_verdict(episodeId: int, verdict: str) -> None:
-    conn = _conn()
-    conn.execute(
-        'UPDATE episodes SET judge_verdict = ?, tier = 2 WHERE id = ?',
-        (verdict, int(episodeId)),
-    )
-    brain_commit(conn)
+    path = _EPISODES_FILE()
+    with tables.store_lock(str(path)):
+        rows = _episode_rows()
+        for row in rows:
+            if as_int(row.get('id'), 0) == int(episodeId):
+                row['judge_verdict'] = verdict
+                row['tier'] = 2
+                break
+        _save_episode_rows(rows)
+
+
+def set_applied_label(episodeId: int, label: str) -> None:
+    """Stamp which skill (or promotion verdict) the episode produced."""
+    path = _EPISODES_FILE()
+    with tables.store_lock(str(path)):
+        rows = _episode_rows()
+        for row in rows:
+            if as_int(row.get('id'), 0) == int(episodeId):
+                row['applied_label'] = label
+                break
+        _save_episode_rows(rows)
 
 
 # ── tier-1 rubric ───────────────────────────────
@@ -664,11 +732,13 @@ def score_episode(episode: dict[str, Any], fingerprintCount: int, sameCauseSessi
 
 
 def _sameCauseSessions(fp: str) -> int:
-    row = _conn().execute(
-        'SELECT COUNT(DISTINCT session_id) AS n FROM episodes WHERE fingerprint_id = ? AND quarantined = 0',
-        (fp,),
-    ).fetchone()
-    return int(row['n']) if row else 0
+    return len(
+        {
+            str(r.get('session_id') or '')
+            for r in _episode_rows()
+            if str(r.get('fingerprint_id') or '') == fp and int(r.get('quarantined') or 0) == 0
+        }
+    )
 
 
 def flag_top_slice(
@@ -681,26 +751,24 @@ def flag_top_slice(
     at most ``budgetPerDay`` per pass, recurrence-ranked. Flagged
     fingerprints flip ``flagged = 1`` so the distiller can find them.
     """
-    conn = _conn()
     episodes = unscored_episodes()
     if not episodes:
         return {'scored': 0, 'flagged': 0}
+    fingerprints = {str(r.get('fingerprint') or ''): r for r in _fingerprint_rows()}
+    by_id = {as_int(r.get('id'), 0): r for r in _episode_rows()}
     scored: list[tuple[float, dict[str, Any]]] = []
     for ep in episodes:
         fp = str(ep.get('fingerprint_id') or '')
-        fpRow = conn.execute(
-            'SELECT episode_count FROM failure_fingerprints WHERE fingerprint = ?', (fp,)
-        ).fetchone()
-        fpCount = int(fpRow['episode_count']) if fpRow else 1
+        fpRow = fingerprints.get(fp)
+        fpCount = int(fpRow.get('episode_count') or 0) if fpRow else 1
         result = score_episode(ep, fpCount, _sameCauseSessions(fp))
         # The tier-1 rubric is NOT a judge verdict — writing it into
         # judge_verdict made the distiller's unjudged set always empty.
-        conn.execute(
-            "UPDATE episodes SET tier1_result = ? WHERE id = ?",
-            (json.dumps({'tier1': result}, ensure_ascii=False), int(ep['id'])),
-        )
+        target = by_id.get(as_int(ep.get('id'), 0))
+        if target is not None:
+            target['tier1_result'] = json.dumps({'tier1': result}, ensure_ascii=False)
         scored.append((result['score'], ep))
-    brain_commit(conn)
+    _save_episode_rows(list(by_id.values()))
 
     scored.sort(key=lambda pair: (-pair[0], -int(pair[1].get('id', 0))))
     # 2.14: floor at 1 when there are candidates — int(len*cap)
@@ -718,10 +786,14 @@ def flag_top_slice(
         set_flagged(int(ep['id']), True)
         fp = str(ep.get('fingerprint_id') or '')
         if fp:
-            conn.execute(
-                'UPDATE failure_fingerprints SET flagged = 1 WHERE fingerprint = ?', (fp,)
-            )
-            brain_commit(conn)
+            fpath = _FINGERPRINTS_FILE()
+            with tables.store_lock(str(fpath)):
+                fp_rows = _fingerprint_rows()
+                for row in fp_rows:
+                    if str(row.get('fingerprint') or '') == fp:
+                        row['flagged'] = 1
+                        break
+                _save_fingerprint_rows(fp_rows)
         flaggedCount += 1
     return {'scored': len(scored), 'flagged': flaggedCount}
 
@@ -732,10 +804,8 @@ def flag_top_slice(
 def _sessionReceipts(sessionId: str) -> list[str]:
     """Every error receipt this session's transcript still carries."""
     out: list[str] = []
-    for r in _conn().execute(
-        'SELECT blocks_json FROM messages WHERE session_id = ?', (sessionId,)
-    ).fetchall():
-        out.extend(_errorReceipts(r['blocks_json']))
+    for r in _session_messages(sessionId):
+        out.extend(_errorReceipts(r.get('blocksJson', r.get('blocks'))))
     return out
 
 
@@ -756,86 +826,134 @@ def quarantine_unverified_tool_errors() -> dict[str, int]:
     whole — quarantining a mixed episode would discard true evidence to tidy a
     counter.
     """
-    conn = _conn()
-    candidates = conn.execute(
-        "SELECT id, session_id, events, fingerprint_id FROM episodes "
-        "WHERE quarantined = 0 AND instr(COALESCE(events, ''), '\"tool_error\"') > 0"
-    ).fetchall()
-    marked = 0
-    touched: set[str] = set()
-    for row in candidates:
-        try:
-            events = json.loads(str(row['events'] or '[]'))
-        except Exception:
-            continue
-        excerpts = [
-            str(e.get('excerpt') or '')
-            for e in events
-            if isinstance(e, dict) and e.get('type') == 'tool_error'
+    path = _EPISODES_FILE()
+    with tables.store_lock(str(path)):
+        rows = _episode_rows()
+        candidates = [
+            r for r in rows
+            if int(r.get('quarantined') or 0) == 0
+            and '"tool_error"' in str(r.get('events') or '')
         ]
-        excerpts = [x for x in excerpts if x]
-        if not excerpts:
-            continue
-        receipts = _sessionReceipts(str(row['session_id'] or ''))
-        # The excerpt was capped when it was written, so a shared prefix is the
-        # honest comparison — equality would mark real episodes whose tool
-        # output merely grew a truncation marker afterwards.
-        if any(r.startswith(x[:60]) for x in excerpts for r in receipts):
-            continue
-        conn.execute('UPDATE episodes SET quarantined = 1 WHERE id = ?', (int(row['id']),))
-        marked += 1
-        if str(row['fingerprint_id'] or ''):
-            touched.add(str(row['fingerprint_id']))
+        marked = 0
+        touched: set[str] = set()
+        receipt_cache: dict[str, list[str]] = {}
+        for row in candidates:
+            try:
+                events = json.loads(str(row.get('events') or '[]'))
+            except Exception:
+                continue
+            excerpts = [
+                str(e.get('excerpt') or '')
+                for e in events
+                if isinstance(e, dict) and e.get('type') == 'tool_error'
+            ]
+            excerpts = [x for x in excerpts if x]
+            if not excerpts:
+                continue
+            sid = str(row.get('session_id') or '')
+            if sid not in receipt_cache:
+                receipt_cache[sid] = _sessionReceipts(sid)
+            receipts = receipt_cache[sid]
+            # The excerpt was capped when it was written, so a shared prefix is the
+            # honest comparison — equality would mark real episodes whose tool
+            # output merely grew a truncation marker afterwards.
+            if any(r.startswith(x[:60]) for x in excerpts for r in receipts):
+                continue
+            row['quarantined'] = 1
+            marked += 1
+            if str(row.get('fingerprint_id') or ''):
+                touched.add(str(row.get('fingerprint_id')))
+        _save_episode_rows(rows)
     # episode_count is the recurrence score that escalates a fingerprint to the
     # distiller. Leaving it counting invented windows would keep proposing the
     # same non-problem after the rows themselves stopped being visible.
-    for fp in touched:
-        keep = conn.execute(
-            'SELECT COUNT(*) AS n FROM episodes WHERE fingerprint_id = ? AND quarantined = 0',
-            (fp,),
-        ).fetchone()
-        n = int(keep['n'] if keep else 0)
-        if n == 0:
-            # Clearing the flag matters as much as the count: the distiller
-            # selects by ``flagged = 1``, so an invented fingerprint with no
-            # live episode behind it would keep being proposed forever.
-            conn.execute(
-                'UPDATE failure_fingerprints SET episode_count = 0, flagged = 0 WHERE fingerprint = ?',
-                (fp,),
-            )
-        else:
-            conn.execute(
-                'UPDATE failure_fingerprints SET episode_count = ? WHERE fingerprint = ?',
-                (n, fp),
-            )
-    brain_commit(conn)
-    total = conn.execute('SELECT COUNT(*) AS n FROM episodes WHERE quarantined = 1').fetchone()
+    if touched:
+        fpath = _FINGERPRINTS_FILE()
+        with tables.store_lock(str(fpath)):
+            fp_rows = _fingerprint_rows()
+            for fp in touched:
+                n = sum(
+                    1
+                    for r in _episode_rows()
+                    if str(r.get('fingerprint_id') or '') == fp and int(r.get('quarantined') or 0) == 0
+                )
+                for row in fp_rows:
+                    if str(row.get('fingerprint') or '') != fp:
+                        continue
+                    if n == 0:
+                        # Clearing the flag matters as much as the count: the distiller
+                        # selects by ``flagged = 1``, so an invented fingerprint with no
+                        # live episode behind it would keep being proposed forever.
+                        row['episode_count'] = 0
+                        row['flagged'] = 0
+                    else:
+                        row['episode_count'] = n
+            _save_fingerprint_rows(fp_rows)
+    total = sum(1 for r in _episode_rows() if int(r.get('quarantined') or 0) == 1)
     return {
         'candidates': len(candidates),
         'quarantined': marked,
-        'quarantinedTotal': int(total['n'] if total else 0),
+        'quarantinedTotal': total,
         'fingerprintsRecounted': len(touched),
     }
+
+
+def _recent_sessions(since: datetime, session_cap: int = 400) -> list[str]:
+    """Sessions whose transcripts carry a message newer than ``since``.
+
+    The transcript files live as ``transcripts/<sessionId>.jsonl``; files
+    modified after the cutoff are read, newest-modified first, and a session
+    qualifies when any line's stamp parses past the cutoff. The 2.17 lesson
+    (created_at stored space-separated while `since` is ISO with a 'T') is
+    handled by parsing both spellings instead of comparing strings.
+    """
+    from app.lib.paths import dataPath
+
+    directory = dataPath('transcripts')
+    if not directory.is_dir():
+        return []
+    files = sorted(
+        directory.glob('*.jsonl'),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+        reverse=True,
+    )[:session_cap]
+    out: list[str] = []
+    for path in files:
+        sid = path.stem
+        hit = False
+        for row in tables.ledger_rows(path):
+            raw = str(row.get('created_at') or row.get('createdAt') or '')
+            stamp = _parse_stamp(raw)
+            if stamp is not None and stamp >= since:
+                hit = True
+                break
+        if hit:
+            out.append(sid)
+    return out
+
+
+def _parse_stamp(raw: object) -> datetime | None:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    try:
+        normalized = text[:-1] + '+00:00' if text.endswith('Z') else text
+        stamp = datetime.fromisoformat(normalized)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp
+    except (ValueError, TypeError):
+        return None
 
 
 def mine_sessions(sinceDays: int = 30) -> dict[str, int]:
     """Extract episodes from recent sessions."""
     quarantine_unverified_tool_errors()
-    since = (datetime.now(timezone.utc) - timedelta(days=sinceDays)).isoformat()
-    # 2.17: created_at is stored space-separated (datetime('now'))
-    # while `since` is ISO with a 'T'; a raw string compare sorts ' ' (0x20)
-    # before 'T' and drops the whole cutoff day. julianday() parses both.
-    rows = _conn().execute(
-        """
-        SELECT DISTINCT session_id AS sid FROM messages
-        WHERE julianday(created_at) IS NOT NULL
-          AND julianday(created_at) >= julianday(?)
-        """,
-        (since,),
-    ).fetchall()
+    since = datetime.now(timezone.utc) - timedelta(days=sinceDays)
+    sids = _recent_sessions(since)
     existing = _existingFingerprintTexts(limit=1000)
     extracted = 0
-    for r in rows:
+    for sid in sids:
         # Stamp each episode with the source session's M-2 scope
         # ('' = global). A Bot's private home-chat episodes must not later
         # surface as globally injected <memory> lessons in every session —
@@ -845,28 +963,32 @@ def mine_sessions(sinceDays: int = 30) -> dict[str, int]:
             from app.services import session_scope as _ss
             from app.services.workbench.sessions import get_workbench_session
 
-            sess = get_workbench_session(str(r['sid']))
+            sess = get_workbench_session(str(sid))
             if sess is not None:
                 scope = str(_ss.resolve_scope(sess) or '')
         except Exception:
             scope = ''
-        for episode in extract_episodes(str(r['sid'])):
-            episode['session_id'] = str(r['sid'])
+        for episode in extract_episodes(str(sid)):
+            episode['session_id'] = str(sid)
             episode['scope'] = scope
             isNew = not _episodeExists(episode)
             record_episode(episode, existingFingerprints=existing)
             if isNew:
                 extracted += 1
-    return {'sessions': len(rows), 'episodes': extracted}
+    return {'sessions': len(sids), 'episodes': extracted}
 
 
 def prune_old_episodes(days: int = EPISODE_RETENTION_DAYS) -> int:
     """OQ 6 default: 90-day prune, called from the consolidation sweep."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    conn = _conn()
-    cur = conn.execute('DELETE FROM episodes WHERE created_at < ?', (cutoff,))
-    brain_commit(conn)
-    return int(cur.rowcount)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    path = _EPISODES_FILE()
+    with tables.store_lock(str(path)):
+        rows = _episode_rows()
+        kept = [r for r in rows if (_parse_stamp(r.get('created_at')) or datetime.now(timezone.utc)) >= cutoff]
+        removed = len(rows) - len(kept)
+        if removed:
+            _save_episode_rows(kept)
+        return removed
 
 
 def guardrail_block_hotspots(limit: int = 10) -> list[dict[str, Any]]:
@@ -876,45 +998,56 @@ def guardrail_block_hotspots(limit: int = 10) -> list[dict[str, Any]]:
     firing is a harness-shape signal (missing tool, wrong policy), not just
     a blocked call. Aggregated server-side so the evidence stays small.
     """
-    conn = _conn()
-    # Same format the INSERT writes (SQLite datetime('now') = 'YYYY-MM-DD HH:MM:SS',
-    # UTC) — a mixed ISO 'T' cutoff would mis-order same-day rows.
+    from app.lib.paths import dataPath
+
+    path = dataPath('telemetry') / 'tool-guardrail-log.jsonl'
     cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%d %H:%M:%S')
-    rows = conn.execute(
-        'SELECT tool_name, SUBSTR(reason, 1, 80) AS reason_head, COUNT(*) AS n '
-        "FROM tool_guardrail_log WHERE COALESCE(created_at, '') >= ? "
-        'GROUP BY tool_name, reason_head ORDER BY n DESC LIMIT ?',
-        (cutoff, int(limit)),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    counts: dict[tuple[str, str], int] = {}
+    try:
+        for row in tables.ledger_rows(path):
+            created = str(row.get('created_at') or row.get('createdAt') or '')
+            if created and created < cutoff:
+                continue
+            tool = str(row.get('tool_name') or row.get('toolName') or '')
+            reason = str(row.get('reason') or '')[:80]
+            key = (tool, reason)
+            counts[key] = counts.get(key, 0) + 1
+    except Exception:
+        logger.debug('guardrail hotspot read failed', exc_info=True)
+        return []
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])[: int(limit)]
+    return [{'tool_name': t, 'reason_head': r, 'n': n} for (t, r), n in ranked]
 
 
 def _judgeHealth() -> dict[str, Any]:
     """Last success and last failure of the distiller judge, with its cause.
 
-    Read from the lifecycle rows rather than a counter column: the failure
+    Read from the lifecycle ledger rather than a counter column: the failure
     detail already carries the named cause from the recorder, and a separate
     counter would be a second thing that can drift from the log.
     """
-    rows = _conn().execute(
-        "SELECT event_type, detail, created_at FROM lifecycle "
-        "WHERE event_type IN ('distiller_judge_succeeded', 'distiller_judge_failed', "
-        "'distiller_judge_unavailable') ORDER BY id"
-    ).fetchall()
+    rows = [
+        r for r in tables.ledger_rows(tables.lifecycle_file())
+        if str(r.get('event_type') or r.get('eventType') or '')
+        in ('distiller_judge_succeeded', 'distiller_judge_failed', 'distiller_judge_unavailable')
+    ]
+    rows.sort(key=lambda r: as_int(r.get('id'), 0))
 
     def _last(event_type: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
         for row in reversed(rows):
-            if str(row['event_type']) != event_type:
+            if str(row.get('event_type') or row.get('eventType') or '') != event_type:
                 continue
             try:
-                detail = json.loads(str(row['detail'] or '{}'))
+                detail = json.loads(str(row.get('detail') or '{}'))
             except Exception:
                 detail = {}
-            return str(row['created_at'] or ''), (detail if isinstance(detail, dict) else {})
+            return str(row.get('created_at') or row.get('createdAt') or ''), (
+                detail if isinstance(detail, dict) else {}
+            )
         return None, None
 
-    successes = [r for r in rows if str(r['event_type']) == 'distiller_judge_succeeded']
-    failures = [r for r in rows if str(r['event_type']) == 'distiller_judge_failed']
+    successes = [r for r in rows if str(r.get('event_type') or r.get('eventType') or '') == 'distiller_judge_succeeded']
+    failures = [r for r in rows if str(r.get('event_type') or r.get('eventType') or '') == 'distiller_judge_failed']
     lastSuccess, successDetail = _last('distiller_judge_succeeded')
     lastFailure, failureDetail = _last('distiller_judge_failed')
     unavailable, _ = _last('distiller_judge_unavailable')
@@ -933,36 +1066,28 @@ def _judgeHealth() -> dict[str, Any]:
 
 def learning_report() -> dict[str, Any]:
     """Counters for the Phase E skillLearningReport blob."""
-    conn = _conn()
+    episodes = _episode_rows()
+    fingerprints = _fingerprint_rows()
     counts = {
         # Quarantined windows are reported, never counted as evidence: they are
         # the record of a detector that has since been fixed, not a lesson.
-        'episodes': int(
-            conn.execute('SELECT COUNT(*) AS n FROM episodes WHERE quarantined = 0').fetchone()['n']
+        'episodes': sum(1 for r in episodes if int(r.get('quarantined') or 0) == 0),
+        'quarantined': sum(1 for r in episodes if int(r.get('quarantined') or 0) == 1),
+        'tier2': sum(
+            1 for r in episodes
+            if int(r.get('tier') or 1) == 2 and int(r.get('quarantined') or 0) == 0
         ),
-        'quarantined': int(
-            conn.execute('SELECT COUNT(*) AS n FROM episodes WHERE quarantined = 1').fetchone()['n']
+        'judged': sum(
+            1 for r in episodes
+            if int(r.get('tier') or 1) == 2
+            and r.get('judge_verdict') is not None
+            and int(r.get('quarantined') or 0) == 0
         ),
-        'tier2': int(
-            conn.execute(
-                'SELECT COUNT(*) AS n FROM episodes WHERE tier = 2 AND quarantined = 0'
-            ).fetchone()['n']
-        ),
-        'judged': int(
-            conn.execute(
-                "SELECT COUNT(*) AS n FROM episodes WHERE tier = 2 AND judge_verdict IS NOT NULL "
-                'AND quarantined = 0'
-            ).fetchone()['n']
-        ),
-        'fingerprints': int(conn.execute('SELECT COUNT(*) AS n FROM failure_fingerprints').fetchone()['n']),
-        'flaggedFingerprints': int(
-            conn.execute('SELECT COUNT(*) AS n FROM failure_fingerprints WHERE flagged = 1').fetchone()['n']
-        ),
+        'fingerprints': len(fingerprints),
+        'flaggedFingerprints': sum(1 for r in fingerprints if int(r.get('flagged') or 0) == 1),
         'judge': _judgeHealth(),
-        'resolvedFingerprints': int(
-            conn.execute(
-                "SELECT COUNT(*) AS n FROM failure_fingerprints WHERE status = 'resolved'"
-            ).fetchone()['n']
+        'resolvedFingerprints': sum(
+            1 for r in fingerprints if str(r.get('status') or '') == 'resolved'
         ),
     }
     return cast(dict[str, Any], counts)
@@ -1017,9 +1142,6 @@ def run_resolution_check(windowDays: int = _RESOLUTION_WINDOW_DAYS) -> dict[str,
     drafts a revision-or-retire suggestion; a shipped skill with ZERO loads
     and no recurrence drafts a demotion (skill_delete) proposal — all
     suggestion-only, human-approved, never auto-deleted (OQ 5 default)."""
-    from datetime import datetime, timedelta, timezone
-
-    conn = _conn()
     now = datetime.now(timezone.utc)
     cutoff = (now - timedelta(days=windowDays)).isoformat()
     skillByFp = _fingerprintSkillMap()
@@ -1028,7 +1150,7 @@ def run_resolution_check(windowDays: int = _RESOLUTION_WINDOW_DAYS) -> dict[str,
     demotionCount = 0
 
     for fpRow in recent_fingerprints(limit=200):
-        fp = str(fpRow['fingerprint'])
+        fp = str(fpRow.get('fingerprint') or '')
         status = str(fpRow.get('status') or 'open')
         lastSeen = str(fpRow.get('last_seen') or '')
         skill = skillByFp.get(fp, '')
@@ -1036,20 +1158,13 @@ def run_resolution_check(windowDays: int = _RESOLUTION_WINDOW_DAYS) -> dict[str,
             continue
         stale = bool(lastSeen) and lastSeen < cutoff
         if status in ('open', 'skill_drafted') and stale:
-            conn.execute(
-                "UPDATE failure_fingerprints SET status = 'resolved' WHERE fingerprint = ?", (fp,)
-            )
-            brain_commit(conn)
+            _set_fingerprint_status_row(fpRow, 'resolved')
             status = 'resolved'  # downstream demotion check sees the update
             resolvedCount += 1
         elif status == 'resolved' and not stale:
             # Recurrence after resolution: re-flag + revision-or-retire
             # suggestion (observation — a human decides revise vs retire).
-            conn.execute(
-                "UPDATE failure_fingerprints SET status = 'open', flagged = 1 WHERE fingerprint = ?",
-                (fp,),
-            )
-            brain_commit(conn)
+            _set_fingerprint_status_row(fpRow, 'open', flag=1)
             recurredCount += 1
             _file_suggestion(
                 kind='observation',
@@ -1075,6 +1190,20 @@ def run_resolution_check(windowDays: int = _RESOLUTION_WINDOW_DAYS) -> dict[str,
     return {'resolved': resolvedCount, 'recurred': recurredCount, 'demotionSuggestions': demotionCount}
 
 
+def _set_fingerprint_status_row(row: dict[str, Any], status: str, flag: int | None = None) -> None:
+    """Write one fingerprint row's status (and optionally its flag)."""
+    fpath = _FINGERPRINTS_FILE()
+    with tables.store_lock(str(fpath)):
+        rows = _fingerprint_rows()
+        for r in rows:
+            if str(r.get('fingerprint') or '') == str(row.get('fingerprint') or ''):
+                r['status'] = status
+                if flag is not None:
+                    r['flagged'] = flag
+                break
+        _save_fingerprint_rows(rows)
+
+
 def set_fingerprint_status(fp: str, status: str) -> None:
     """The advertised statuses (open | skill_drafted | resolved |
     retired) must actually be written. ``skill_drafted`` is set when a
@@ -1083,18 +1212,18 @@ def set_fingerprint_status(fp: str, status: str) -> None:
     never resurrects a resolved fingerprint to drafted."""
     if not fp:
         return
-    conn = _conn()
-    if status == 'retired':
-        conn.execute(
-            'UPDATE failure_fingerprints SET status = ? WHERE fingerprint = ?',
-            (str(status), str(fp)),
-        )
-    else:
-        conn.execute(
-            "UPDATE failure_fingerprints SET status = ? WHERE fingerprint = ? AND status = 'open'",
-            (str(status), str(fp)),
-        )
-    brain_commit(conn)
+    fpath = _FINGERPRINTS_FILE()
+    with tables.store_lock(str(fpath)):
+        rows = _fingerprint_rows()
+        for row in rows:
+            if str(row.get('fingerprint') or '') != str(fp):
+                continue
+            if status == 'retired':
+                row['status'] = str(status)
+            elif str(row.get('status') or '') == 'open':
+                row['status'] = str(status)
+            break
+        _save_fingerprint_rows(rows)
 
 
 def _file_suggestion(**kw: Any) -> bool:

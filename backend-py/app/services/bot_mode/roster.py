@@ -396,40 +396,33 @@ def delete_bot(agent_id: str, actor: str = 'ui') -> bool:
 
 
 def _cascade_delete_bot_data(agent_id: str) -> None:
-    """Remove a deleted Bot's private footprint so it doesn't linger in the DB:
-    its ``bot:<id>`` facts, its DM rows, its room memberships (dropping rooms
-    that fall below the 2-member minimum), and its canonical Bot Chat session.
-    Best-effort — a failure here never blocks the delete."""
-    import json
-
-    from app.services.memory_conn import commit as brain_commit
-    from app.services.memory_conn import conn as _conn
-
+    """Remove a deleted Bot's private footprint so it doesn't linger in the
+    store: its ``bot:<id>`` facts, its DM rows, its room memberships (dropping
+    rooms that fall below the 2-member minimum), and its canonical Bot Chat
+    session. Best-effort — a failure here never blocks the delete."""
     scope = f'bot:{agent_id}'
     try:
-        c = _conn()
-        c.execute('DELETE FROM facts WHERE scope = ?', (scope,))
-        c.execute('DELETE FROM bot_dm WHERE from_agent = ? OR to_agent = ?', (agent_id, agent_id))
-        # Drop the Bot from every room; delete rooms left under 2 members.
-        for row in c.execute('SELECT id, members FROM bot_room').fetchall():
-            try:
-                members = json.loads(str(row['members'] or '[]'))
-            except (json.JSONDecodeError, TypeError):
-                members = []
-            if agent_id not in members:
-                continue
-            remaining = [m for m in members if m != agent_id]
-            if len(remaining) < 2:
-                c.execute('DELETE FROM bot_room_message WHERE room_id = ?', (row['id'],))
-                c.execute('DELETE FROM bot_room WHERE id = ?', (row['id'],))
-            else:
-                c.execute(
-                    'UPDATE bot_room SET members = ? WHERE id = ?',
-                    (json.dumps(remaining), row['id']),
-                )
-        brain_commit(c)
+        from app.services.memory_store import mirror as record
+
+        for row in record.load_facts():
+            if str(row.get('scope') or 'global') == scope:
+                record.delete_fact_file(str(row.get('fact_key') or ''), scope)
+                record.note_fact_changed(str(row.get('fact_key') or ''))
     except Exception:
-        logger.debug('bot cascade delete (db) failed for %s', agent_id, exc_info=True)
+        logger.debug('bot cascade delete (facts) failed for %s', agent_id, exc_info=True)
+    try:
+        from app.services.bot_mode import dm as dm_store
+
+        dm_store.purge_agent(agent_id)
+    except Exception:
+        logger.debug('bot cascade delete (dms) failed for %s', agent_id, exc_info=True)
+    # Drop the Bot from every room; delete rooms left under 2 members.
+    try:
+        from app.services.bot_mode import rooms as rooms_store
+
+        rooms_store.purge_agent(agent_id)
+    except Exception:
+        logger.debug('bot cascade delete (rooms) failed for %s', agent_id, exc_info=True)
     # Canonical Bot Chat session.
     try:
         chat = find_canonical_bot_chat(agent_id)

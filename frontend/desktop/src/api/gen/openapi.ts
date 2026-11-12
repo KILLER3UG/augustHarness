@@ -4608,7 +4608,7 @@ export interface paths {
          * @description Delete every chat/workbench session, transcript, and topic row.
          *
          *     Workbench sessions are removed through their own cascade-aware
-         *     deleter so SQLite child rows and the JSON export file stay in sync.
+         *     deleter so transcript child rows and the JSON export file stay in sync.
          */
         post: operations["deleteSessions_api_privacy_delete_sessions_post"];
         delete?: never;
@@ -4675,7 +4675,7 @@ export interface paths {
          * @description Erase the agent's memory of you: facts, proposals, the
          *     episodic timeline, the learning corpus (episodes, failure fingerprints,
          *     turn outcomes), and memory-adjacent KV residue.
-         *     The KV purge keeps only the live agent registry/jobs keys.
+         *     The KV purge keeps only the live agent registry key.
          */
         post: operations["purgeMemories_api_privacy_purge_memories_post"];
         delete?: never;

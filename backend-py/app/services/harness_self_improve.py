@@ -215,15 +215,14 @@ def _introspect_memory(out: dict[str, Any]) -> None:
         # 3. Report the count the model can actually read (raw kept as
         # facts_total for the human door).
         try:
-            from app.services.memory_store import _conn
+            from app.services.memory_store.rest import count_facts
 
-            row = _conn().execute(
-                "SELECT COUNT(*) FROM facts WHERE (status IS NULL OR status='active') "
-                "AND (expires_at IS NULL OR expires_at='' OR julianday(expires_at) > julianday('now')) "
-                "AND (scope IS NULL OR scope='global')"
-            ).fetchone()
+            # count_facts(scope='global') is the same active + unexpired +
+            # global filter the model-visible doors apply — the exact number
+            # list_facts would page through (the SQL this replaced counted the
+            # same predicate against the old table).
             stats['facts_total'] = stats.get('facts')
-            stats['facts'] = int(row[0]) if row else 0
+            stats['facts'] = count_facts(scope='global')
         except Exception:
             pass
         out['memory_stores'] = stats

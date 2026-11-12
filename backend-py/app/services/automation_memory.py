@@ -1,12 +1,15 @@
 """Automation persistent memory + Part 19 Phase B routines.
 
-Three brain-DB stores (migration 031) make automation jobs stateful:
+Three file stores make automation jobs stateful (the migration-031 tables
+became files under ``dataDir()``):
 
-* ``automation_runs`` — one immutable row per run attempt (the ledger; the
-  job object's ``lastRun``/``lastOutput`` stay as cheap UI summary).
-* ``automation_notes`` — per-job KV notepad ("what I decided last time"),
-  capped 4 KiB/key, 16 KiB/job. Machine state, deliberately NOT facts.
-* ``automation_incidents`` — deduped failures upserted by
+* ``<telemetry>/automation-runs.jsonl`` — one appended line per finished run
+  attempt (the ledger; the job object's ``lastRun``/``lastOutput`` stay as
+  cheap UI summary). Self-capped by rotation at 10 MB on every append.
+* ``<state>/automation-notes.json`` — per-job KV notepad ("what I decided
+  last time"), capped 4 KiB/key, 16 KiB/job. Machine state, deliberately
+  NOT facts.
+* ``<telemetry>/automation-incidents.json`` — deduped failures upserted by
   ``(job_id, error_signature)``; a succeeding run auto-closes the open row.
 
 Part 19 Phase B rides on this: a routine (automation job with
@@ -19,16 +22,26 @@ the bot actually responds".
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from app.json_narrowing import as_bool, as_str
-from app.services.deferred_writes import defer_commit
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.json_narrowing import as_bool, as_int, as_str
+from app.services.filestore import (
+    STATE_DIR,
+    TELEMETRY_DIR,
+    append_jsonl,
+    home,
+    load_jsonl,
+    read_json,
+    rotate_jsonl,
+    write_json,
+)
 
 logger = logging.getLogger(__name__)
 
-# Notepad caps (service-enforced — SQLite has no cheap per-row cap).
+# Notepad caps (service-enforced).
 _NOTE_KEY_CAP = 4 * 1024
 _NOTE_JOB_CAP = 16 * 1024
 # Wake-up context caps (re-injected every run — must stay bounded).
@@ -36,15 +49,73 @@ _CONTEXT_LAST_RUN_CAP = 4 * 1024
 _CONTEXT_CONTINUITY_CAP = 2 * 1024
 # Closed incident rows kept this many days before the sweep deletes them.
 _INCIDENT_RETENTION_DAYS = 90
+# The runs ledger self-caps by bytes (filestore rule 3); the sweep still
+# applies the time window on top.
+_RUNS_LEDGER_MAX_BYTES = 10 * 1024 * 1024
 
 TERMINAL_STATUSES = frozenset({'succeeded', 'failed', 'timeout', 'cancelled'})
+
+_LOCK = threading.RLock()
+
+_RUNS_FILE = 'automation-runs.jsonl'
+_INCIDENTS_FILE = 'automation-incidents.json'
+_NOTES_FILE = 'automation-notes.json'
+
+# Runs started in THIS process but not yet finished, keyed by ledger id —
+# the row is only appended when the run finishes, so the start context has
+# to live somewhere until then. A crash between start and finish loses the
+# attempt, which is the point of the append-per-finished-run rule.
+_PENDING_RUNS: dict[int, dict[str, object]] = {}
+_LAST_RUN_ID = 0
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _runs_path() -> Path:
+    return home(TELEMETRY_DIR) / _RUNS_FILE
+
+
+def _incidents_path() -> Path:
+    return home(TELEMETRY_DIR) / _INCIDENTS_FILE
+
+
+def _notes_path() -> Path:
+    return home(STATE_DIR) / _NOTES_FILE
+
+
+def _load_incidents() -> list[dict[str, object]]:
+    raw = read_json(_incidents_path(), default=[])
+    if isinstance(raw, list):
+        return [row for row in raw if isinstance(row, dict)]
+    return []
+
+
+def _save_incidents(rows: list[dict[str, object]]) -> None:
+    write_json(_incidents_path(), rows)
+
+
+def _load_notes() -> dict[str, dict[str, dict[str, object]]]:
+    raw = read_json(_notes_path(), default={})
+    out: dict[str, dict[str, dict[str, object]]] = {}
+    if isinstance(raw, dict):
+        for job_id, notes in raw.items():
+            if isinstance(job_id, str) and isinstance(notes, dict):
+                clean = {k: v for k, v in notes.items() if isinstance(k, str) and isinstance(v, dict)}
+                if clean:
+                    out[job_id] = clean
+    return out
+
+
 # ── runs ledger ────────────────────────────────────────────────────────────
+
+
+def _next_run_id() -> int:
+    """Wall-clock ids: monotonic, sortable, unique within a process burst."""
+    global _LAST_RUN_ID
+    _LAST_RUN_ID = max(_LAST_RUN_ID + 1, int(time.time() * 1000))
+    return _LAST_RUN_ID
 
 
 def start_run(
@@ -53,16 +124,23 @@ def start_run(
     agent_id: str = '',
     session_id: str = '',
 ) -> int:
-    """Insert a ``running`` ledger row; returns its id (0 on failure)."""
+    """Register a run attempt; returns its ledger id (0 on failure).
+
+    The ledger line is appended by :func:`finish_run` — one line per
+    FINISHED run — so the id only has to survive in this process long
+    enough to be stamped.
+    """
     try:
-        c = _conn()
-        cur = c.execute(
-            'INSERT INTO automation_runs (job_id, started_at, status, trigger, agent_id, session_id) '
-            "VALUES (?, ?, 'running', ?, ?, ?)",
-            (job_id, _now(), trigger or 'cron', agent_id or '', session_id or ''),
-        )
-        defer_commit(c)
-        return int(cur.lastrowid or 0)
+        with _LOCK:
+            run_id = _next_run_id()
+            _PENDING_RUNS[run_id] = {
+                'job_id': job_id or '',
+                'started_at': _now(),
+                'trigger': trigger or 'cron',
+                'agent_id': agent_id or '',
+                'session_id': session_id or '',
+            }
+            return run_id
     except Exception:
         logger.debug('start_run failed', exc_info=True)
         return 0
@@ -83,7 +161,7 @@ def finish_run(
     error_sig: str = '',
     duration_ms: int = 0,
 ) -> None:
-    """Stamp a terminal state on a ledger row and update the incident row.
+    """Append the run's finished ledger line and update the incident row.
 
     ``status`` must be terminal (``succeeded`` closes the job's open incident;
     ``failed``/``timeout`` bump it). Best-effort — never raises into a run.
@@ -92,44 +170,51 @@ def finish_run(
         return
     excerpt = (result_excerpt or '')[:4 * 1024]
     try:
-        c = _conn()
-        row = c.execute(
-            'SELECT job_id FROM automation_runs WHERE id = ?', (run_id,)
-        ).fetchone()
-        c.execute(
-            'UPDATE automation_runs '
-            'SET finished_at = ?, status = ?, duration_ms = ?, result_excerpt = ?, error_signature = ? '
-            'WHERE id = ?',
-            (_now(), status, int(duration_ms or 0), excerpt, error_sig or '', run_id),
-        )
-        defer_commit(c)
-        if row is not None:
-            job_id = str(row['job_id'])
+        with _LOCK:
+            start_info = _PENDING_RUNS.pop(run_id, None) or {}
+            row: dict[str, object] = {
+                'id': run_id,
+                'job_id': str(start_info.get('job_id') or ''),
+                'started_at': str(start_info.get('started_at') or ''),
+                'finished_at': _now(),
+                'status': status,
+                'trigger': str(start_info.get('trigger') or 'cron'),
+                'duration_ms': int(duration_ms or 0),
+                'result_excerpt': excerpt,
+                'error_signature': error_sig or '',
+                'agent_id': str(start_info.get('agent_id') or ''),
+                'session_id': str(start_info.get('session_id') or ''),
+            }
+            append_jsonl(_runs_path(), row)
+            # Self-capping: rotation drops the OLDEST lines past the ceiling
+            # on every append, so retention never depends on a sweep keeping
+            # pace with ingest.
+            rotate_jsonl(_runs_path(), _RUNS_LEDGER_MAX_BYTES)
+        if row['job_id']:
             if status == 'succeeded':
-                close_incident(job_id)
+                close_incident(str(row['job_id']))
             elif error_sig:
-                record_incident(job_id, error_sig)
+                record_incident(str(row['job_id']), error_sig)
     except Exception:
         logger.debug('finish_run failed', exc_info=True)
+
+
+def _runs_rows() -> list[dict[str, object]]:
+    return [row for row in load_jsonl(_runs_path()) if isinstance(row, dict)]
 
 
 # ── notepad ─────────────────────────────────────────────────────────────────
 
 
 def get_notes(job_id: str) -> dict[str, str]:
-    try:
-        rows = (
-            _conn()
-            .execute(
-                'SELECT note_key, value FROM automation_notes WHERE job_id = ? ORDER BY updated_at',
-                (job_id,),
-            )
-            .fetchall()
+    with _LOCK:
+        notes = _load_notes().get(job_id, {})
+    return {
+        str(k): str(v.get('value', ''))
+        for k, v in sorted(
+            notes.items(), key=lambda kv: str(kv[1].get('updated_at') or '')
         )
-        return {str(r['note_key']): str(r['value']) for r in rows}
-    except Exception:
-        logger.debug('get_notes failed', exc_info=True)
-        return {}
+    }
 
 
 def set_note(job_id: str, key: str, value: str) -> str:
@@ -141,38 +226,39 @@ def set_note(job_id: str, key: str, value: str) -> str:
         return f'value over {_NOTE_KEY_CAP} bytes'
     if not value:
         return delete_note(job_id, key)
-    notes = get_notes(job_id)
-    others = sum(
-        len(v.encode('utf-8', errors='replace'))
-        for k, v in notes.items()
-        if k != key
-    )
-    if others + len(value.encode('utf-8', errors='replace')) > _NOTE_JOB_CAP:
-        return f'job notepad over {_NOTE_JOB_CAP} bytes'
-    try:
-        c = _conn()
-        c.execute(
-            'INSERT INTO automation_notes (job_id, note_key, value, updated_at) '
-            'VALUES (?, ?, ?, ?) '
-            'ON CONFLICT(job_id, note_key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at',
-            (job_id, key.strip(), value, _now()),
+    with _LOCK:
+        notes = _load_notes()
+        job_notes = notes.setdefault(job_id, {})
+        others = sum(
+            len(str(v.get('value', '')).encode('utf-8', errors='replace'))
+            for k, v in job_notes.items()
+            if k != key
         )
-        defer_commit(c)
-        return ''
-    except Exception:
-        logger.debug('set_note failed', exc_info=True)
-        return 'storage error'
+        if others + len(value.encode('utf-8', errors='replace')) > _NOTE_JOB_CAP:
+            return f'job notepad over {_NOTE_JOB_CAP} bytes'
+        job_notes[key.strip()] = {'value': value, 'updated_at': _now()}
+        try:
+            write_json(_notes_path(), notes)
+            return ''
+        except Exception:
+            logger.debug('set_note failed', exc_info=True)
+            return 'storage error'
 
 
 def delete_note(job_id: str, key: str) -> str:
-    try:
-        c = _conn()
-        c.execute('DELETE FROM automation_notes WHERE job_id = ? AND note_key = ?', (job_id, key))
-        defer_commit(c)
+    with _LOCK:
+        notes = _load_notes()
+        job_notes = notes.get(job_id)
+        if job_notes is not None and key in job_notes:
+            del job_notes[key]
+            if not job_notes:
+                notes.pop(job_id, None)
+            try:
+                write_json(_notes_path(), notes)
+            except Exception:
+                logger.debug('delete_note failed', exc_info=True)
+                return 'storage error'
         return ''
-    except Exception:
-        logger.debug('delete_note failed', exc_info=True)
-        return 'storage error'
 
 
 # ── incidents ───────────────────────────────────────────────────────────────
@@ -186,23 +272,34 @@ def record_incident(job_id: str, error_sig: str) -> bool:
     """
     sig = error_sig or 'unknown'
     try:
-        c = _conn()
-        cur = c.execute(
-            'UPDATE automation_incidents SET occurrences = occurrences + 1, last_seen_at = ? '
-            "WHERE job_id = ? AND error_signature = ? AND state != 'closed'",
-            (_now(), job_id, sig),
-        )
-        if cur.rowcount:
-            defer_commit(c)
-            return False
-        cur = c.execute(
-            "INSERT OR IGNORE INTO automation_incidents "
-            "(job_id, error_signature, first_seen_at, last_seen_at, state, occurrences) "
-            "VALUES (?, ?, ?, ?, 'detected', 1)",
-            (job_id, sig, _now(), _now()),
-        )
-        defer_commit(c)
-        return bool(cur.rowcount)
+        with _LOCK:
+            rows = _load_incidents()
+            for row in rows:
+                if (
+                    str(row.get('job_id') or '') == job_id
+                    and str(row.get('error_signature') or '') == sig
+                    and str(row.get('state') or '') != 'closed'
+                ):
+                    row['occurrences'] = as_int(row.get('occurrences'), 0) + 1
+                    row['last_seen_at'] = _now()
+                    _save_incidents(rows)
+                    return False
+            next_id = 1 + max(
+                (as_int(row.get('id'), 0) for row in rows), default=0
+            )
+            rows.append(
+                {
+                    'id': next_id,
+                    'job_id': job_id,
+                    'error_signature': sig,
+                    'first_seen_at': _now(),
+                    'last_seen_at': _now(),
+                    'state': 'detected',
+                    'occurrences': 1,
+                }
+            )
+            _save_incidents(rows)
+            return True
     except Exception:
         logger.debug('record_incident failed', exc_info=True)
         return False
@@ -211,13 +308,19 @@ def record_incident(job_id: str, error_sig: str) -> bool:
 def close_incident(job_id: str) -> None:
     """A succeeding run auto-closes the job's open incidents."""
     try:
-        c = _conn()
-        c.execute(
-            "UPDATE automation_incidents SET state = 'closed', last_seen_at = ? "
-            "WHERE job_id = ? AND state != 'closed'",
-            (_now(), job_id),
-        )
-        defer_commit(c)
+        with _LOCK:
+            rows = _load_incidents()
+            changed = False
+            for row in rows:
+                if (
+                    str(row.get('job_id') or '') == job_id
+                    and str(row.get('state') or '') != 'closed'
+                ):
+                    row['state'] = 'closed'
+                    row['last_seen_at'] = _now()
+                    changed = True
+            if changed:
+                _save_incidents(rows)
     except Exception:
         logger.debug('close_incident failed', exc_info=True)
 
@@ -262,26 +365,16 @@ def record_blocked_step(
 def open_incidents(job_id: str = '') -> list[dict[str, object]]:
     """Open incidents for one job (all jobs when ``job_id`` is empty)."""
     try:
-        if job_id:
-            rows = (
-                _conn()
-                .execute(
-                    "SELECT * FROM automation_incidents WHERE job_id = ? AND state != 'closed' "
-                    'ORDER BY last_seen_at DESC',
-                    (job_id,),
-                )
-                .fetchall()
-            )
-        else:
-            rows = (
-                _conn()
-                .execute(
-                    "SELECT * FROM automation_incidents WHERE state != 'closed' "
-                    'ORDER BY last_seen_at DESC'
-                )
-                .fetchall()
-            )
-        return [dict(r) for r in rows]
+        with _LOCK:
+            rows = _load_incidents()
+        open_rows = [
+            row
+            for row in rows
+            if str(row.get('state') or '') != 'closed'
+            and (not job_id or str(row.get('job_id') or '') == job_id)
+        ]
+        open_rows.sort(key=lambda row: str(row.get('last_seen_at') or ''), reverse=True)
+        return open_rows
     except Exception:
         logger.debug('open_incidents failed', exc_info=True)
         return []
@@ -293,15 +386,10 @@ def open_incidents(job_id: str = '') -> list[dict[str, object]]:
 def last_run(job_id: str) -> dict[str, object] | None:
     """The most recent ledger row for a job (any status)."""
     try:
-        row = (
-            _conn()
-            .execute(
-                'SELECT * FROM automation_runs WHERE job_id = ? ORDER BY id DESC LIMIT 1',
-                (job_id,),
-            )
-            .fetchone()
-        )
-        return dict(row) if row is not None else None
+        rows = [row for row in _runs_rows() if str(row.get('job_id') or '') == job_id]
+        if not rows:
+            return None
+        return rows[-1]
     except Exception:
         logger.debug('last_run failed', exc_info=True)
         return None
@@ -309,15 +397,13 @@ def last_run(job_id: str) -> dict[str, object] | None:
 
 def runs_for_job(job_id: str, limit: int = 10) -> list[dict[str, object]]:
     try:
-        rows = (
-            _conn()
-            .execute(
-                'SELECT * FROM automation_runs WHERE job_id = ? ORDER BY id DESC LIMIT ?',
-                (job_id, max(1, int(limit))),
-            )
-            .fetchall()
-        )
-        return [dict(r) for r in rows]
+        rows = [
+            row
+            for row in _runs_rows()
+            if str(row.get('job_id') or '') == job_id
+        ]
+        rows.reverse()
+        return rows[: max(1, int(limit))]
     except Exception:
         logger.debug('runs_for_job failed', exc_info=True)
         return []
@@ -377,25 +463,41 @@ def sweep(days: int = 30, *, now: datetime | None = None) -> int:
     now = now or datetime.now(timezone.utc)
     removed = 0
     try:
-        c = _conn()
-        # Runs retention is `days` (30), not "everything before today" —
-        # a plain now.date() cutoff would wipe the whole ledger on every
-        # sweep and the wake-context would forget its history.
-        cutoff = (now - timedelta(days=days)).date().isoformat()
-        cur = c.execute(
-            "DELETE FROM automation_runs WHERE started_at < ?",
-            (cutoff,),
-        )
-        removed += cur.rowcount or 0
-        cur = c.execute(
-            "DELETE FROM automation_incidents "
-            "WHERE state = 'closed' AND last_seen_at != '' "
-            "AND julianday(last_seen_at) IS NOT NULL "
-            "AND julianday(last_seen_at) < julianday('now', ?)",
-            (f'-{_INCIDENT_RETENTION_DAYS} days',),
-        )
-        removed += cur.rowcount or 0
-        brain_commit(c)
+        with _LOCK:
+            # Runs retention is `days` (30), not "everything before today" —
+            # a plain now.date() cutoff would wipe the whole ledger on every
+            # sweep and the wake-context would forget its history.
+            cutoff = (now - timedelta(days=days)).date().isoformat()
+            rows = _runs_rows()
+            kept = [row for row in rows if str(row.get('started_at') or '') >= cutoff]
+            removed += len(rows) - len(kept)
+            if removed:
+                from typing import cast
+
+                from app.services.filestore import rewrite_jsonl
+
+                rewrite_jsonl(_runs_path(), cast('list[object]', kept))
+            incident_cutoff = now - timedelta(days=_INCIDENT_RETENTION_DAYS)
+            incidents = _load_incidents()
+            kept_incidents: list[dict[str, object]] = []
+            for row in incidents:
+                if str(row.get('state') or '') != 'closed':
+                    kept_incidents.append(row)
+                    continue
+                last_seen = str(row.get('last_seen_at') or '')
+                try:
+                    seen_at = datetime.fromisoformat(last_seen)
+                    if seen_at.tzinfo is None:
+                        seen_at = seen_at.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    kept_incidents.append(row)
+                    continue
+                if seen_at < incident_cutoff:
+                    removed += 1
+                else:
+                    kept_incidents.append(row)
+            if len(kept_incidents) != len(incidents):
+                _save_incidents(kept_incidents)
     except Exception:
         logger.debug('automation_memory sweep failed', exc_info=True)
         return 0

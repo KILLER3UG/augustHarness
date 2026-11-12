@@ -13626,7 +13626,7 @@
     },
     "/api/privacy/delete-sessions": {
       "post": {
-        "description": "Delete every chat/workbench session, transcript, and topic row.\n\nWorkbench sessions are removed through their own cascade-aware\ndeleter so SQLite child rows and the JSON export file stay in sync.",
+        "description": "Delete every chat/workbench session, transcript, and topic row.\n\nWorkbench sessions are removed through their own cascade-aware\ndeleter so transcript child rows and the JSON export file stay in sync.",
         "operationId": "deleteSessions_api_privacy_delete_sessions_post",
         "responses": {
           "200": {
@@ -13677,7 +13677,7 @@
     },
     "/api/privacy/purge-memories": {
       "post": {
-        "description": "Erase the agent's memory of you: facts, proposals, the\nepisodic timeline, the learning corpus (episodes, failure fingerprints,\nturn outcomes), and memory-adjacent KV residue.\nThe KV purge keeps only the live agent registry/jobs keys.",
+        "description": "Erase the agent's memory of you: facts, proposals, the\nepisodic timeline, the learning corpus (episodes, failure fingerprints,\nturn outcomes), and memory-adjacent KV residue.\nThe KV purge keeps only the live agent registry key.",
         "operationId": "purgeMemories_api_privacy_purge_memories_post",
         "responses": {
           "200": {

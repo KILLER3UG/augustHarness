@@ -3,17 +3,35 @@
 Stored memory reaches a turn through three lanes, and only one of them is a
 keyword search. Confusing them is the usual reason a "why did it not remember"
 investigation goes wrong. The model-facing tools are `remember`, `list_facts`,
-`forget` and `brain_query`; the store is the SQLite `facts` table.
+`forget` and `brain_query`; the store is the markdown record under
+`<dataDir>/memory/`.
+
+## The record is files
+
+The SQL engine is retired. One `.md` file per fact (frontmatter over a
+JSON-encoded body) plus a `MEMORY.md` index, both written and read by
+`memory_store.mirror`; every CRUD door (`rest.save_fact` and friends) writes
+the file directly, and every read door (recall, BM25, the boot index,
+`brain_query`, the Memory page) reads the files back. There is no second copy
+to drift from. A file you delete is a forgotten memory; an edit you make is
+the memory.
+
+Scopes live in the same directory: a global fact's file stems from its key, a
+`bot:<id>` row's file carries the scope prefix in the stem, because identity
+is (scope, key). `MEMORY.md` lists the active, unexpired, non-sensitive,
+non-person rows — the same exclusions the boot index applies. The record
+itself holds every row.
 
 ## The three lanes
 
-**Durable memory** — the `Relevant memory:` tail is BM25 over the brain `facts`
-table, gated by brain-config `memoryAutoInject` (**ARMED BY DEFAULT since
-2026-10-24**; it was OFF, which was a trust decision rather than a measured one —
-the write door that feeds this lane, `memoryIsJunk`, refuses 0 of 14 durable
-rules and catches 5 of 5 junk cases, so the content is already filtered). An
-install that turned it off keeps it off: verified through the real
-`PUT /api/brain/config` door, a persisted `false` beats the new default.
+**Durable memory** — the `Relevant memory:` tail is BM25 over the record
+(in-memory Python index over the parsed files), gated by brain-config
+`memoryAutoInject` (**ARMED BY DEFAULT since 2026-10-24**; it was OFF, which
+was a trust decision rather than a measured one — the write door that feeds
+this lane, `memoryIsJunk`, refuses 0 of 14 durable rules and catches 5 of 5
+junk cases, so the content is already filtered). An install that turned it off
+keeps it off: verified through the real `PUT /api/brain/config` door, a
+persisted `false` beats the new default.
 
 Three things are true regardless of that gate:
 
@@ -23,11 +41,11 @@ Three things are true regardless of that gate:
 - A fact dropped for budget is **named** in a `recall partial:` line rather
   than vanishing.
 - `build_memory_delta_block` appends a plain `new in memory since this chat
-  opened:` section listing facts whose `updated_at` is newer than the session's
-  own creation stamp — so a fact written by `remember` is visible on the NEXT
-  request without the model having to call `list_facts` first.
+  opened:` section listing facts whose `updated` stamp is newer than the
+  session's own creation stamp — so a fact written by `remember` is visible on
+  the NEXT request without the model having to call `list_facts` first.
 
-The delta is a **projection over the facts table, not a cursor and not a second
+The delta is a **projection over the record, not a cursor and not a second
 store**: an UPDATE to an existing key is delivered like a new write, a retired
 row cannot resurface, keys the recall lane already showed are skipped, and an
 unparseable session stamp returns NOTHING rather than dumping the whole store
@@ -35,7 +53,7 @@ into the tail. It rides the tail (stripped before persistence), so the cached
 prefix is untouched; `memory_context_preview` deliberately omits it, because a
 preview has no session.
 
-DB scopes are `global` and `bot:<agentId>` only; `project:<path>` is refused at
+Scopes are `global` and `bot:<agentId>` only; `project:<path>` is refused at
 the write door on purpose, because workspace memory is the separate
 `.aug/memory` markdown layer that the tail already carries.
 
@@ -56,8 +74,8 @@ context), while a deliberate `brain_query(store='facts')` search answers even fo
 Settings → Memory → Import has two doors. The file door parses one `.md`/`.json`
 in the webview and previews it. The **whole-export door** hands the folder (or
 `.zip`) another agent shipped to `POST /api/august/memory/import-claude`
-(`memory_import.py`), which reads every file and writes into `facts` — never a
-second store:
+(`memory_import.py`), which reads every file and writes into the record — never
+a second store:
 
 * `profile.md` lands as `kind='profile'`, `preferences.md` as `kind='preference'`
   — the two kinds the always-in-context lane reads, so an imported identity is
@@ -127,8 +145,9 @@ reachable-but-unadvertised is a door the model has to guess at.
 
 ## Serialization traps
 
-A fact/KV value is **stored JSON-encoded**, so every read door must decode it or
-the human browse list shows `“"a sentence"”` where the boot index shows the
+A fact/KV value is **stored JSON-encoded** — in the record file's BODY (and in
+`state/kv.json`'s `value` field) — so every read door must decode it or the
+human browse list shows `“"a sentence"”` where the boot index shows the
 sentence (and the edit field re-encodes it on every save) —
 `memory_store.brain_browse` decodes a JSON *string* and leaves an object
 verbatim, because unwrapping one would drop `details` on the next save.
@@ -157,38 +176,60 @@ on the *content identity* the build already has, and scope it to the turn by
 construction — return it from the turn context, do not hang it off the session
 object. A bare `set` attribute on the session is what invited the bug.
 
-## The markdown mirror
+## Where the stores live
 
-`<dataDir>/memory/` is a one-way, human-readable view: one `.md` per active fact
-plus a `MEMORY.md` index. **Reads never touch it** — recall, BM25, the boot index
-and `brain_query` read the database only, so the two can never disagree about
-what a turn injects. Every mutating write updates one file and rewrites the
-index; hand edits are overwritten, and the index header states that rule.
-`memory` is in `hardline._AGENT_STATE_DIRS`, so `write_file`, the terminal and
-code mode refuse `<dataDir>/memory/**`: a model that can write the human-readable
-view can install instruction-shaped content beside the facts a person reads to
-audit it. The project layer (`<workspace>/.aug/memory`) is a different path and
-stays model-writable by design. Settings → Memory → "Open folder" opens it
-through the backend so the frontend never learns the data dir.
+`dataDir()` has four homes; the content domain owns two and change nothing
+about the other two:
+
+| Home | Holds |
+|---|---|
+| `memory/` | the fact record (one `.md` per fact + `MEMORY.md`) |
+| `state/` | kv, internal state, proposals, exams, blackboard, episodic timeline, episodes, goals, config audit, refine store, daemons, recurring tasks, workstreams |
+| `telemetry/` | rotating JSONL ledgers (turn outcomes, usage, lifecycle, decision ledger, routing evidence, guardrail log, sub-agent runs) + fingerprint/topic JSON |
+| `transcripts/` | `<sessionId>.jsonl` per chat + `sessions.json` |
+
+`memory/`, `state/`, `telemetry/` and `transcripts/` are all in
+`hardline._AGENT_STATE_DIRS`, so `write_file`, the terminal and code mode refuse
+writes into them: a model that could write the record could install
+instruction-shaped content beside the facts a person reads to audit it. The
+sanctioned writers are the memory_store doors, which are not behind that tool
+door. The project layer (`<workspace>/.aug/memory`) is a different path and
+stays model-writable by design. Settings → Memory → "Open folder" opens the
+record through the backend so the frontend never learns the data dir.
+
+The one-time import from the retired SQL database lives in
+`app/services/retired_sqlite.py`: on the first boot after the engine swap it
+exports every table with rows to the home above, recovers every memory an
+`available` rollback-log entry still names, writes the
+`state/sqlite-imported.json` marker, and renames the database (with `-wal` and
+`-shm`) to `august_brain.sqlite.retired` — never deleted. The owner's file is
+never written: it is opened READ-ONLY when no WAL is pending, and when `-wal`
+is non-empty — the normal state after the packaged `taskkill /T /F` quit — the
+database and its sidecars are copied to a temp dir and the COPY is opened
+read-write so the WAL replays, then the copy is deleted. A failed import writes
+a failed marker and leaves everything untouched.
 
 ## Backups and restore
 
 **Memory survives independently of recall** — `app/services/brain_backup.py`
-takes online copies through SQLite's backup API (read-only handle, no write lock
-on the live file), runs `PRAGMA integrity_check` on every copy before trusting
-it, and prunes to a verified rolling set; `GET /api/brain/integrity` is the
-health read. Settings → Memory shows the backups card. A restore is staged
-through `POST /api/brain/backups/restore` and applied at the next launch.
+takes a verified `tar.gz` of `memory/` + `state/` + `config.json` with a
+SHA-256 manifest, re-opens every archive and verifies every file hash before
+trusting it (the retired `PRAGMA integrity_check`, in the archive's own
+terms), and prunes to a verified rolling set of 5; `GET /api/brain/integrity`
+is the health read. Settings → Memory shows the backups card. A restore is
+staged through `POST /api/brain/backups/restore` and applied at the next
+launch.
 
 **A restore is staged and applied at the next launch, never in place:**
-`memory_store.close()` closes only a thread-local connection while other threads
-still hold the live file, so an in-process swap yields a half-old database (and
-fails to rename on Windows). `apply_pending_restore()` therefore runs in
-`main.py` before the store initializes and keeps what it replaced as
-`.pre-restore`; the pending marker is a file, not a row, because the case needing
-a restore is one where the database may not open. A copy on a newer schema is
-refused using the migration runner's own version discovery. Do not add an
-in-process swap or a second version constant.
+store threads hold the record files open for atomic writes, so an in-process
+swap yields half-old reads. `apply_pending_restore()` therefore runs in
+`main.py` before any store opens, extracts to a staging directory, and swaps
+`memory/` / `state/` / `config.json` one entry at a time, keeping what it
+replaced as `<name>.pre-restore`; the pending marker is a file, not a row,
+because the case needing a restore is one where the record may not open.
+Legacy SQL-era copies (`.sqlite`) still list — they hold user data — but
+restore is refused with the retired-engine reason. Do not add an in-process
+swap.
 
 ## The memory-user experience
 

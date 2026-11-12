@@ -1,11 +1,16 @@
 """M5 — turn outcomes as telemetry, not memory (plan 2026-08-27 §3.6).
 
 The deleted turn-lessons failed because free-text failure rules are not
-actionable memory. This module records one structured row per turn into
-``turn_outcomes`` (append-only, 30-day retention) and exposes the stats
-consumers: routing evidence and the harness self-improve "error rate by
-model" stat. Rows are never injected into prompts and never shown in the
-Memory UI — diagnostics only (Observability hub).
+actionable memory. This module records one structured row per turn into the
+turn-outcomes ledger (``<dataDir>/telemetry/turn-outcomes.jsonl`` — one JSON
+line per finished turn, 30-day retention) and exposes the stats consumers:
+routing evidence and the harness self-improve "error rate by model" stat.
+Rows are never injected into prompts and never shown in the Memory UI —
+diagnostics only (Observability hub).
+
+The ledger row carries the same field spellings the ``turn_outcomes`` table
+used, so every reader's dict access is unchanged; ``id`` stays a monotonic
+join key (053: ``usage_events.turn_id``, ``decision_ledger.turn_id``).
 
 The single path from failure to memory is ``maybe_promote_failure_lesson``:
 when one failure signature repeats, ONE typed lesson fact may be written —
@@ -19,7 +24,7 @@ attribution for them.
 046 also made the turn verdict durable: ``end_reason`` / ``rounds`` are the
 persisted twin of the ``turn_end {reason, rounds}`` SSE event, and
 ``malformed_tool_args`` / ``surface_downgraded`` are the persisted twin of the
-loop's turn-scoped self-correction counters. NULL on any of them means NOT
+loop's turn-scoped self-correction counters. None on any of them means NOT
 RECORDED (older row, or the value was never measured) — never 0.
 """
 
@@ -28,20 +33,22 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
-from app.services.deferred_writes import defer_commit
+from app.json_narrowing import as_int
 
 # Audit D8 (2026-09-26): family_for_class joins this recorder's
 # (signature-stable) error classes onto the loop's error-family vocabulary so
 # ``error_class`` rows and ``guardrail_classes`` digests are diagnosable
 # against each other. The vocabulary itself lives in error_families.
 from app.services.error_families import family_for_class  # noqa: F401  (re-export)
-from app.services.memory_conn import commit as brain_commit
-from app.services.memory_conn import conn as _conn
+from app.services.filestore import TELEMETRY_DIR, append_jsonl, home, load_jsonl, rewrite_jsonl
 
 # One dedupe threshold for both automatic memory doors — this promotion path and
 # the distiller's `memory` verdict — so they cannot disagree about what "we
@@ -49,6 +56,14 @@ from app.services.memory_conn import conn as _conn
 from app.services.memory_quality import DEDUPE_SIMILARITY as _DEDUPE_SIMILARITY
 
 logger = logging.getLogger(__name__)
+
+_LEDGER_FILE = 'turn-outcomes.jsonl'
+# Guards read-modify-write cycles on the ledger (append / sweep / read-back).
+_LOCK = threading.RLock()
+# Cached parsed rows keyed by the ledger file's stat, so the aggregate reads
+# (Learning panel, Observability) do not re-parse the file on every poll.
+_CACHE: dict[str, tuple[tuple[int, int], list[dict[str, object]]]] = {}
+_STAMP_FMT = '%Y-%m-%d %H:%M:%S'
 
 _RETENTION_DAYS = 30
 # Repeated-failure threshold within the window before promotion is allowed.
@@ -61,7 +76,7 @@ _LESSON_CHAR_CAP = 300
 # shared threshold is imported above from `memory_quality`.
 
 # ── failure classes (promotion signature spaces) ─────────────────────────
-# Which ledger column carries the evidence for one candidate lesson. The
+# Which ledger field carries the evidence for one candidate lesson. The
 # classes NEVER share a signature space: an ``edit_file`` guardrail block and
 # an ``edit_file``-flavoured error class promote two independent facts.
 KIND_ERROR = 'error'
@@ -72,7 +87,7 @@ FAILURE_KINDS = (KIND_ERROR, KIND_EDIT_VERIFY, KIND_GUARDRAIL)
 # The vocabulary of ``turn_end.reason`` (workbench.py:5235). Kept here as a
 # note to readers, NOT as a write-time allow-list: a reason the loop learns
 # after this file stopped changing must still reach the row instead of being
-# silently dropped to NULL.
+# silently dropped.
 TURN_END_REASONS = (
     'finished',
     'length',
@@ -88,18 +103,18 @@ TURN_END_REASONS = (
 def turn_ok(end_reason: str | None, errored: bool) -> bool | None:
     """Did this turn succeed? Judged by WHY IT STOPPED, not by whether it raised.
 
-    ``None`` means "neither a success nor a failure" and MUST be written as SQL
-    NULL — never 0 — so an unclassified stop is not silently counted as an
+    ``None`` means "neither a success nor a failure" and MUST be written as
+    JSON null — never 0 — so an unclassified stop is not silently counted as an
     error.
 
     ``ok`` used to be ``turnError is None``. A turn that ends ``stall-stop``,
     ``length``, ``budget``, ``cap`` or ``awaiting-input`` raises no exception, so
     every one of them was recorded as a CLEAN SUCCESS. That made both consumers
-    of the column wrong in the direction that matters:
+    of the field wrong in the direction that matters:
 
     * ``skill_lift`` computes ok-rate-with minus ok-rate-without as a skill's
       measured effect;
-    * ``error_rate_by_model`` ranks models by ``SUM(CASE WHEN ok = 0)``.
+    * ``error_rate_by_model`` ranks models by their counted failures.
 
     So the harness's own self-improvement and observability surfaces were blind
     to precisely the failure modes it built stall detection, budget ladders and
@@ -157,7 +172,7 @@ _ERROR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         # `invalid[_ ]` because the provider's own error TYPE is snake-cased
         # (`invalid_request_error`) and gateways that pass the envelope without a
         # numeric status were classifying as `other` — which hid a refused
-        # request shape from every reader of this column, including the
+        # request shape from every reader of this field, including the
         # stuck-request ladder that exists to repair it.
         re.compile(r'\[?400\]?|invalid[_ ](?:input|request|parameter)|bad request', re.IGNORECASE),
     ),
@@ -195,7 +210,7 @@ def classify_error(errorText: str) -> str:
 
 
 def _nullable_int(value: object) -> int | None:
-    """Store a counter, or NULL when it was never measured.
+    """Store a counter, or None when it was never measured.
 
     Deliberately NOT ``int(value or 0)``: that folds "unmeasured" into
     "measured zero", and the panel's whole honesty claim is that a turn whose
@@ -231,7 +246,7 @@ _NEW_COLUMNS = (
     'facts_injected',
     'error_families',
     # E4 expect receipts: how many `_expect` verdicts the turn produced and
-    # how many mismatched. NULL (absent from the insert) = the turn used no
+    # how many mismatched. Absent from the row = the turn used no
     # receipts — never conflated with "all receipts passed".
     'receipts_total',
     'receipts_failed',
@@ -239,16 +254,96 @@ _NEW_COLUMNS = (
 
 
 def _nullable_json_list(value: list[str] | None) -> str | None:
-    """JSON-encode a name list, or NULL when it was never recorded.
+    """JSON-encode a name list, or None when it was never recorded.
 
-    ``None`` → NULL (pre-050 callers / unrecorded); ``[]`` → ``'[]'``
-    (measured and empty). Every name is stringified and deduplicated so a
-    json_each aggregation cannot double-count.
+    ``None`` → None (pre-050 callers / unrecorded); ``[]`` → ``'[]'``
+    (measured and empty). Every name is stringified and deduplicated so an
+    aggregate cannot double-count.
     """
     if value is None:
         return None
     names = sorted({str(v) for v in value if str(v)})
     return json.dumps(names, ensure_ascii=False)
+
+
+def _ledger_path() -> Path:
+    return home(TELEMETRY_DIR) / _LEDGER_FILE
+
+
+def _stat_stamp(path: Path) -> tuple[int, int]:
+    try:
+        stat = path.stat()
+        return (stat.st_size, int(stat.st_mtime * 1000))
+    except OSError:
+        return (0, 0)
+
+
+def _load_rows() -> list[dict[str, object]]:
+    """All ledger rows (oldest first), stat-cached; never raises."""
+    path = _ledger_path()
+    stamp = _stat_stamp(path)
+    with _LOCK:
+        hit = _CACHE.get('rows')
+        if hit and hit[0] == stamp:
+            return hit[1]
+    rows: list[dict[str, object]] = []
+    for raw in load_jsonl(path):
+        if isinstance(raw, dict):
+            rows.append(raw)
+    with _LOCK:
+        _CACHE['rows'] = (stamp, rows)
+    return rows
+
+
+def _invalidate_cache() -> None:
+    with _LOCK:
+        _CACHE.pop('rows', None)
+
+
+def _stamp(epoch_s: float | None = None) -> str:
+    return time.strftime(_STAMP_FMT, time.gmtime(epoch_s))
+
+
+def _cutoff(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=max(0, days))).strftime(_STAMP_FMT)
+
+
+def _next_row_id(rows: list[dict[str, object]]) -> int:
+    best = 0
+    for row in rows:
+        try:
+            value = as_int(row.get('id'), 0)
+        except (TypeError, ValueError):
+            continue
+        if value > best:
+            best = value
+    return best + 1
+
+
+def _in_window(row: dict[str, object], cutoff: str) -> bool:
+    return str(row.get('ts') or '') >= cutoff
+
+
+def _population(row: dict[str, object], task_type: str | None) -> bool:
+    """The population an aggregate describes.
+
+    The subagent fanout writes its own durable row into this same ledger with
+    ``task_type='subagent_fanout'`` and ``model=''`` — a 1-3 round fanout
+    aggregate, not a user turn. Nothing downstream filtered on ``task_type``, so
+    those rows were averaged into the same ``reasons`` histogram and the same
+    round average as 20-round main turns, and the Learning panel's "avg rounds"
+    was a blend of two populations that mean different things.
+
+    Default is therefore "everything except the fanout", which is what the
+    Learning panel is about. An explicit ``taskType`` selects one population
+    exactly, including the fanout, so the excluded rows stay reachable rather
+    than hidden. One predicate shared by every reader here, so they cannot drift
+    apart the way the aggregates did.
+    """
+    actual = str(row.get('task_type') or '')
+    if task_type is None:
+        return actual != 'subagent_fanout'
+    return actual == str(task_type)
 
 
 def record_turn_outcome(
@@ -287,106 +382,101 @@ def record_turn_outcome(
     P3.1 (Part 18): ``tool_args_ready_to_stream_end_ms`` measures the
     trailing stream tail AFTER the last tool call's arguments arrived —
     the time early tool dispatch could save. 0 = no tool call this turn.
-    046 (this change): the verdict + self-correction counters at the tail.
-    Every one of them is ``None`` = NOT RECORDED and lands as SQL NULL, so an
-    older row and a turn that measured nothing stay distinguishable from a
-    turn that measured a zero.
+    046: the verdict + self-correction counters at the tail. Every one of
+    them is ``None`` = NOT RECORDED and lands as JSON null, so an older row
+    and a turn that measured nothing stay distinguishable from a turn that
+    measured a zero.
     """
     try:
-        conn = _conn()
-        base_cols = [
-            'model',
-            'provider',
-            'task_type',
-            'ok',
-            'error_class',
-            'duration_ms',
-            'session_id',
-            'ttft_ms',
-            'cache_hit_tokens',
-            'cache_miss_tokens',
-            'tool_args_ready_to_stream_end_ms',
-        ]
-        base_vals: list[object] = [
-            model or '',
-            provider or '',
-            task_type or '',
-            # None stays NULL (unmeasured), never 0. `ok` is no longer just
-            # "did it raise" — see turn_ok(), the single authority for it.
-            None if ok is None else (1 if ok else 0),
-            error_class or '',
-            int(duration_ms or 0),
-            session_id or '',
-            int(ttft_ms or 0),
-            int(cache_hit_tokens or 0),
-            int(cache_miss_tokens or 0),
-            int(tool_args_ready_to_stream_end_ms or 0),
-        ]
-        new_vals: list[object] = [
-            _nullable_text(end_reason),
-            _nullable_int(rounds),
-            _nullable_int(malformed_tool_args),
-            _nullable_int(surface_downgraded),
-            _nullable_int(edit_verify_fails),
-            _nullable_text(guardrail_classes),
-            _nullable_json_list(skills_injected),
-            _nullable_json_list(skills_loaded),
-            _nullable_json_list(facts_injected),
-            _nullable_json_list(error_families),
-            _nullable_int(receipts_total),
-            _nullable_int(receipts_failed),
-        ]
-        try:
-            cursor = conn.execute(
-                'INSERT INTO turn_outcomes '
-                f'({", ".join(base_cols + list(_NEW_COLUMNS))}) '
-                f'VALUES ({", ".join(["?"] * (len(base_cols) + len(_NEW_COLUMNS)))})',
-                (*base_vals, *new_vals),
-            )
-            rowid = cursor.lastrowid
-        except Exception as exc:  # noqa: BLE001
-            # 046 not applied (fresh install whose migration budget is spent,
-            # or a partially upgraded legacy DB): the verdict columns are lost,
-            # the turn row is NOT. Losing all M5 telemetry because an additive
-            # column is missing would be the worse failure by far. SQLite
-            # reports an unknown INSERT target as "has no column named X" and
-            # an unknown reference as "no such column" — both mean the same
-            # schema hole here.
-            msg = str(exc).lower()
-            if 'no such column' not in msg and 'has no column' not in msg:
-                raise
-            logger.debug('record_turn_outcome: 046 columns absent, writing base row')
-            cursor = conn.execute(
-                'INSERT INTO turn_outcomes '
-                f'({", ".join(base_cols)}) '
-                f'VALUES ({", ".join(["?"] * len(base_cols))})',
-                tuple(base_vals),
-            )
-        # P4.2: telemetry rows are never read back within the turn —
-        # the commit is debounced (≤2s) instead of syncing per turn.
-        defer_commit(conn)
-        # The row id is the join key every other per-turn table now carries
-        # (053: ``usage_events.turn_id``, ``decision_ledger.turn_id``). Callers
-        # that do not need it ignore the return; the turn close uses it.
-        return int(rowid) if rowid else None
+        with _LOCK:
+            rows = _load_rows()
+            row: dict[str, object] = {
+                'id': _next_row_id(rows),
+                'ts': _stamp(),
+                'model': model or '',
+                'provider': provider or '',
+                'task_type': task_type or '',
+                # None stays null (unmeasured), never 0. `ok` is no longer just
+                # "did it raise" — see turn_ok(), the single authority for it.
+                'ok': None if ok is None else (1 if ok else 0),
+                'error_class': error_class or '',
+                'duration_ms': int(duration_ms or 0),
+                'session_id': session_id or '',
+                'ttft_ms': int(ttft_ms or 0),
+                'cache_hit_tokens': int(cache_hit_tokens or 0),
+                'cache_miss_tokens': int(cache_miss_tokens or 0),
+                'tool_args_ready_to_stream_end_ms': int(tool_args_ready_to_stream_end_ms or 0),
+                'end_reason': _nullable_text(end_reason),
+                'rounds': _nullable_int(rounds),
+                'malformed_tool_args': _nullable_int(malformed_tool_args),
+                'surface_downgraded': _nullable_int(surface_downgraded),
+                'edit_verify_fails': _nullable_int(edit_verify_fails),
+                'guardrail_classes': _nullable_text(guardrail_classes),
+                'skills_injected': _nullable_json_list(skills_injected),
+                'skills_loaded': _nullable_json_list(skills_loaded),
+                'facts_injected': _nullable_json_list(facts_injected),
+                'error_families': _nullable_json_list(error_families),
+                'receipts_total': _nullable_int(receipts_total),
+                'receipts_failed': _nullable_int(receipts_failed),
+            }
+            # fsync on append: the packaged quit is taskkill /F, so this line
+            # must be on disk before the function returns (filestore rule 4).
+            append_jsonl(_ledger_path(), row)
+            _invalidate_cache()
+            # The row id is the join key every other per-turn table now carries
+            # (053: ``usage_events.turn_id``, ``decision_ledger.turn_id``).
+            # Callers that do not need it ignore the return; the turn close
+            # uses it.
+            return as_int(row['id'], 0)
     except Exception:
         logger.debug('record_turn_outcome failed', exc_info=True)
         return None
 
 
+def recent_outcomes(session_id: str, limit: int = 60) -> list[dict[str, object]]:
+    """This session's most recent outcome rows, newest first.
+
+    Reader for the loop's stuck-request repair ladder (the old raw
+    ``SELECT … WHERE session_id = ? ORDER BY id DESC LIMIT ?``).
+    """
+    if not session_id:
+        return []
+    rows = [
+        row
+        for row in _load_rows()
+        if str(row.get('session_id') or '') == session_id
+    ]
+    return rows[-max(1, int(limit)) :][::-1]
+
+
+def get_outcome(turn_id: int) -> dict[str, object] | None:
+    """One outcome row by id (the 053 join-key lookup), or None."""
+    try:
+        wanted = int(turn_id)
+    except (TypeError, ValueError):
+        return None
+    for row in _load_rows():
+        try:
+            if as_int(row.get('id'), 0) == wanted:
+                return row
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def guardrail_class_digest(session_id: str, sinceUtc: str) -> tuple[str | None, dict[str, str]]:
-    """Roll up THIS turn's guardrail blocks out of ``tool_guardrail_log``.
+    """Roll up THIS turn's guardrail blocks out of ``tool-guardrail-log.jsonl``.
 
     The log stays the single authority for the per-block detail — this is a
     read, not a second writer, and it exists because the log has no
-    model/provider column, so nothing could tie a repeated block back to the
+    model/provider field, so nothing could tie a repeated block back to the
     model that keeps causing it. Returns ``(digest, samplesByTool)``:
 
     * digest ``None``  → nothing measurable (no session id, unreadable log) and
-      the caller must write NULL, not 0;
+      the caller must write None, not 0;
     * digest ``''``    → the turn was measured and blocked nothing;
-    * digest ``',edit_file:2,'`` → per-tool counts, comma-padded so a LIKE
-      match on ``',edit_file:'`` cannot hit ``'not_edit_file:'``.
+    * digest ``',edit_file:2,'`` → per-tool counts, comma-padded so a match on
+      ``',edit_file:'`` cannot hit ``'not_edit_file:'``.
 
     Tool names are sanitised on the way in (`,`` and ``:`` are structural) so
     the digest always round-trips through :func:`parse_guardrail_digest`.
@@ -394,23 +484,25 @@ def guardrail_class_digest(session_id: str, sinceUtc: str) -> tuple[str | None, 
     if not session_id or not sinceUtc:
         return None, {}
     try:
-        rows = _conn().execute(
-            "SELECT tool_name, reason FROM tool_guardrail_log "
-            "WHERE session_id = ? AND COALESCE(created_at, '') >= ?",
-            (session_id, sinceUtc),
-        ).fetchall()
+        path = home(TELEMETRY_DIR) / 'tool-guardrail-log.jsonl'
+        entries = [e for e in load_jsonl(path) if isinstance(e, dict)]
     except Exception:
         logger.debug('guardrail_class_digest failed', exc_info=True)
         return None, {}
     counts: dict[str, int] = {}
     samples: dict[str, str] = {}
-    for r in rows:
-        tool = re.sub(r'[,:]', '_', str(r['tool_name'] or 'unknown')).strip() or 'unknown'
+    for entry in entries:
+        if str(entry.get('session_id') or '') != session_id:
+            continue
+        created = str(entry.get('created_at') or '')
+        if created and created < sinceUtc:
+            continue
+        tool = re.sub(r'[,:]', '_', str(entry.get('tool_name') or 'unknown')).strip() or 'unknown'
         counts[tool] = counts.get(tool, 0) + 1
         if tool not in samples:
-            samples[tool] = ' '.join(str(r['reason'] or '').split())[:200]
+            samples[tool] = ' '.join(str(entry.get('reason') or '').split())[:200]
     if not counts:
-        # Measured, empty. Only honest when the query above actually ran.
+        # Measured, empty. Only honest when the read above actually ran.
         return '', {}
     return ',' + ','.join(f'{tool}:{n}' for tool, n in sorted(counts.items())) + ',', samples
 
@@ -431,46 +523,21 @@ def parse_guardrail_digest(digest: object) -> dict[str, int]:
     return out
 
 
-def _turnTypePredicate(task_type: str | None) -> tuple[str, list[object]]:
-    """(SQL predicate, params) selecting the population an aggregate describes.
-
-    The subagent fanout writes its own durable row into this same table with
-    ``task_type='subagent_fanout'`` and ``model=''`` — a 1-3 round fanout
-    aggregate, not a user turn. Nothing downstream filtered on ``task_type``, so
-    those rows were averaged into the same ``reasons`` histogram and the same
-    round average as 20-round main turns, and the Learning panel's "avg rounds"
-    was a blend of two populations that mean different things.
-
-    Default is therefore "everything except the fanout", which is what the
-    Learning panel is about. An explicit ``taskType`` selects one population
-    exactly, including the fanout, so the excluded rows stay reachable rather
-    than hidden. One predicate shared by every reader here, so they cannot drift
-    apart the way the aggregates did.
-    """
-    if task_type is None:
-        # COALESCE matters: a bare `task_type != 'subagent_fanout'` evaluates to
-        # NULL for a NULL task_type, and `WHERE NULL` is false — so it would
-        # silently drop every row written before task_type existed.
-        return "COALESCE(task_type, '') != ?", ['subagent_fanout']
-    return 'task_type = ?', [str(task_type)]
-
-
 def turn_verdict_stats(days: int = 7, task_type: str | None = None) -> dict[str, object]:
     """Why turns end, and how often they misbehave on the way there.
 
     The read side of 046 for the Learning panel: one windowed aggregate over
-    the rows the sweep keeps. Every counter reports ``total`` (NULL when the
+    the rows the retention keeps. Every counter reports ``total`` (None when the
     window holds no measured row), ``measured`` / ``unrecorded`` (row counts
-    that split the NULL-vs-zero question out honestly) and ``turns`` (turns
+    that split the null-vs-zero question out honestly) and ``turns`` (turns
     with at least one of that signal). Diagnostics only: nothing here gates an
     answer, and a reason distribution is not a score.
 
     Excludes the ``subagent_fanout`` population by default — see
-    :func:`_turnTypePredicate` — and reports it under ``byTaskType`` so the
+    :func:`_population` — and reports it under ``byTaskType`` so the
     split is visible rather than merely asserted.
     """
     windowDays = max(1, min(int(days or 7), _RETENTION_DAYS))
-    where, whereArgs = _turnTypePredicate(task_type)
     empty: dict[str, object] = {
         'days': windowDays,
         'turns': 0,
@@ -480,98 +547,108 @@ def turn_verdict_stats(days: int = 7, task_type: str | None = None) -> dict[str,
         'byTaskType': [],
     }
     try:
-        conn = _conn()
-        args = (f'-{windowDays} days', *whereArgs)
-        reasonRows = conn.execute(
-            f'SELECT end_reason AS reason, COUNT(*) AS n FROM turn_outcomes '
-            f"WHERE ts >= datetime('now', ?) AND {where} "
-            f'GROUP BY end_reason ORDER BY n DESC',
-            args,
-        ).fetchall()
-        stats = conn.execute(
-            f"""
-            SELECT COUNT(*) AS turns,
-                   SUM(CASE WHEN rounds IS NULL THEN 1 ELSE 0 END) AS rounds_missing,
-                   SUM(rounds) AS rounds_total, MAX(rounds) AS rounds_max,
-                   SUM(CASE WHEN malformed_tool_args IS NULL THEN 1 ELSE 0 END) AS mf_missing,
-                   SUM(malformed_tool_args) AS mf_total,
-                   SUM(CASE WHEN malformed_tool_args > 0 THEN 1 ELSE 0 END) AS mf_turns,
-                   SUM(CASE WHEN surface_downgraded IS NULL THEN 1 ELSE 0 END) AS sd_missing,
-                   SUM(surface_downgraded) AS sd_total,
-                   SUM(CASE WHEN surface_downgraded > 0 THEN 1 ELSE 0 END) AS sd_turns,
-                   SUM(CASE WHEN edit_verify_fails IS NULL THEN 1 ELSE 0 END) AS ev_missing,
-                   SUM(edit_verify_fails) AS ev_total,
-                   SUM(CASE WHEN edit_verify_fails > 0 THEN 1 ELSE 0 END) AS ev_turns,
-                   SUM(CASE WHEN guardrail_classes IS NULL THEN 1 ELSE 0 END) AS gr_missing,
-                   SUM(CASE WHEN guardrail_classes != '' THEN 1 ELSE 0 END) AS gr_turns
-            FROM turn_outcomes
-            WHERE ts >= datetime('now', ?) AND {where}
-            """,
-            args,
-        ).fetchone()
-        digests = conn.execute(
-            f"SELECT guardrail_classes, COUNT(*) AS n FROM turn_outcomes "
-            f"WHERE guardrail_classes IS NOT NULL AND guardrail_classes != '' "
-            f"  AND ts >= datetime('now', ?) AND {where} GROUP BY guardrail_classes",
-            args,
-        ).fetchall()
+        cutoff = _cutoff(windowDays)
+        rows = [
+            row
+            for row in _load_rows()
+            if _in_window(row, cutoff) and _population(row, task_type)
+        ]
     except Exception:
         logger.debug('turn_verdict_stats failed', exc_info=True)
         return empty
 
-    row: dict[str, Any] = dict(stats) if stats is not None else {}
-    turns = int(row.get('turns') or 0)
-    reasons: list[dict[str, object]] = []
+    turns = len(rows)
+    reason_counts: dict[str, int] = {}
     unrecordedReason = 0
-    for r in reasonRows:
-        n = int(r['n'] or 0)
-        if r['reason'] is None:
+    rounds_seen: list[int] = []
+    rounds_missing = 0
+    mf_totals = 0
+    mf_missing = 0
+    mf_turns = 0
+    sd_totals = 0
+    sd_missing = 0
+    sd_turns = 0
+    ev_totals = 0
+    ev_missing = 0
+    ev_turns = 0
+    gr_turns = 0
+    gr_missing = 0
+    byTool: dict[str, int] = {}
+    for row in rows:
+        reason = row.get('end_reason')
+        if reason is None:
             # Rows written before 046 (and turns whose verdict was never
             # handed down): counted and labelled, never folded into a reason.
-            unrecordedReason += n
-            continue
-        reasons.append({'reason': str(r['reason']), 'turns': n})
+            unrecordedReason += 1
+        else:
+            key = str(reason)
+            reason_counts[key] = reason_counts.get(key, 0) + 1
+        rounds = _nullable_int(row.get('rounds'))
+        if rounds is None:
+            rounds_missing += 1
+        else:
+            rounds_seen.append(rounds)
+        mf = _nullable_int(row.get('malformed_tool_args'))
+        if mf is None:
+            mf_missing += 1
+        else:
+            mf_totals += mf
+            if mf > 0:
+                mf_turns += 1
+        sd = _nullable_int(row.get('surface_downgraded'))
+        if sd is None:
+            sd_missing += 1
+        else:
+            sd_totals += sd
+            if sd > 0:
+                sd_turns += 1
+        ev = _nullable_int(row.get('edit_verify_fails'))
+        if ev is None:
+            ev_missing += 1
+        else:
+            ev_totals += ev
+            if ev > 0:
+                ev_turns += 1
+        digest = row.get('guardrail_classes')
+        if digest is None:
+            gr_missing += 1
+        elif str(digest) != '':
+            gr_turns += 1
+            for tool, n in parse_guardrail_digest(digest).items():
+                byTool[tool] = byTool.get(tool, 0) + n
 
-    def _counter(totalKey: str, missingKey: str, turnsKey: str) -> dict[str, object]:
-        missing = int(row.get(missingKey) or 0)
-        rawTotal = row.get(totalKey)
+    reasons: list[dict[str, object]] = [
+        {'reason': name, 'turns': n}
+        for name, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    def _counter(total: int, missing: int, with_turns: int) -> dict[str, object]:
         return {
             # None = the window holds no measured row (NOT 0).
-            'total': None if rawTotal is None else int(rawTotal),
+            'total': total if turns - missing else None,
             'measured': turns - missing,
-            'turns': int(row.get(turnsKey) or 0),
+            'turns': with_turns,
             'unrecorded': missing,
         }
 
-    byTool: dict[str, int] = {}
-    guardrailTotal = 0
-    for r in digests:
-        perTurn = int(r['n'] or 0)
-        for tool, n in parse_guardrail_digest(r['guardrail_classes']).items():
-            byTool[tool] = byTool.get(tool, 0) + n * perTurn
-            guardrailTotal += n * perTurn
-
-    grMeasured = turns - int(row.get('gr_missing') or 0)
-    roundsMeasured = turns - int(row.get('rounds_missing') or 0)
-    roundsTotalRaw = row.get('rounds_total')
+    grMeasured = turns - gr_missing
+    roundsMeasured = turns - rounds_missing
     counters: dict[str, object] = {
         'rounds': {
-            'avg': round(float(roundsTotalRaw or 0) / roundsMeasured, 2)
-            if roundsTotalRaw is not None
-            else None,
-            'max': None if row.get('rounds_max') is None else int(row['rounds_max']),
+            'avg': round(sum(rounds_seen) / roundsMeasured, 2) if roundsMeasured else None,
+            'max': max(rounds_seen) if rounds_seen else None,
             'measured': roundsMeasured,
-            'unrecorded': int(row.get('rounds_missing') or 0),
+            'unrecorded': rounds_missing,
         },
-        'malformedToolArgs': _counter('mf_total', 'mf_missing', 'mf_turns'),
-        'surfaceDowngrades': _counter('sd_total', 'sd_missing', 'sd_turns'),
-        'editVerifyFails': _counter('ev_total', 'ev_missing', 'ev_turns'),
+        'malformedToolArgs': _counter(mf_totals, mf_missing, mf_turns),
+        'surfaceDowngrades': _counter(sd_totals, sd_missing, sd_turns),
+        'editVerifyFails': _counter(ev_totals, ev_missing, ev_turns),
         'guardrailBlocks': {
             # 0 = measured and nothing was blocked; None = never measured.
-            'total': guardrailTotal if grMeasured else None,
+            'total': sum(byTool.values()) if grMeasured else None,
             'measured': grMeasured,
-            'turns': int(row.get('gr_turns') or 0),
-            'unrecorded': int(row.get('gr_missing') or 0),
+            'turns': gr_turns,
+            'unrecorded': gr_missing,
             'byTool': [
                 {'tool': t, 'blocks': n}
                 for t, n in sorted(byTool.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -597,49 +674,78 @@ def _taskTypeBreakdown(window_days: int) -> list[dict[str, object]]:
     be gone.
     """
     try:
-        rows = _conn().execute(
-            """
-            SELECT COALESCE(task_type, '') AS task_type,
-                   COUNT(*) AS turns,
-                   SUM(rounds) AS rounds_total,
-                   SUM(CASE WHEN rounds IS NULL THEN 1 ELSE 0 END) AS rounds_missing
-            FROM turn_outcomes
-            WHERE ts >= datetime('now', ?)
-            GROUP BY COALESCE(task_type, '')
-            ORDER BY turns DESC
-            """,
-            (f'-{int(window_days)} days',),
-        ).fetchall()
+        cutoff = _cutoff(int(window_days))
+        buckets: dict[str, dict[str, int]] = {}
+        for row in _load_rows():
+            if not _in_window(row, cutoff):
+                continue
+            key = str(row.get('task_type') or '')
+            bucket = buckets.setdefault(key, {'turns': 0, 'rounds_total': 0, 'rounds_missing': 0})
+            bucket['turns'] += 1
+            rounds = _nullable_int(row.get('rounds'))
+            if rounds is None:
+                bucket['rounds_missing'] += 1
+            else:
+                bucket['rounds_total'] += rounds
     except Exception:
         logger.debug('task_type breakdown failed', exc_info=True)
         return []
     out: list[dict[str, object]] = []
-    for r in rows:
-        measured = int(r['turns'] or 0) - int(r['rounds_missing'] or 0)
-        total = r['rounds_total']
+    for key, bucket in buckets.items():
+        measured = bucket['turns'] - bucket['rounds_missing']
         out.append(
             {
-                'taskType': str(r['task_type'] or ''),
-                'turns': int(r['turns'] or 0),
-                'avgRounds': round(float(total or 0) / measured, 2) if total is not None and measured else None,
+                'taskType': key,
+                'turns': bucket['turns'],
+                'avgRounds': round(bucket['rounds_total'] / measured, 2)
+                if measured and bucket['rounds_total'] is not None
+                else None,
             }
         )
+    out.sort(key=lambda item: -as_int(item['turns'], 0))
     return out
 
 
 def sweep_old_outcomes(days: int = _RETENTION_DAYS) -> int:
-    """Delete rows older than the retention window (called by M4 job)."""
+    """Drop rows older than the retention window (called by the M4 job)."""
     try:
-        conn = _conn()
-        cur = conn.execute(
-            "DELETE FROM turn_outcomes WHERE ts < datetime('now', ?)",
-            (f'-{int(days)} days',),
-        )
-        brain_commit(conn)
-        return cur.rowcount or 0
+        cutoff = _cutoff(int(days))
+        with _LOCK:
+            rows = _load_rows()
+            kept = [row for row in rows if _in_window(row, cutoff)]
+            removed = len(rows) - len(kept)
+            if removed:
+                rewrite_jsonl(_ledger_path(), cast('list[object]', kept))
+                _invalidate_cache()
+            return removed
     except Exception:
         logger.debug('sweep_old_outcomes failed', exc_info=True)
         return 0
+
+
+def _decode_name_list(raw: object) -> list[str]:
+    """The names inside a stored ``skills_injected``-style JSON list."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(v) for v in parsed if str(v)]
+
+
+def _ok_flag(row: dict[str, object]) -> int | None:
+    value = row.get('ok')
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    number = as_int(value, -1)
+    if number < 0:
+        return None
+    return 1 if number else 0
 
 
 def skill_lift_detail(days: int = 30, limit: int = 0) -> list[dict[str, Any]]:
@@ -648,20 +754,18 @@ def skill_lift_detail(days: int = 30, limit: int = 0) -> list[dict[str, Any]]:
     Two consumers read this and they must not be able to disagree: ``GET
     /api/brain/skills/suggestions`` (the human read — the Skills UI) and the
     per-turn demotion prior in ``capabilities_prompt`` (the ranking read). The
-    route used to run its OWN copy of this SQL with ``COUNT(*)`` where this
-    module used ``COUNT(ok)``, so the UI could show ``+0.2`` for a skill the
-    ranker treated as harmful — the exact failure the two-consumer rule
-    exists to prevent. The route reads this function now, so there is one
-    statement behind both reads.
+    route used to run its OWN copy of this aggregation, so the UI could show
+    ``+0.2`` for a skill the ranker treated as harmful — the exact failure the
+    two-consumer rule exists to prevent. The route reads this function now, so
+    there is one implementation behind both reads.
 
-    ``COUNT(ok)`` not ``COUNT(*)``: ``ok`` is NULL for a turn whose stop was
-    never classified (see :func:`turn_ok`), and counting those rows in the
-    denominator while SUM ignores them would understate every rate.
+    A turn whose ``ok`` is null (stop reason never classified) is excluded from
+    every denominator and numerator, exactly as ``COUNT(ok)`` / ``SUM(ok)``
+    excluded it in the SQL this replaced.
 
     A skill with no measurable denominator is ABSENT from the result, not
     0.0: "no evidence" and "measured, no effect" are different facts, and
-    only the second one may move a ranking. A DB without migration 050 (or
-    without ``json_each``) degrades to an empty list.
+    only the second one may move a ranking.
 
     Ordered by turns-with DESC then name ASC, so the UI's "most measured
     first" list is a stable order. ``limit`` caps the list (0 = no cap); the
@@ -669,41 +773,36 @@ def skill_lift_detail(days: int = 30, limit: int = 0) -> list[dict[str, Any]]:
     """
     window_days = max(1, min(int(days or 30), _RETENTION_DAYS))
     try:
-        rows = _conn().execute(
-            """
-            WITH windowed AS (
-                SELECT ok, skills_injected FROM turn_outcomes
-                WHERE ts >= datetime('now', ?) AND skills_injected IS NOT NULL
-            ),
-            total AS (SELECT COUNT(ok) AS n, SUM(ok) AS ok_n FROM windowed),
-            per AS (
-                SELECT je.value AS skill, COUNT(w.ok) AS n, SUM(w.ok) AS ok_n
-                FROM windowed w, json_each(w.skills_injected) je
-                GROUP BY je.value
-            )
-            SELECT per.skill AS skill, per.n AS with_turns, per.ok_n AS ok_with,
-                   total.n AS total_turns, total.ok_n AS ok_total
-            FROM per, total
-            ORDER BY per.n DESC, per.skill ASC
-            """
-            ,
-            (f'-{window_days} days',),
-        ).fetchall()
+        cutoff = _cutoff(window_days)
+        windowed = [
+            row
+            for row in _load_rows()
+            if _in_window(row, cutoff) and row.get('skills_injected') is not None
+        ]
     except Exception:
         logger.debug('skill_lift aggregate failed', exc_info=True)
         return []
+
+    total_turns = sum(1 for row in windowed if _ok_flag(row) is not None)
+    ok_total = sum(1 for row in windowed if _ok_flag(row) == 1)
+    per: dict[str, dict[str, int]] = {}
+    for row in windowed:
+        ok = _ok_flag(row)
+        for name in _decode_name_list(row.get('skills_injected')):
+            bucket = per.setdefault(name, {'with_turns': 0, 'ok_with': 0})
+            if ok is not None:
+                bucket['with_turns'] += 1
+                if ok:
+                    bucket['ok_with'] += 1
     out: list[dict[str, Any]] = []
-    for r in rows:
-        name = str(r['skill'] or '').strip()
-        with_turns = int(r['with_turns'] or 0)
-        total_turns = int(r['total_turns'] or 0)
+    for name, bucket in sorted(per.items(), key=lambda kv: (-kv[1]['with_turns'], kv[0])):
+        with_turns = bucket['with_turns']
         without_turns = max(0, total_turns - with_turns)
         if not name or not with_turns or not without_turns:
             # No denominator on one side means the difference is undefined;
             # a 0.0 here would read as "measured, no effect".
             continue
-        ok_with = int(r['ok_with'] or 0)
-        ok_total = int(r['ok_total'] or 0)
+        ok_with = bucket['ok_with']
         ok_rate_with = ok_with / with_turns
         ok_rate_without = (ok_total - ok_with) / without_turns
         out.append(
@@ -731,13 +830,11 @@ def skill_lift(days: int = 30) -> dict[str, float]:
     ``capabilities_prompt`` (the ranking read). They must not be able to
     disagree — a skill the UI shows at ``+0.2`` and the ranker treats as
     harmful is a bug, not two opinions. The route reads
-    :func:`skill_lift_detail`, the SAME function this map is built from, so
-    one SQL statement backs both reads.
+    :func:`skill_lift_detail`, the SAME function this map is built from.
 
     A skill with no measurable denominator is ABSENT from the map, not 0.0:
     "no evidence" and "measured, no effect" are different facts, and only the
-    second one may move a ranking. A DB without migration 050 (or without
-    ``json_each``) degrades to an empty map.
+    second one may move a ranking.
     """
     return {
         str(row.get('skill') or ''): float(row.get('lift') or 0.0)
@@ -750,51 +847,49 @@ def error_rate_by_model(days: int = 7) -> list[dict[str, object]]:
     """Per-model/provider turn stats for Observability + self-improve.
 
     Excludes the subagent-fanout population by the SAME predicate
-    :func:`_turnTypePredicate` gives the verdict stats — one filter, so the two
-    readers cannot drift apart again. See that function for why it is a
-    COALESCE and not a bare inequality.
+    :func:`_population` gives the verdict stats — one filter, so the two
+    readers cannot drift apart again.
     """
     try:
-        conn = _conn()
-        where, whereArgs = _turnTypePredicate(None)
-        rows = conn.execute(
-            f"""
-            SELECT model, provider,
-                   COUNT(ok) AS turns,
-                   SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS errors
-            FROM turn_outcomes
-            WHERE ts >= datetime('now', ?) AND {where}
-            GROUP BY model, provider
-            ORDER BY errors DESC, turns DESC
-            """,
-            (f'-{int(days)} days', *whereArgs),
-        ).fetchall()
-        out: list[dict[str, object]] = []
-        for r in rows:
-            turns = int(r['turns'] or 0)
-            errors = int(r['errors'] or 0)
-            out.append(
-                {
-                    'model': r['model'] or '',
-                    'provider': r['provider'] or '',
-                    'turns': turns,
-                    'errors': errors,
-                    'errorRate': round(errors / turns, 3) if turns else 0.0,
-                }
-            )
-        # Roadmap #8: `ORDER BY errors DESC` put the `('', '')` bucket — which
-        # only ever holds subagent-fanout rows, written with no model — at the
-        # TOP of the per-model error ranking whenever any fanout ended badly. A
-        # phantom model with the highest error rate on the Observability page.
-        # Unnamed rows still rank by errors among themselves; they just cannot
-        # outrank a named model, and the fanout population is excluded outright
-        # by the same predicate the verdict stats use.
-        errorCounts = {id(r): int(r['errors'] or 0) for r in out}  # type: ignore[call-overload]
-        out.sort(key=lambda r: (not str(r['model'] or ''), -errorCounts[id(r)]))
-        return out
+        cutoff = _cutoff(int(days))
+        buckets: dict[tuple[str, str], dict[str, int]] = {}
+        for row in _load_rows():
+            if not _in_window(row, cutoff) or not _population(row, None):
+                continue
+            ok = _ok_flag(row)
+            if ok is None:
+                continue
+            key = (str(row.get('model') or ''), str(row.get('provider') or ''))
+            bucket = buckets.setdefault(key, {'turns': 0, 'errors': 0})
+            bucket['turns'] += 1
+            if ok == 0:
+                bucket['errors'] += 1
     except Exception:
         logger.debug('error_rate_by_model failed', exc_info=True)
         return []
+    out: list[dict[str, object]] = []
+    for (model, provider), bucket in buckets.items():
+        turns = bucket['turns']
+        errors = bucket['errors']
+        out.append(
+            {
+                'model': model,
+                'provider': provider,
+                'turns': turns,
+                'errors': errors,
+                'errorRate': round(errors / turns, 3) if turns else 0.0,
+            }
+        )
+    out.sort(key=lambda r: (-as_int(r['errors'], 0), -as_int(r['turns'], 0)))
+    # Roadmap #8: the plain ``errors DESC`` order put the ``('', '')`` bucket —
+    # which only ever holds subagent-fanout rows, written with no model — at
+    # the TOP of the per-model error ranking whenever any fanout ended badly.
+    # A phantom model with the highest error rate on the Observability page.
+    # Unnamed rows still rank by errors among themselves; they just cannot
+    # outrank a named model, and the fanout population is excluded outright
+    # by the same predicate the verdict stats use.
+    out.sort(key=lambda r: (not str(r['model'] or ''), -as_int(r['errors'], 0)))
+    return out
 
 
 def _signature(provider: str, model: str, errorClass: str, kind: str = KIND_ERROR) -> str:
@@ -820,54 +915,45 @@ def _failure_signature(failure: FailureClass, provider: str, model: str) -> str:
 def _recent_failures(failure: FailureClass, provider: str, model: str) -> list[str]:
     """Turns inside the promotion window that carry this failure signature.
 
-    Each class is counted from its own column of the SAME ``turn_outcomes``
-    ledger (no second store): the error class from the ``ok``/``error_class``
-    pair the feature has always used, the edit-verification gate from
-    ``edit_verify_fails``, the guardrails from the ``guardrail_classes``
-    digest. A DB without 046 simply yields nothing for the two new classes —
-    the query error is swallowed the same way every other read here is.
+    Each class is counted from its own field of the SAME ledger (no second
+    store): the error class from the ``ok``/``error_class`` pair the feature
+    has always used, the edit-verification gate from ``edit_verify_fails``,
+    the guardrails from the ``guardrail_classes`` digest. Older rows without
+    the 046 fields simply yield nothing for the two new classes.
     """
     try:
-        conn = _conn()
-        window = f'-{_PROMOTE_WINDOW_DAYS} days'
+        cutoff = _cutoff(_PROMOTE_WINDOW_DAYS)
+        rows = [
+            row
+            for row in _load_rows()
+            if _in_window(row, cutoff)
+            and str(row.get('provider') or '') == (provider or '')
+            and str(row.get('model') or '') == (model or '')
+        ]
         if failure.kind == KIND_EDIT_VERIFY:
-            rows = conn.execute(
-                """
-                SELECT edit_verify_fails AS n FROM turn_outcomes
-                WHERE provider = ? AND model = ?
-                  AND COALESCE(edit_verify_fails, 0) > 0
-                  AND ts >= datetime('now', ?)
-                """,
-                (provider or '', model or '', window),
-            ).fetchall()
-            return [f'edit-verification gate failed {int(r["n"] or 0)}x' for r in rows]
+            return [
+                f'edit-verification gate failed {_nullable_int(row.get("edit_verify_fails")) or 0}x'
+                for row in rows
+                if (_nullable_int(row.get('edit_verify_fails')) or 0) > 0
+            ]
         if failure.kind == KIND_GUARDRAIL:
-            rows = conn.execute(
-                """
-                SELECT guardrail_classes AS digest FROM turn_outcomes
-                WHERE provider = ? AND model = ?
-                  AND guardrail_classes IS NOT NULL AND guardrail_classes != ''
-                  AND ts >= datetime('now', ?)
-                """,
-                (provider or '', model or '', window),
-            ).fetchall()
             needle = failure.label or ''
             hits: list[str] = []
-            for r in rows:
-                counts = parse_guardrail_digest(r['digest'])
+            for row in rows:
+                digest = row.get('guardrail_classes')
+                if not digest:
+                    continue
+                counts = parse_guardrail_digest(digest)
                 if needle and needle not in counts:
                     continue
                 hits.append(f"guardrail blocked {counts.get(needle, 0)}x ({needle or 'any tool'})")
             return hits
-        rows = conn.execute(
-            """
-            SELECT error_class FROM turn_outcomes
-            WHERE ok = 0 AND provider = ? AND model = ? AND error_class = ?
-              AND ts >= datetime('now', ?)
-            """,
-            (provider or '', model or '', failure.label or '', window),
-        ).fetchall()
-        return [str(r['error_class']) for r in rows]
+        return [
+            str(row.get('error_class'))
+            for row in rows
+            if _ok_flag(row) == 0
+            and str(row.get('error_class') or '') == (failure.label or '')
+        ]
     except Exception:
         logger.debug('_recent_failures failed', exc_info=True)
         return []
@@ -970,8 +1056,8 @@ def _redactedSampleError(text: str) -> str:
     `providers/clients/base.py`) protects what is SENT, and `secret_guard` protects
     tool args and protected-path reads. Neither covers a provider's own failure
     string: an auth rejection routinely echoes part of the credential back, and this
-    function's output is persisted into `turn_outcomes` and then re-read by the
-    lesson promotion, the telemetry surfaces and `scripts/harness_eval.py`. DS Bot
+    function's output is persisted into the turn-outcomes ledger and then re-read by
+    the lesson promotion, the telemetry surfaces and `scripts/harness_eval.py`. DS Bot
     treats exactly this case (`src/host/diagnostics.js`, `turns.js:9-11`) and drops
     the message on AUTH failures for the stated reason that providers may echo a key.
 
@@ -992,7 +1078,6 @@ def _redactedSampleError(text: str) -> str:
     except Exception:
         logger.debug('sample_error scrub failed', exc_info=True)
     return text[:_SAMPLE_ERROR_CAP]
-
 
 
 def _candidate_classes(

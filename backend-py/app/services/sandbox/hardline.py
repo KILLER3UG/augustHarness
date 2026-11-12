@@ -228,29 +228,31 @@ _POLICY_FILE_NAMES = ('mcp-servers.json', 'automations.json', 'scheduled-jobs.js
 # The sanctioned writers use `Path.write_text` / `write_json_atomic` and are
 # NOT behind this door, which is the point: closing the tool door leaves the
 # pipeline route as the only one the model can take.
-# `memory` — the markdown MIRROR of the facts store. The database it
-# derives from is already fenced below; a model that could write the
-# human-readable view could install instruction-shaped content beside
-# the facts a person reads to audit it. The sanctioned writer is
-# `memory_store.mirror`, which is not behind this door.
-_AGENT_STATE_DIRS = ('harness_proposals', 'refine_store', 'memory', 'clone_journal')
+# `memory` — the markdown RECORD of the facts store. A model that could write
+# the record could install instruction-shaped content beside the facts a
+# person reads to audit it, or rewrite what August believes outright. The
+# sanctioned writers are the memory_store doors (`rest.save_fact` and friends),
+# which are not behind this door.
+# `state` / `telemetry` / `transcripts` — the other durable stores the brain
+# keeps (kv, proposals, exams, episodes, the ledgers, the chat transcripts).
+# They were fenced when they lived inside the single database file; the
+# split into directories does not open them.
+_AGENT_STATE_DIRS = (
+    'harness_proposals', 'refine_store', 'memory', 'clone_journal',
+    'state', 'telemetry', 'transcripts',
+)
 _AGENT_STATE_FILES = ('kanban.json',)
 
-# The durable memory itself. Writing it bypasses the proposal door, the retire
-# machinery and the backup integrity check in one line, and SQLite's journal
-# variants count as the same file (`-wal`, `-shm`, and the `-journal` of a
-# rollback journal), so this is a prefix, not a name.
-#
-# `memory_conn.db_path()` is that prefix or the env override of it, so the rule
-# reads the same two sources rather than importing the service: naming the
-# default alone would miss a deployment that moved the file, and naming the env
-# alone would miss one that did not.
+# The retired SQL database and its import-aside copy. The engine is gone, but
+# the file holds the user's pre-import bytes until the owner deletes it, and a
+# model that could rewrite those bytes could forge what a future recovery
+# imports. The fence is a prefix (`.retired` and any sidecars match it).
 _DEFAULT_BRAIN_FILE = 'august_brain.sqlite'
 _BRAIN_FILE_ENV = 'HARNESS_BRAIN_SQLITE_FILE'
 
 
 def _brain_db_prefixes() -> tuple[str, ...]:
-    """Absolute, normalized prefixes of the durable-memory database."""
+    """Absolute, normalized prefixes of the retired memory database files."""
     out: list[str] = []
     data = _data_dir_form()
     if data:
@@ -347,7 +349,12 @@ def _agent_state_reason(match_form: str) -> str | None:
     # memory anywhere on disk, and a rule that only looked inside the data
     # directory would then protect a file that no longer exists.
     for prefix in _brain_db_prefixes():
-        if match_form == prefix or match_form.startswith(prefix + '-') or match_form.startswith(prefix + '/'):
+        if (
+            match_form == prefix
+            or match_form.startswith(prefix + '-')
+            or match_form.startswith(prefix + '.')
+            or match_form.startswith(prefix + '/')
+        ):
             return f'August durable memory ({_DEFAULT_BRAIN_FILE})'
     data = _data_dir_form()
     if not data or not match_form.startswith(data + '/'):

@@ -1,15 +1,23 @@
-"""Named specialists, episode routines, and ping-vs-continue policy."""
+"""Named specialists, episode routines, and ping-vs-continue policy.
+
+The ``harness_specialists`` / ``harness_routines`` tables became two JSON
+state files under ``<dataDir>/state/`` (``harness-specialists.json`` /
+``harness-routines.json``), each a dict keyed by id carrying the same fields
+the row did.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from app.json_narrowing import as_list, as_str
-from app.services.memory_conn import commit as brain_commit
+from app.services.filestore import STATE_DIR, home, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +27,28 @@ AUTONOMY_SILENT = 'silent'
 AUTONOMY_MODES = (AUTONOMY_ASK, AUTONOMY_ON_FAIL, AUTONOMY_SILENT)
 MAX_AUTO_HOPS = 3
 
+_SPECIALISTS_FILE = 'harness-specialists.json'
+_ROUTINES_FILE = 'harness-routines.json'
+_LOCK = threading.RLock()
 
-def _conn():
-    from app.services.memory_store import _conn as mem_conn
 
-    return mem_conn()
+def _specialists_path() -> Path:
+    return home(STATE_DIR) / _SPECIALISTS_FILE
 
+
+def _routines_path() -> Path:
+    return home(STATE_DIR) / _ROUTINES_FILE
+
+
+def _load_state(path: Path) -> dict[str, dict[str, Any]]:
+    raw = read_json(path, default={})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _save_state(path: Path, rows: dict[str, dict[str, Any]]) -> None:
+    write_json(path, rows)
 
 
 def _now() -> str:
@@ -88,75 +112,57 @@ def count_auto_hops(session_id: str, workstream: str) -> int:
     return n
 
 
-def _row_specialist(r: Any) -> dict[str, Any]:
-    ws_path = ''
-    try:
-        ws_path = r['workspace_path'] or ''
-    except Exception:
-        pass
+def _row_specialist(r: dict[str, Any]) -> dict[str, Any]:
     return {
-        'id': r['id'],
-        'sessionId': r['session_id'] or '',
-        'name': r['name'],
-        'workstream': r['workstream'] or '',
-        'agentId': r['agent_id'] or 'general',
-        'skills': _json_list(r['skills_json']),
-        'model': r['model'] or '',
-        'acceptance': r['acceptance'] or '',
-        'restrictedTools': _json_list(r['restricted_tools_json']),
-        'autonomy': r['autonomy'] or AUTONOMY_ASK,
-        'workspacePath': ws_path,
-        'createdAt': r['created_at'] or '',
+        'id': r.get('id'),
+        'sessionId': r.get('session_id') or '',
+        'name': r.get('name'),
+        'workstream': r.get('workstream') or '',
+        'agentId': r.get('agent_id') or 'general',
+        'skills': _json_list(r.get('skills_json')),
+        'model': r.get('model') or '',
+        'acceptance': r.get('acceptance') or '',
+        'restrictedTools': _json_list(r.get('restricted_tools_json')),
+        'autonomy': r.get('autonomy') or AUTONOMY_ASK,
+        'workspacePath': r.get('workspace_path') or '',
+        'createdAt': r.get('created_at') or '',
     }
 
 
-def _row_routine(r: Any) -> dict[str, Any]:
-    ws_path = ''
-    try:
-        ws_path = r['workspace_path'] or ''
-    except Exception:
-        pass
-    out = {
-        'id': r['id'],
-        'sessionId': r['session_id'] or '',
-        'name': r['name'],
-        'workstream': r['workstream'] or '',
-        'goal': r['goal'] or '',
-        'skills': _json_list(r['skills_json']),
-        'agentId': r['agent_id'] or 'general',
-        'specialistId': r['specialist_id'] or '',
-        'sourceSeq': r['source_seq'] or 0,
-        'workspacePath': ws_path,
-        'schedule': '',
-        'paused': False,
-        'lastRun': '',
-        'createdAt': r['created_at'] or '',
+def _row_routine(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'id': r.get('id'),
+        'sessionId': r.get('session_id') or '',
+        'name': r.get('name'),
+        'workstream': r.get('workstream') or '',
+        'goal': r.get('goal') or '',
+        'skills': _json_list(r.get('skills_json')),
+        'agentId': r.get('agent_id') or 'general',
+        'specialistId': r.get('specialist_id') or '',
+        'sourceSeq': r.get('source_seq') or 0,
+        'workspacePath': r.get('workspace_path') or '',
+        'schedule': r.get('schedule') or '',
+        'paused': bool(r.get('paused')),
+        'lastRun': r.get('last_run') or '',
+        'createdAt': r.get('created_at') or '',
     }
-    try:
-        out['schedule'] = r['schedule'] or ''
-        out['paused'] = bool(r['paused'])
-        out['lastRun'] = r['last_run'] or ''
-    except Exception:
-        pass
-    return out
 
 
-def _workspace_clause(workspace: str) -> tuple[str, tuple]:
+def _workspace_match(row: dict[str, Any], session_id: str, workspace: str) -> bool:
+    """The old WHERE: own session, the shared '' session, or the workspace."""
+    if str(row.get('session_id') or '') == session_id:
+        return True
+    if str(row.get('session_id') or '') == '':
+        return True
     path = (workspace or '').strip()
-    if not path:
-        return '', ()
-    return ' OR workspace_path = ?', (path,)
+    return bool(path) and str(row.get('workspace_path') or '') == path
 
 
 def list_specialists(session_id: str, workspace: str = '') -> list[dict[str, Any]]:
-    conn = _conn()
-    extra, args = _workspace_clause(workspace)
-    rows = conn.execute(
-        'SELECT * FROM harness_specialists WHERE session_id = ? OR session_id = ""'
-        + extra
-        + ' ORDER BY created_at DESC',
-        (session_id, *args),
-    ).fetchall()
+    with _LOCK:
+        rows = list(_load_state(_specialists_path()).values())
+    rows = [r for r in rows if _workspace_match(r, session_id, workspace)]
+    rows.sort(key=lambda r: str(r.get('created_at') or ''), reverse=True)
     return [_row_specialist(r) for r in rows]
 
 
@@ -166,15 +172,14 @@ def specialist_for_workstream(
     name = as_str(workstream, '').strip()
     if not name:
         return None
-    conn = _conn()
-    extra, args = _workspace_clause(workspace)
-    row = conn.execute(
-        'SELECT * FROM harness_specialists WHERE workstream = ? AND (session_id = ? OR session_id = ""'
-        + extra
-        + ') ORDER BY CASE WHEN session_id = ? THEN 0 ELSE 1 END, created_at DESC LIMIT 1',
-        (name, session_id, *args, session_id),
-    ).fetchone()
-    return _row_specialist(row) if row else None
+    with _LOCK:
+        rows = list(_load_state(_specialists_path()).values())
+    rows = [r for r in rows if str(r.get('workstream') or '') == name and _workspace_match(r, session_id, workspace)]
+    # Session-owned rows win over the shared '' rows, newest first within
+    # each group (two stable sorts = the old ORDER BY CASE + created_at DESC).
+    rows.sort(key=lambda r: str(r.get('created_at') or ''), reverse=True)
+    rows.sort(key=lambda r: 0 if str(r.get('session_id') or '') == session_id else 1)
+    return _row_specialist(rows[0]) if rows else None
 
 
 def upsert_specialist(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -189,81 +194,75 @@ def upsert_specialist(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         autonomy = AUTONOMY_ASK
     skills = json.dumps(_json_list(body.get('skills')), ensure_ascii=False)
     tools = json.dumps(_json_list(body.get('restrictedTools') or body.get('restricted_tools')), ensure_ascii=False)
-    conn = _conn()
-    if not sid:
-        sid = f'spec_{uuid.uuid4().hex[:12]}'
-        conn.execute(
-            'INSERT INTO harness_specialists '
-            '(id, session_id, name, workstream, agent_id, skills_json, model, acceptance, '
-            'restricted_tools_json, autonomy, created_at, workspace_path) '
-            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            (
-                sid,
-                session_id,
-                name[:80],
-                workstream[:80],
-                as_str(body.get('agentId') or body.get('agent_id'), 'general') or 'general',
-                skills,
-                as_str(body.get('model'), ''),
-                as_str(body.get('acceptance'), ''),
-                tools,
-                autonomy,
-                _now(),
-                workspace[:500],
-            ),
-        )
-    else:
-        conn.execute(
-            'UPDATE harness_specialists SET name=?, workstream=?, agent_id=?, skills_json=?, '
-            'model=?, acceptance=?, restricted_tools_json=?, autonomy=?, workspace_path=? WHERE id=?',
-            (
-                name[:80],
-                workstream[:80],
-                as_str(body.get('agentId') or body.get('agent_id'), 'general') or 'general',
-                skills,
-                as_str(body.get('model'), ''),
-                as_str(body.get('acceptance'), ''),
-                tools,
-                autonomy,
-                workspace[:500],
-                sid,
-            ),
-        )
-    brain_commit(conn)
-    row = conn.execute('SELECT * FROM harness_specialists WHERE id = ?', (sid,)).fetchone()
-    if not row:
-        raise ValueError('Specialist not found')
-    return _row_specialist(row)
+    with _LOCK:
+        rows = _load_state(_specialists_path())
+        if not sid:
+            sid = f'spec_{uuid.uuid4().hex[:12]}'
+            rows[sid] = {
+                'id': sid,
+                'session_id': session_id,
+                'name': name[:80],
+                'workstream': workstream[:80],
+                'agent_id': as_str(body.get('agentId') or body.get('agent_id'), 'general') or 'general',
+                'skills_json': skills,
+                'model': as_str(body.get('model'), ''),
+                'acceptance': as_str(body.get('acceptance'), ''),
+                'restricted_tools_json': tools,
+                'autonomy': autonomy,
+                'workspace_path': workspace[:500],
+                'created_at': _now(),
+            }
+        else:
+            row = rows.get(sid)
+            if not row:
+                raise ValueError('Specialist not found')
+            row.update(
+                {
+                    'name': name[:80],
+                    'workstream': workstream[:80],
+                    'agent_id': as_str(body.get('agentId') or body.get('agent_id'), 'general') or 'general',
+                    'skills_json': skills,
+                    'model': as_str(body.get('model'), ''),
+                    'acceptance': as_str(body.get('acceptance'), ''),
+                    'restricted_tools_json': tools,
+                    'autonomy': autonomy,
+                    'workspace_path': workspace[:500],
+                }
+            )
+        _save_state(_specialists_path(), rows)
+        row = rows.get(sid)
+        if not row:
+            raise ValueError('Specialist not found')
+        return _row_specialist(row)
 
 
 def set_autonomy(specialist_id: str, autonomy: str) -> dict[str, Any]:
     mode = (autonomy or AUTONOMY_ASK).strip().lower()
     if mode not in AUTONOMY_MODES:
         raise ValueError(f'autonomy must be one of {AUTONOMY_MODES}')
-    conn = _conn()
-    conn.execute('UPDATE harness_specialists SET autonomy = ? WHERE id = ?', (mode, specialist_id))
-    brain_commit(conn)
-    row = conn.execute('SELECT * FROM harness_specialists WHERE id = ?', (specialist_id,)).fetchone()
-    if not row:
-        raise ValueError('Specialist not found')
-    return _row_specialist(row)
+    with _LOCK:
+        rows = _load_state(_specialists_path())
+        row = rows.get(specialist_id)
+        if not row:
+            raise ValueError('Specialist not found')
+        row['autonomy'] = mode
+        _save_state(_specialists_path(), rows)
+        return _row_specialist(row)
 
 
 def delete_specialist(specialist_id: str) -> None:
-    conn = _conn()
-    conn.execute('DELETE FROM harness_specialists WHERE id = ?', (specialist_id,))
-    brain_commit(conn)
+    with _LOCK:
+        rows = _load_state(_specialists_path())
+        if specialist_id in rows:
+            del rows[specialist_id]
+            _save_state(_specialists_path(), rows)
 
 
 def list_routines(session_id: str, workspace: str = '') -> list[dict[str, Any]]:
-    conn = _conn()
-    extra, args = _workspace_clause(workspace)
-    rows = conn.execute(
-        'SELECT * FROM harness_routines WHERE session_id = ? OR session_id = ""'
-        + extra
-        + ' ORDER BY created_at DESC',
-        (session_id, *args),
-    ).fetchall()
+    with _LOCK:
+        rows = list(_load_state(_routines_path()).values())
+    rows = [r for r in rows if _workspace_match(r, session_id, workspace)]
+    rows.sort(key=lambda r: str(r.get('created_at') or ''), reverse=True)
     return [_row_routine(r) for r in rows]
 
 
@@ -275,28 +274,26 @@ def save_routine(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
     if not name or not workstream:
         raise ValueError('Routine needs name and workstream')
     rid = f'rtn_{uuid.uuid4().hex[:12]}'
-    conn = _conn()
-    conn.execute(
-        'INSERT INTO harness_routines '
-        '(id, session_id, name, workstream, goal, skills_json, agent_id, specialist_id, '
-        'source_seq, created_at, workspace_path) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-        (
-            rid,
-            session_id,
-            name[:120],
-            workstream[:80],
-            goal[:4000],
-            json.dumps(_json_list(body.get('skills')), ensure_ascii=False),
-            as_str(body.get('agentId') or body.get('agent_id'), 'general') or 'general',
-            as_str(body.get('specialistId') or body.get('specialist_id'), ''),
-            int(body.get('sourceSeq') or body.get('source_seq') or 0),
-            _now(),
-            workspace[:500],
-        ),
-    )
-    brain_commit(conn)
-    row = conn.execute('SELECT * FROM harness_routines WHERE id = ?', (rid,)).fetchone()
-    return _row_routine(row)
+    with _LOCK:
+        rows = _load_state(_routines_path())
+        rows[rid] = {
+            'id': rid,
+            'session_id': session_id,
+            'name': name[:120],
+            'workstream': workstream[:80],
+            'goal': goal[:4000],
+            'skills_json': json.dumps(_json_list(body.get('skills')), ensure_ascii=False),
+            'agent_id': as_str(body.get('agentId') or body.get('agent_id'), 'general') or 'general',
+            'specialist_id': as_str(body.get('specialistId') or body.get('specialist_id'), ''),
+            'source_seq': int(body.get('sourceSeq') or body.get('source_seq') or 0),
+            'created_at': _now(),
+            'workspace_path': workspace[:500],
+            'schedule': '',
+            'paused': 0,
+            'last_run': '',
+        }
+        _save_state(_routines_path(), rows)
+        return _row_routine(rows[rid])
 
 
 def save_routine_from_episode(
@@ -330,15 +327,36 @@ def save_routine_from_episode(
 
 
 def get_routine(routine_id: str) -> dict[str, Any] | None:
-    conn = _conn()
-    row = conn.execute('SELECT * FROM harness_routines WHERE id = ?', (routine_id,)).fetchone()
+    with _LOCK:
+        row = _load_state(_routines_path()).get(routine_id)
     return _row_routine(row) if row else None
 
 
 def delete_routine(routine_id: str) -> None:
-    conn = _conn()
-    conn.execute('DELETE FROM harness_routines WHERE id = ?', (routine_id,))
-    brain_commit(conn)
+    with _LOCK:
+        rows = _load_state(_routines_path())
+        if routine_id in rows:
+            del rows[routine_id]
+            _save_state(_routines_path(), rows)
+
+
+def update_routine_fields(routine_id: str, **fields: object) -> dict[str, Any] | None:
+    """Internal writer for schedule/paused/last_run maintenance (harness_ops)."""
+    with _LOCK:
+        rows = _load_state(_routines_path())
+        row = rows.get(routine_id)
+        if not row:
+            return None
+        row.update(fields)
+        _save_state(_routines_path(), rows)
+        return _row_routine(row)
+
+
+def scheduled_routines() -> list[dict[str, Any]]:
+    """Every routine with a schedule set, paused or not (raw row dicts)."""
+    with _LOCK:
+        rows = list(_load_state(_routines_path()).values())
+    return [r for r in rows if str(r.get('schedule') or '')]
 
 
 def continue_work_item(

@@ -247,21 +247,32 @@ async def lifespan(app: FastAPI):
     from app.services import tool_definitions
 
     tool_definitions.registerAll()
-    # A staged brain-database restore must swap files while nothing has the
-    # database open — this is the only such moment in the process. No-op when
+    # A staged brain-record restore must swap files while nothing has the
+    # stores open — this is the only such moment in the process. No-op when
     # nothing is pending, and a failure here never blocks startup.
-    from app.services import brain_backup, memory_store
+    from app.services import brain_backup
 
     brain_backup.apply_pending_restore()
-    memory_store.init()
+    # The one-time SQLite retirement: import the retired brain database into
+    # the file stores (read-only open) before anything reads a store. Runs
+    # once per install; a failure writes its marker and the boot continues
+    # with whatever landed.
     try:
-        # The markdown mirror is a derived view; a boot rebuild repairs
-        # hand edits and any out-of-band store write.
+        from app.services.retired_sqlite import run_sqlite_retirement
+
+        _retirement = run_sqlite_retirement()
+        if not _retirement.get('ok'):
+            logger.error('SQLite retirement import failed (see retired_sqlite marker): %s', _retirement)
+    except Exception:
+        logger.exception('SQLite retirement import crashed (non-fatal)')
+    try:
+        # The record IS the markdown files now; a boot rebuild repairs the
+        # MEMORY.md index against hand edits and any out-of-band write.
         from app.services.memory_store.mirror import rebuild_mirror
 
         rebuild_mirror()
     except Exception:
-        logging.getLogger(__name__).debug('memory mirror boot rebuild failed', exc_info=True)
+        logging.getLogger(__name__).debug('memory record index rebuild failed', exc_info=True)
     # Anything still marked active in `subagent_runs` belonged to the previous
     # process, so nothing will ever move it again — resolve it before the first
     # drawer poll renders a dead worker as one still thinking.
@@ -291,18 +302,6 @@ async def lifespan(app: FastAPI):
         asyncio.to_thread(brain_backup.ensure_current_backup), name='brain_backup'
     )
     app.state.brain_backup_task = backup_task
-    from app.lib.paths import dataPath
-
-    _dbPathVal = dataPath('august_brain.sqlite')
-    if _dbPathVal.exists():
-        # Table/column camel→snake runs inside memory_store.init() → ensure_schema.
-        # Historical scripts.migrateDbColumns (snake→camel) must NOT re-run.
-        try:
-            from app.lib.storage_key_migration import migrate_storage_keys
-
-            migrate_storage_keys(_dbPathVal)
-        except Exception as exc:
-            logger.warning('Storage-key migration skipped: %s', exc)
     try:
         from app.services.tools.mcp_client import refreshMcpTools, rehydrate_from_config
 

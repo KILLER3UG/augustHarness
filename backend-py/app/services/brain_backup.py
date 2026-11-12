@@ -1,37 +1,39 @@
-"""Offline copies of the brain database and the skills tree: verify, back up,
-and restore the DATABASE safely.
+"""Offline copies of the brain record and the skills tree: verify, back up,
+and restore the RECORD safely.
 
 The skills archive is a verified offline COPY, not a second restore target:
 it is written and hash-checked on every backup, but ``apply_pending_restore``
-swaps only the database. Putting a skill tree back is extracting the
+swaps only the brain record. Putting a skill tree back is extracting the
 ``skills-*.tar.gz`` beside the copy by hand — the archive carries its manifest,
 so that extraction is self-describing.
 
-The brain SQLite file is the user's memory. Before this module the only copy
-the app ever made was ``<db>.pre-migration`` — one rolling file that nothing
-reads back, taken only when a migration was pending. A corrupted or
-accidentally-deleted database therefore had no recovery path at all.
+The brain record is the user's memory. It is the file tree the store reads and
+writes — ``memory/`` (the markdown fact record), ``<state>/`` (kv, proposals,
+exams, episodes, timeline, machine state) and ``config.json`` — so a backup is
+a verified ``tar.gz`` of exactly those. Before the file store, the only copy
+the app ever made of the SQL database was one rolling file nothing read back;
+the archive keeps the same guarantees with different bytes.
 
 The skills tree is the user's *procedure* memory, and it had no offline copy at
 all: every skill write is auto-applied (``skillAutonomy`` defaults on), so a
 bad bulk edit lands with no human step and the only undo is the per-skill
 ``.versions`` snapshot taken at write time. Since 2026-11 the same verified
 rolling copy includes a ``tar.gz`` of the durable skill roots, recorded in an
-archive manifest beside the database copy's name.
+archive manifest beside the record copy's name.
 
 Three constraints shape the design:
 
-* **A restore cannot happen while the app is running.** ``memory_store.close()``
-  closes only the *thread-local* connection; other threads keep handles on the
-  live file, and replacing it underneath them yields half-old, half-new reads
-  (and on Windows, a failed rename). So a restore is *staged* and applied at the
-  next startup, before any connection exists — and the response says so.
+* **A restore cannot happen while the app is running.** Store threads hold the
+  record files open for atomic writes, and replacing them underneath the
+  writers yields half-old, half-new reads. So a restore is *staged* and
+  applied at the next startup, before any store opens — and the response says
+  so.
 * **The pending marker is a file, not a row.** The situation where a restore is
-  needed is precisely the one where the database may not open.
-* **Both halves are verified before either is trusted.** The database copy is
-  opened and ``PRAGMA integrity_check``-ed; the skills archive is re-read and
-  every file's SHA-256 is checked against the manifest written inside it. An
-  unverified artifact is deleted, never listed as good.
+  needed is precisely the one where the record may not open.
+* **Both halves are verified before either is trusted.** The record archive is
+  re-opened and every file's SHA-256 is checked against the manifest written
+  inside it; the skills archive is verified the same way. An unverified
+  artifact is deleted, never listed as good.
 """
 
 from __future__ import annotations
@@ -43,7 +45,6 @@ import logging
 import os
 import re
 import shutil
-import sqlite3
 import tarfile
 import time
 from datetime import datetime, timezone
@@ -57,17 +58,35 @@ BACKUP_SUBDIR: Final = 'backups'
 PENDING_FILE: Final = 'brain-restore.pending'
 PRE_RESTORE_SUFFIX: Final = '.pre-restore'
 # The skills half of a backup: ``skills-<stamp>-<slug>.tar.gz``, sharing the
-# stamp of the database copy beside it. The pair is one backup — prune and list
+# stamp of the record copy beside it. The pair is one backup — prune and list
 # treat the stamp as the unit.
 SKILLS_ARCHIVE_PREFIX: Final = 'skills-'
 SKILLS_ARCHIVE_SUFFIX: Final = '.tar.gz'
 _ARCHIVE_NAME_RE: Final = re.compile(
     r'^skills-(\d{8}T\d{6}Z)-([a-z0-9][a-z0-9-]{0,20})\.tar\.gz$'
 )
-# The manifest is the archive's own record of what it holds: the database copy
+# The manifest is the archive's own record of what it holds: the record copy
 # it belongs to, the roots it came from, and one SHA-256 per archived file.
 _MANIFEST_NAME: Final = '__august_manifest__.json'
 _MANIFEST_FORMAT: Final = 'august-skills-archive/1'
+# The brain record archive's own manifest — a DIFFERENT name from the skills
+# archive's, so neither verify pass can mistake one archive for the other.
+_BRAIN_MANIFEST_NAME: Final = '__august_brain_manifest__.json'
+_BRAIN_MANIFEST_FORMAT: Final = 'august-brain-archive/1'
+# The record half of a backup: ``brain-<stamp>-<slug>.tar.gz`` over the three
+# things the store reads and writes — the markdown fact record, the state
+# stores, and the settings file.
+_BRAIN_ARCHIVE_RE: Final = re.compile(
+    r'^brain-(\d{8}T\d{6}Z)-([a-z0-9][a-z0-9-]{0,20})\.tar\.gz$'
+)
+_BRAIN_ARCHIVE_PARTS: Final = re.compile(
+    r'^brain-(\d{8})T(\d{6})Z-([a-z0-9][a-z0-9-]{0,20})\.tar\.gz$'
+)
+# The legacy SQL-era copies. They still list (they hold user data — deleting
+# one would be a loss the user did not ask for), but the SQL engine is
+# retired, so restore is refused with the reason rather than silently
+# attempting something impossible.
+_LEGACY_BACKUP_NAME_RE: Final = re.compile(r'^brain-\d{8}T\d{6}Z-[a-z0-9][a-z0-9-]{0,20}\.sqlite$')
 # The usage sidecar is derived telemetry, not content: it changes on every
 # load, so archiving it would make every backup differ and would carry counters
 # a restore has no door to reconstruct. See usage_sidecar_path().
@@ -89,13 +108,10 @@ _ARCHIVE_MAX_TOTAL_BYTES: Final = 200 * 1024 * 1024
 # settings button. The slug class below must accept every name ``create_backup``
 # can write — a copy whose name this rejects still lists as "verified" with
 # Restore enabled, and then fails, which is worse than refusing it at write time.
-_BACKUP_NAME_RE: Final = re.compile(r'^brain-\d{8}T\d{6}Z-[a-z0-9][a-z0-9-]{0,20}\.sqlite$')
+_BACKUP_NAME_RE: Final = _BRAIN_ARCHIVE_RE
 # The same name split into its two parts, so a reader gets WHEN and WHY without
 # parsing a filename. `create_backup` is the only writer, and this accepts every
 # slug it can produce.
-_BACKUP_NAME_PARTS: Final = re.compile(
-    r'^brain-(\d{8})T(\d{6})Z-([a-z0-9][a-z0-9-]{0,20})\.sqlite$'
-)
 
 
 def reason_of(name: str) -> str:
@@ -103,87 +119,37 @@ def reason_of(name: str) -> str:
 
     The filename is the only durable record of the reason, so this is the door
     the settings UI reads through: showing the raw name asked the user to
-    decode ``brain-20260924T063947Z-startup.sqlite`` when "Auto-copy at startup,
+    decode ``brain-20260924T063947Z-startup.tar.gz`` when "Auto-copy at startup,
     Sep 24 6:39 AM" is the same fact in words. '' when the name is not ours.
     """
-    match = _BACKUP_NAME_PARTS.match(name or '')
+    match = _BRAIN_ARCHIVE_PARTS.match(name or '')
     return match.group(3) if match else ''
 
 
-def _db_path() -> Path:
-    from app.services.memory_conn import db_path
+def _data_dir() -> Path:
+    from app.lib.paths import dataDir
 
-    return db_path()
+    return Path(dataDir())
 
 
 def backups_dir() -> Path:
-    return _db_path().parent / BACKUP_SUBDIR
+    return _data_dir() / BACKUP_SUBDIR
 
 
-def _open_read_only(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f'file:{path.as_posix()}?mode=ro', uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _check(conn: sqlite3.Connection) -> str:
-    """``integrity_check`` result, or an error string — never an exception."""
-    try:
-        row = conn.execute('PRAGMA integrity_check').fetchone()
-        return str(row[0]) if row else 'no result'
-    except sqlite3.Error as exc:
-        return f'check failed: {exc}'
-
-
-def _content_reason(conn: sqlite3.Connection) -> str | None:
-    """Why this copy cannot hold memory, or None when it provably can.
-
-    ``PRAGMA integrity_check`` is not proof of content: a zero-byte file is a
-    well-formed SQLite image (it reports ``ok`` with ``page_count`` 0 and no
-    tables), so without this gate an empty copy is written by a failed backup,
-    listed as healthy, offered in Settings, and restores as an amnesic
-    database. One predicate, shared by create/list/restore so they cannot drift.
-    """
-    try:
-        row = conn.execute('PRAGMA page_count').fetchone()
-        pages = int(row[0]) if row and row[0] is not None else 0
-    except sqlite3.Error:
-        return 'copy is unreadable'
-    if pages < 1:
-        return 'copy holds no pages'
-    try:
-        tables = {
-            str(t[0])
-            for t in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        }
-    except sqlite3.Error:
-        return 'copy has no readable schema'
-    if not tables:
-        return 'copy has no tables'
-    if 'schema_migrations' not in tables and 'facts' not in tables:
-        return 'copy has no brain tables'
-    return None
-
-
-def _applied_version(conn: sqlite3.Connection) -> int:
-    try:
-        row = conn.execute('SELECT MAX(version) FROM schema_migrations').fetchone()
-    except sqlite3.Error:
-        return 0
-    return int(row[0]) if row and row[0] is not None else 0
-
-
-def _code_version() -> int:
-    """Highest migration this build knows how to apply.
-
-    Read from the migration runner's own discovery so the two can never drift:
-    a backup from a NEWER app is refused rather than booted and silently
-    reported "up to date".
-    """
-    from app.lib.migrations import _discover_migrations
-
-    found = _discover_migrations()
-    return found[-1][0] if found else 0
+def _record_sources() -> list[tuple[str, Path]]:
+    """What the brain archive holds: the markdown record, the state stores,
+    and the settings file. One definition shared by create/verify/restore so
+    the three can never disagree about what a backup IS."""
+    data = _data_dir()
+    out: list[tuple[str, Path]] = []
+    for name in ('memory', 'state'):
+        path = data / name
+        if path.is_dir():
+            out.append((name, path))
+    config = data / 'config.json'
+    if config.is_file():
+        out.append(('config.json', config))
+    return out
 
 
 def _backup_key(name: str) -> str:
@@ -195,7 +161,7 @@ def _backup_key(name: str) -> str:
     order as the filename, so retention keeps exactly the files the old
     filename sort kept.
     """
-    match = _BACKUP_NAME_PARTS.match(name)
+    match = _BRAIN_ARCHIVE_PARTS.match(name)
     if match:
         return f'{match.group(1)}T{match.group(2)}Z-{match.group(3)}'
     match = _ARCHIVE_NAME_RE.match(name)
@@ -207,11 +173,17 @@ def _backup_key(name: str) -> str:
 def _prune(directory: Path) -> list[str]:
     """Delete every artifact of all but the newest ``KEEP_BACKUPS`` backups.
 
-    Both halves of a backup — the database copy and its skills archive — are
-    pruned by the SAME key, so a kept database never loses its archive and a
-    pruned one never leaves an orphan behind. Returns removed names.
+    Both halves of a backup — the record copy and its skills archive — are
+    pruned by the SAME key, so a kept record never loses its archive and a
+    pruned one never leaves an orphan behind. Legacy SQL-era copies prune by
+    their key too: they were part of the same rolling set and the cap exists
+    to bound the directory. Returns removed names.
     """
     pairs: list[tuple[str, Path]] = []
+    for path in directory.glob('brain-*.tar.gz'):
+        key = _backup_key(path.name)
+        if key:
+            pairs.append((key, path))
     for path in directory.glob('brain-*.sqlite'):
         key = _backup_key(path.name)
         if key:
@@ -495,7 +467,7 @@ def _archive_skills(
 ) -> dict[str, object]:
     """Write and verify the skills half of a backup. Never raises.
 
-    A failure here is reported, not propagated: the database copy this runs
+    A failure here is reported, not propagated: the record copy this runs
     beside is already verified and must survive a skills-tree problem. An
     archive that fails its own verification is deleted, so a later list can
     never show it as good.
@@ -504,7 +476,7 @@ def _archive_skills(
         from app.services.skill_service import all_skill_roots
 
         roots = all_skill_roots()
-    except Exception as exc:  # noqa: BLE001 — a discovery failure must not cost the verified DB copy
+    except Exception as exc:  # noqa: BLE001 — a discovery failure must not cost the verified record copy
         return {'archived': False, 'error': f'skill root discovery failed: {exc}'}
     if not roots:
         return {'archived': False, 'reason': 'no skill roots found'}
@@ -537,75 +509,219 @@ def _archive_skills(
     }
 
 
-def create_backup(reason: str = 'manual') -> dict[str, object]:
-    """Take a verified online copy of the brain DB and the durable skills tree.
+def _write_brain_archive(target: Path, sources: list[tuple[str, Path]]) -> dict[str, object]:
+    """Write the record ``tar.gz`` and its manifest. Returns the manifest."""
+    entries: list[tuple[str, Path]] = []
+    for name, root in sources:
+        if root.is_dir():
+            for src in _iter_archive_files(root):
+                try:
+                    rel = src.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                entries.append((f'{name}/{rel}', src))
+        else:
+            entries.append((name, root))
+    entries.sort(key=lambda item: item[0])
 
-    Uses SQLite's backup API against a read-only handle, so a WAL-mode database
-    is copied consistently without a checkpoint or a write lock on the live
-    file. The copy is checked before it is reported as good. The skills archive
-    is built and verified the same way, and shares this backup's stamp and
-    retention slot.
+    files: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
+    truncated = False
+    total_bytes = 0
+    with tarfile.open(str(target), 'w:gz') as tar:
+        for arcname, src in entries:
+            if len(files) >= _ARCHIVE_MAX_FILES:
+                truncated = True
+                logger.warning(
+                    'brain archive hit the %d-file cap — files beyond it are not backed up',
+                    _ARCHIVE_MAX_FILES,
+                )
+                break
+            try:
+                stat = src.stat()
+            except OSError as exc:
+                truncated = True
+                skipped.append({'path': str(src), 'reason': str(exc)})
+                continue
+            size = stat.st_size
+            if size > _ARCHIVE_MAX_FILE_BYTES:
+                truncated = True
+                skipped.append(
+                    {
+                        'path': str(src),
+                        'reason': f'file exceeds the {_ARCHIVE_MAX_FILE_BYTES}-byte per-file cap',
+                    }
+                )
+                continue
+            if total_bytes + size > _ARCHIVE_MAX_TOTAL_BYTES:
+                truncated = True
+                skipped.append(
+                    {
+                        'path': str(src),
+                        'reason': f'archive exceeds the {_ARCHIVE_MAX_TOTAL_BYTES}-byte total cap',
+                    }
+                )
+                break
+            try:
+                data = src.read_bytes()
+            except (OSError, MemoryError) as exc:
+                truncated = True
+                skipped.append({'path': str(src), 'reason': str(exc)})
+                continue
+            info = tarfile.TarInfo(name=arcname)
+            info.size = len(data)
+            info.mtime = int(stat.st_mtime)
+            info.mode = 0o644
+            tar.addfile(info, io.BytesIO(data))
+            files.append(
+                {'path': arcname, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+            )
+            total_bytes += len(data)
+        manifest: dict[str, object] = {
+            'format': _BRAIN_MANIFEST_FORMAT,
+            'createdAt': datetime.now(timezone.utc).isoformat(),
+            'sources': [
+                {'name': name, 'source': str(root)} for name, root in sources
+            ],
+            'files': files,
+            'skipped': skipped,
+            'truncated': truncated,
+            'totals': {'files': len(files), 'bytes': total_bytes},
+        }
+        raw = json.dumps(manifest, indent=2, ensure_ascii=False).encode('utf-8')
+        info = tarfile.TarInfo(name=_BRAIN_MANIFEST_NAME)
+        info.size = len(raw)
+        info.mtime = int(time.time())
+        info.mode = 0o644
+        tar.addfile(info, io.BytesIO(raw))
+    return manifest
+
+
+def verify_brain_archive(path: Path) -> dict[str, object]:
+    """Re-open the record archive and verify every SHA-256 (the retired
+    ``PRAGMA integrity_check``, in the archive's own terms).
+
+    The container's gzip CRC is checked by the streamed read; the per-file
+    hash against the manifest is what proves the CONTENT is the record that
+    was archived. Never raises — a verdict is a dict with ``verified``.
     """
-    source = _db_path()
+    out: dict[str, object] = {
+        'verified': False,
+        'files': 0,
+        'bytes': 0,
+        'sources': 0,
+        'skipped': 0,
+        'truncated': False,
+    }
+    try:
+        with tarfile.open(str(path), 'r:gz') as tar:
+            by_name = {member.name: member for member in tar.getmembers()}
+            manifest_member = by_name.get(_BRAIN_MANIFEST_NAME)
+            if manifest_member is None:
+                out['error'] = 'archive carries no manifest'
+                return out
+            handle = tar.extractfile(manifest_member)
+            if handle is None:
+                out['error'] = 'manifest is not a regular file'
+                return out
+            manifest = json.loads(handle.read().decode('utf-8'))
+            if not isinstance(manifest, dict):
+                out['error'] = 'manifest is not an object'
+                return out
+            listed = manifest.get('files')
+            if not isinstance(listed, list):
+                out['error'] = 'manifest has no file list'
+                return out
+            expected = {_BRAIN_MANIFEST_NAME}
+            for item in listed:
+                if isinstance(item, dict) and isinstance(item.get('path'), str):
+                    expected.add(item['path'])
+            if set(by_name) != expected:
+                out['error'] = 'archive members do not match the manifest'
+                return out
+            total = 0
+            for item in listed:
+                if not isinstance(item, dict):
+                    out['error'] = 'manifest file entry is not an object'
+                    return out
+                name = str(item.get('path'))
+                member = by_name.get(name)
+                if member is None:
+                    out['error'] = f'manifest names a missing file: {name}'
+                    return out
+                file_handle = tar.extractfile(member)
+                if file_handle is None:
+                    out['error'] = f'cannot read archived file: {name}'
+                    return out
+                data = file_handle.read()
+                if hashlib.sha256(data).hexdigest() != item.get('sha256') or len(data) != item.get(
+                    'size'
+                ):
+                    out['error'] = f'archived file does not match its manifest hash: {name}'
+                    return out
+                total += len(data)
+            sources = manifest.get('sources')
+            skipped = manifest.get('skipped')
+            out['verified'] = True
+            out['files'] = len(listed)
+            out['bytes'] = total
+            out['sources'] = len(sources) if isinstance(sources, list) else 0
+            out['skipped'] = len(skipped) if isinstance(skipped, list) else 0
+            out['truncated'] = bool(manifest.get('truncated'))
+            return out
+    except (tarfile.TarError, OSError, EOFError, ValueError, UnicodeDecodeError, MemoryError) as exc:
+        out['error'] = str(exc)
+        return out
+
+
+def create_backup(reason: str = 'manual') -> dict[str, object]:
+    """Take a verified offline copy of the brain record and the skills tree.
+
+    The record copy is a tar.gz of ``memory/`` + ``<state>/`` + ``config.json``
+    with a SHA-256 manifest; it is re-opened and hash-verified before it is
+    reported as good. The skills archive is built and verified the same way,
+    and shares this backup's stamp and retention slot.
+    """
     slug = re.sub(r'[^a-z0-9-]+', '-', str(reason or 'manual').lower()).strip('-')[:20] or 'manual'
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    name = f'brain-{stamp}-{slug}.sqlite'
+    name = f'brain-{stamp}-{slug}.tar.gz'
     directory = backups_dir()
-    if not source.exists():
-        return {'ok': False, 'error': f'no brain database at {source}'}
+    sources = _record_sources()
+    if not sources:
+        return {'ok': False, 'error': 'no brain record to back up yet'}
     verified = False
     try:
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / name
-        src = _open_read_only(source)
-        try:
-            dst = sqlite3.connect(str(target))
-            try:
-                src.backup(dst)
-            finally:
-                dst.close()
-        finally:
-            src.close()
-        check_conn = _open_read_only(target)
-        try:
-            check = _check(check_conn)
-            empty = None if check != 'ok' else _content_reason(check_conn)
-        finally:
-            check_conn.close()
-        if check != 'ok':
+        _write_brain_archive(target, sources)
+        verdict = verify_brain_archive(target)
+        if not verdict.get('verified'):
             target.unlink(missing_ok=True)
-            return {'ok': False, 'error': f'backup failed verification: {check}'}
-        if empty is not None:
-            # Refusing here also stops the next prune/ensure cycle mistaking a
-            # husk for the newest good copy.
+            return {'ok': False, 'error': f'backup failed verification: {verdict.get("error") or "unknown"}'}
+        if verdict.get('truncated'):
             target.unlink(missing_ok=True)
-            return {'ok': False, 'error': f'backup failed verification: {empty}'}
+            return {'ok': False, 'error': 'backup failed verification: archive is incomplete'}
         # Past this line the copy is proven good, so the cleanup in the except
-        # must leave it alone: `_prune` or the version read failing afterwards
-        # is not a reason to delete a backup that verification already passed.
+        # must leave it alone: `_prune` failing afterwards is not a reason to
+        # delete a backup that verification already passed.
         verified = True
         removed = _prune(directory)
-        verify_conn = _open_read_only(target)
-        try:
-            version = _applied_version(verify_conn)
-        finally:
-            verify_conn.close()
         db_bytes = target.stat().st_size
         # The skills archive is the second half of this backup. It is built
-        # only after the database copy is proven good, so a failure here can
+        # only after the record copy is proven good, so a failure here can
         # never cost the memory copy — it is reported in `skills`/`skillsError`
         # instead of failing a backup that actually succeeded.
         skills = _archive_skills(
             directory / f'{SKILLS_ARCHIVE_PREFIX}{stamp}-{slug}{SKILLS_ARCHIVE_SUFFIX}',
             db_name=name,
             db_bytes=db_bytes,
-            db_version=version,
+            db_version=1,
         )
         result: dict[str, object] = {
             'ok': True,
             'name': name,
             'bytes': db_bytes,
-            'appliedVersion': version,
+            'appliedVersion': 1,
             'pruned': removed,
             'skills': skills,
         }
@@ -613,11 +729,10 @@ def create_backup(reason: str = 'manual') -> dict[str, object]:
             result['skillsError'] = str(skills['error'])
             logger.warning('Skills archive for %s failed: %s', name, skills['error'])
         return result
-    except (sqlite3.Error, OSError, MemoryError) as exc:
+    except (tarfile.TarError, OSError, MemoryError) as exc:
         logger.warning('Brain backup failed: %s', exc)
-        # ``sqlite3.connect`` creates the file before anything is written to it,
-        # so a failure here leaves a zero-byte husk that integrity_check calls
-        # "ok". Only an unverified copy is removed — never a good backup.
+        # A failed archive leaves a husk no list may show as good. Only an
+        # unverified copy is removed — never a good backup.
         if not verified:
             try:
                 (directory / name).unlink(missing_ok=True)
@@ -650,9 +765,11 @@ def list_backups() -> list[dict[str, object]]:
     backup is not a way out.
 
     Each entry carries its skills archive (``skills``) when the pair exists,
-    verified the same way on the spot; ``healthy`` stays the database's own
-    verdict so an archive problem can never make a restorable database look
-    unrestorable.
+    verified the same way on the spot; ``healthy`` stays the record's own
+    verdict so an archive problem can never make a restorable backup look
+    unrestorable. Legacy SQL-era copies (``brain-*.sqlite``) list with
+    ``healthy: false`` and the retired-engine reason — they hold user data and
+    stay on disk, but the engine that could open them is gone.
     """
     directory = backups_dir()
     if not directory.is_dir():
@@ -663,7 +780,19 @@ def list_backups() -> list[dict[str, object]]:
         if key:
             archives[key] = path
     out: list[dict[str, object]] = []
-    for path in sorted(directory.glob('brain-*.sqlite'), key=lambda p: p.name, reverse=True):
+    seen_keys: set[str] = set()
+    for path in sorted(
+        [*directory.glob('brain-*.tar.gz'), *directory.glob('brain-*.sqlite')],
+        key=lambda p: p.name,
+        reverse=True,
+    ):
+        key = _backup_key(path.name)
+        if key and key in seen_keys:
+            # A stamp+slug can exist as both a legacy .sqlite and a new
+            # .tar.gz only across the engine swap; the new format wins.
+            continue
+        if key:
+            seen_keys.add(key)
         entry: dict[str, object] = {
             'name': path.name,
             'reason': reason_of(path.name),
@@ -673,60 +802,42 @@ def list_backups() -> list[dict[str, object]]:
             'appliedVersion': 0,
             'fromTheFuture': False,
         }
-        key = _backup_key(path.name)
         archive = archives.get(key) if key else None
         if archive is not None:
             entry['skills'] = _archive_entry(archive)
-        try:
-            conn = _open_read_only(path)
-            try:
-                check = _check(conn)
-                empty = None if check != 'ok' else _content_reason(conn)
-                entry['healthy'] = check == 'ok' and empty is None
-                if check != 'ok':
-                    entry['error'] = check
-                elif empty is not None:
-                    entry['error'] = empty
-                version = _applied_version(conn)
-                entry['appliedVersion'] = version
-                entry['fromTheFuture'] = version > _code_version()
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            entry['error'] = str(exc)
+        if _LEGACY_BACKUP_NAME_RE.match(path.name):
+            entry['error'] = (
+                'legacy sqlite backup — the SQL engine is retired; the memory it '
+                'holds was imported into the file record, and this copy is kept as bytes only'
+            )
+        else:
+            verdict = verify_brain_archive(path)
+            entry['healthy'] = bool(verdict.get('verified')) and not verdict.get('truncated')
+            entry['appliedVersion'] = 1 if entry['healthy'] else 0
+            if not entry['healthy']:
+                entry['error'] = str(verdict.get('error') or 'verification failed')
         out.append(entry)
     return out
 
 
 def _validate_restore_target(name: str) -> tuple[Path | None, str | None]:
     """Return (path, error). Rejects anything that is not a well-named backup in
-    the backups directory, and any copy that is unhealthy or newer than this
-    build."""
+    the backups directory, and any copy that is unhealthy."""
     if not _BACKUP_NAME_RE.match(name or ''):
+        if _LEGACY_BACKUP_NAME_RE.match(name or ''):
+            return None, (
+                'legacy sqlite backups cannot be restored — the SQL engine is retired; '
+                'the memory they held was imported into the file record'
+            )
         return None, 'not a valid backup name'
     path = backups_dir() / name
     if not path.is_file():
         return None, f'no backup named {name}'
-    try:
-        conn = _open_read_only(path)
-    except sqlite3.Error as exc:
-        return None, f'cannot open backup: {exc}'
-    try:
-        check = _check(conn)
-        if check != 'ok':
-            return None, f'backup is not healthy: {check}'
-        empty = _content_reason(conn)
-        if empty is not None:
-            return None, f'backup is not healthy: {empty}'
-        version = _applied_version(conn)
-        limit = _code_version()
-        if version > limit:
-            return None, (
-                f'backup is at schema {version:03d}, this build knows up to {limit:03d}; '
-                'restore it with the app version that made it'
-            )
-    finally:
-        conn.close()
+    verdict = verify_brain_archive(path)
+    if not verdict.get('verified'):
+        return None, f"backup is not healthy: {verdict.get('error') or 'verification failed'}"
+    if verdict.get('truncated'):
+        return None, 'backup is not healthy: archive is incomplete'
     return path, None
 
 
@@ -744,7 +855,7 @@ def schedule_restore(name: str) -> dict[str, object]:
         'ok': True,
         'name': path.name,
         'appliesOn': 'next-launch',
-        'note': 'The running app holds the database open, so the swap happens at '
+        'note': 'The running app holds the record files open, so the swap happens at '
         'startup. Restart August to apply it; until then this can be cancelled.',
     }
 
@@ -770,56 +881,88 @@ def pending_restore() -> str | None:
 
 
 def apply_pending_restore() -> dict[str, object]:
-    """Swap a staged backup into place. Call before any brain connection exists.
+    """Swap a staged backup into place. Call before any store opens.
 
-    The database only. The skills archive beside a backup is an offline copy
+    The record only. The skills archive beside a backup is an offline copy
     this function does not extract (see the module docstring): a restore puts
     the memory back and leaves the live skills tree alone.
 
-    Keeps one ``.pre-restore`` copy of the database it replaced, so a restore
-    that turns out to be the wrong backup is itself undoable. Any failure *up
-    to the swap* leaves the marker in place and the current database untouched
-    — a failed restore must never cost the memory that still exists. Once the
-    swap has landed the restore is reported as applied whatever cleanup does,
-    because re-running it on the next boot would copy the restored database
-    over ``.pre-restore`` and destroy the only copy of what was replaced.
+    Keeps one ``.pre-restore`` copy of everything it replaced, so a restore
+    that turns out to be the wrong backup is itself undoable. Any failure
+    *before the first swap* leaves the marker in place and the current record
+    untouched — a failed restore must never cost the memory that still exists.
+    Once the first piece has swapped in, the restore is reported as applied
+    whatever cleanup does, because re-running it on the next boot would copy
+    the restored record over the ``.pre-restore`` copies and destroy the only
+    copy of what was replaced.
     """
     name = pending_restore()
     if not name:
         return {'ok': True, 'applied': False}
-    source = _db_path()
+    data = _data_dir()
     target, error = _validate_restore_target(name)
     if error or target is None:
-        logger.error('Staged brain restore "%s" refused: %s — keeping the current database', name, error)
+        logger.error('Staged brain restore "%s" refused: %s — keeping the current record', name, error)
         return {'ok': False, 'applied': False, 'error': error}
-    staging = source.with_name(f'{source.name}.restoring')
+    staging = data / '.brain-restoring'
+    swapped: list[str] = []
+    warnings: list[str] = []
     try:
-        if source.exists():
-            # Keep the pre-restore database *with* its WAL. Uncheckpointed
-            # commits live only in -wal, so a main-only .pre-restore cannot put
-            # that memory back — and the sidecars used to be deleted here,
-            # before the new main file had even landed.
-            shutil.copy2(source, f'{source}{PRE_RESTORE_SUFFIX}')
-            for suffix in ('-wal', '-shm'):
-                side = Path(f'{source}{suffix}')
-                if side.exists():
-                    shutil.copy2(side, f'{source}{PRE_RESTORE_SUFFIX}{suffix}')
-        # Copy beside the live file and publish it with os.replace. A failure
-        # part-way through then leaves the current database untouched, where
-        # writing it in place could truncate the only copy of the user's memory.
-        shutil.copy2(target, staging)
-        os.replace(staging, source)
-    except OSError as exc:
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        with tarfile.open(str(target), 'r:gz') as tar:
+            tar.extractall(staging, filter='data')
+    except (tarfile.TarError, OSError) as exc:
         logger.error('Brain restore failed for %s: %s', name, exc)
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError as cleanup_exc:
-            logger.warning('Could not remove staging file for %s: %s', name, cleanup_exc)
+        shutil.rmtree(staging, ignore_errors=True)
+        return {'ok': False, 'applied': False, 'error': str(exc)}
+
+    try:
+        for source_name, _src in _record_sources():
+            incoming = staging / source_name
+            if not incoming.exists():
+                continue
+            live = data / source_name
+            aside = data / f'{source_name}{PRE_RESTORE_SUFFIX}'
+            if live.exists():
+                # Keep the pre-restore copy of what is being replaced. The
+                # rename is atomic per entry; a failure here rolls the asides
+                # of the entries that already moved back into place.
+                if aside.exists():
+                    shutil.rmtree(aside, ignore_errors=True) if aside.is_dir() else aside.unlink(missing_ok=True)
+                os.replace(live, aside)
+            os.replace(incoming, live)
+            swapped.append(source_name)
+        if not swapped:
+            raise OSError('archive held none of the record sources')
+    except OSError as exc:
+        # Nothing or part of it landed. Roll every swapped entry back from its
+        # aside — a half-applied restore that reports failure is recoverable;
+        # one that reports failure while holding half the new record is not.
+        for source_name in swapped:
+            live = data / source_name
+            aside = data / f'{source_name}{PRE_RESTORE_SUFFIX}'
+            try:
+                if live.exists():
+                    shutil.rmtree(live, ignore_errors=True) if live.is_dir() else live.unlink(missing_ok=True)
+                if aside.exists():
+                    os.replace(aside, live)
+            except OSError as cleanup_exc:
+                logger.error(
+                    'Brain restore of %s failed and the rollback of %s also failed: %s — '
+                    'the pre-restore copy is at %s',
+                    name, source_name, cleanup_exc, aside,
+                )
+                warnings.append(f'{source_name} not rolled back: {cleanup_exc}')
+        logger.error('Brain restore failed for %s: %s', name, exc)
+        shutil.rmtree(staging, ignore_errors=True)
+        if warnings:
+            return {'ok': False, 'applied': False, 'error': str(exc), 'warning': '; '.join(warnings)}
         return {'ok': False, 'applied': False, 'error': str(exc)}
 
     # The swap has landed — from here every step is cleanup, and none of it may
     # turn the result back into a failure (see the docstring).
-    warnings: list[str] = []
     try:
         (backups_dir() / PENDING_FILE).unlink(missing_ok=True)
     except OSError as cleanup_exc:
@@ -827,19 +970,8 @@ def apply_pending_restore() -> dict[str, object]:
         # the next boot repeats a restore that already happened.
         logger.warning('Brain restore applied but marker for %s could not be cleared: %s', name, cleanup_exc)
         warnings.append(f'marker not cleared: {cleanup_exc}')
-    for suffix in ('-wal', '-shm'):
-        # A swapped-in main must not be replayed against the *previous*
-        # database's WAL, so the old sidecars go only now that it landed.
-        try:
-            Path(f'{source}{suffix}').unlink(missing_ok=True)
-        except OSError as cleanup_exc:
-            logger.error(
-                'Brain restore applied but stale %s%s survived: %s — remove it '
-                'before the next open or the restored database can be corrupted',
-                source.name, suffix, cleanup_exc,
-            )
-            warnings.append(f'stale {suffix} not removed: {cleanup_exc}')
-    logger.info('Brain database restored from %s (previous copy at %s%s)', name, source.name, PRE_RESTORE_SUFFIX)
+    shutil.rmtree(staging, ignore_errors=True)
+    logger.info('Brain record restored from %s (previous copy at <record>.pre-restore)', name)
     result: dict[str, object] = {'ok': True, 'applied': True, 'name': name}
     if warnings:
         result['warning'] = '; '.join(warnings)
@@ -849,11 +981,8 @@ def apply_pending_restore() -> dict[str, object]:
 def ensure_current_backup(max_age_hours: float = 12.0, reason: str = 'startup') -> dict[str, object]:
     """Take a backup only when the newest one has gone stale.
 
-    Called once at startup, after migrations, so an upgrade always leaves a
-    verified copy behind. Deliberately not wired into the migration snapshot
-    itself: that runs inside an open write transaction, and SQLite's backup API
-    needs a read lock — the same collision that made the old snapshot hang a
-    boot on a busy database.
+    Called once at startup, after the one-time import, so an upgrade always
+    leaves a verified copy behind.
     """
     existing = list_backups()
     if existing:
@@ -868,24 +997,22 @@ def ensure_current_backup(max_age_hours: float = 12.0, reason: str = 'startup') 
 
 
 def quick_check() -> dict[str, object]:
-    """Health of the live database, for the settings/health surface."""
-    source = _db_path()
-    if not source.exists():
-        return {'ok': True, 'exists': False, 'detail': 'no database yet'}
+    """Health of the live record, for the settings/health surface."""
+    sources = _record_sources()
+    if not sources:
+        return {'ok': True, 'exists': False, 'detail': 'no record yet'}
     try:
-        conn = _open_read_only(source)
-        try:
-            detail = _check(conn)
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        detail = f'cannot open: {exc}'
+        from app.services.memory_store.mirror import record_stats
+
+        detail = f"record: {record_stats()['rows']} fact file(s), {len(sources)} source tree(s)"
+    except Exception as exc:  # noqa: BLE001 — the health read must never raise
+        detail = f'record unreadable: {exc}'
     backups = list_backups()
     return {
-        'ok': detail == 'ok',
+        'ok': detail.startswith('record:'),
         'exists': True,
         'detail': detail,
-        'path': str(source),
+        'path': str(_data_dir()),
         'backups': len([b for b in backups if b.get('healthy')]),
         'pendingRestore': pending_restore(),
     }

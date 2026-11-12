@@ -1,23 +1,43 @@
-"""Long-running harness jobs (distinct from a chat turn)."""
+"""Long-running harness jobs (distinct from a chat turn).
+
+The ``harness_jobs`` table became a JSON state file,
+``<dataDir>/telemetry/harness-jobs.json`` — a dict keyed by job id with the
+same fields the row carried. Jobs are few and updated often (one status flip
+per wave transition), so a whole-file atomic state beats a ledger here.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from app.json_narrowing import as_str
-from app.services.memory_conn import commit as brain_commit
+from app.services.filestore import TELEMETRY_DIR, home, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
+_JOBS_FILE = 'harness-jobs.json'
+_LOCK = threading.RLock()
 
-def _conn():
-    from app.services.memory_store import _conn as mem_conn
 
-    return mem_conn()
+def _jobs_path() -> Path:
+    return home(TELEMETRY_DIR) / _JOBS_FILE
+
+
+def _load_jobs() -> dict[str, dict[str, Any]]:
+    raw = read_json(_jobs_path(), default={})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _save_jobs(rows: dict[str, dict[str, Any]]) -> None:
+    write_json(_jobs_path(), rows)
 
 
 def create_job(
@@ -26,20 +46,22 @@ def create_job(
     work_items: list[dict[str, Any]] | None = None,
 ) -> str:
     job_id = f'job_{uuid.uuid4().hex[:12]}'
-    conn = _conn()
-    conn.execute(
-        'INSERT INTO harness_jobs (id, session_id, status, waves_json, work_items_json, created_at) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        (
-            job_id,
-            session_id,
-            'running',
-            json.dumps(_wave_names(waves or []), ensure_ascii=False),
-            json.dumps(work_items or [], ensure_ascii=False, default=str)[:20000],
-            time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        ),
-    )
-    brain_commit(conn)
+    with _LOCK:
+        rows = _load_jobs()
+        rows[job_id] = {
+            'id': job_id,
+            'session_id': session_id,
+            'status': 'running',
+            'dirty': 0,
+            'error': '',
+            'waves_json': json.dumps(_wave_names(waves or []), ensure_ascii=False),
+            'work_items_json': json.dumps(work_items or [], ensure_ascii=False, default=str)[:20000],
+            'task_ids': '[]',
+            'outcomes_json': '{}',
+            'created_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'finished_at': None,
+        }
+        _save_jobs(rows)
     return job_id
 
 
@@ -62,36 +84,32 @@ def record_lane(job_id: str, name: str, status: str, error: str = '', task_id: s
     if not job_id or not name:
         return
     try:
-        conn = _conn()
-        row = conn.execute('SELECT outcomes_json FROM harness_jobs WHERE id = ?', (job_id,)).fetchone()
-        if not row:
-            return
-        raw = {}
-        try:
-            loaded = json.loads(row['outcomes_json'] or '{}')
-            if isinstance(loaded, dict):
-                raw = loaded
-        except Exception:
-            raw = {}
-        prev_item = raw.get(name) if isinstance(raw, dict) else None
-        prev: dict[str, Any] = prev_item if isinstance(prev_item, dict) else {}
-        raw[name] = {
-            'status': status,
-            'error': error[:400],
-            'taskId': task_id or as_str(prev.get('taskId'), ''),
-        }
-        conn.execute(
-            'UPDATE harness_jobs SET outcomes_json = ? WHERE id = ?',
-            (json.dumps(raw, ensure_ascii=False), job_id),
-        )
-        brain_commit(conn)
+        with _LOCK:
+            rows = _load_jobs()
+            row = rows.get(job_id)
+            if not row:
+                return
+            try:
+                loaded = json.loads(str(row.get('outcomes_json') or '{}'))
+                raw = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                raw = {}
+            prev_item = raw.get(name) if isinstance(raw, dict) else None
+            prev: dict[str, Any] = prev_item if isinstance(prev_item, dict) else {}
+            raw[name] = {
+                'status': status,
+                'error': error[:400],
+                'taskId': task_id or as_str(prev.get('taskId'), ''),
+            }
+            row['outcomes_json'] = json.dumps(raw, ensure_ascii=False)
+            _save_jobs(rows)
     except Exception:
         logger.debug('record_lane failed', exc_info=True)
 
 
-def _parse_outcomes(row: Any) -> dict[str, Any]:
+def _parse_outcomes(row: dict[str, Any]) -> dict[str, Any]:
     try:
-        raw = json.loads(row['outcomes_json'] or '{}')
+        raw = json.loads(str(row.get('outcomes_json') or '{}'))
         return raw if isinstance(raw, dict) else {}
     except Exception:
         return {}
@@ -101,17 +119,21 @@ def attach_task(job_id: str, task_id: str) -> None:
     if not job_id or not task_id:
         return
     try:
-        conn = _conn()
-        row = conn.execute('SELECT task_ids FROM harness_jobs WHERE id = ?', (job_id,)).fetchone()
-        if not row:
-            return
-        ids = json.loads(row['task_ids'] or '[]')
-        if not isinstance(ids, list):
-            ids = []
-        if task_id not in ids:
-            ids.append(task_id)
-        conn.execute('UPDATE harness_jobs SET task_ids = ? WHERE id = ?', (json.dumps(ids), job_id))
-        brain_commit(conn)
+        with _LOCK:
+            rows = _load_jobs()
+            row = rows.get(job_id)
+            if not row:
+                return
+            try:
+                ids = json.loads(str(row.get('task_ids') or '[]'))
+            except Exception:
+                ids = []
+            if not isinstance(ids, list):
+                ids = []
+            if task_id not in ids:
+                ids.append(task_id)
+            row['task_ids'] = json.dumps(ids)
+            _save_jobs(rows)
     except Exception:
         logger.debug('attach_task failed', exc_info=True)
 
@@ -134,34 +156,32 @@ def finish_job(
     if not job_id:
         return
     try:
-        conn = _conn()
-        conn.execute(
-            'UPDATE harness_jobs SET status = ?, '
-            "dirty = CASE WHEN ? THEN 1 ELSE dirty END, "
-            "error = CASE WHEN ? != '' THEN ? ELSE error END, "
-            "finished_at = COALESCE(finished_at, ?) "
-            'WHERE id = ? AND status NOT IN (\'cancelled\', \'completed\', \'failed\')',
-            (
-                status,
-                1 if dirty else 0,
-                (error or '')[:2000],
-                (error or '')[:2000],
-                time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                job_id,
-            ),
-        )
-        brain_commit(conn)
+        with _LOCK:
+            rows = _load_jobs()
+            row = rows.get(job_id)
+            if not row:
+                return
+            if str(row.get('status')) in ('cancelled', 'completed', 'failed'):
+                return
+            row['status'] = status
+            if dirty:
+                row['dirty'] = 1
+            if (error or '') != '':
+                row['error'] = error[:2000]
+            if not row.get('finished_at'):
+                row['finished_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            _save_jobs(rows)
     except Exception:
         logger.debug('finish_job failed', exc_info=True)
 
 
 def sweep_orphaned_jobs() -> int:
-    """Resolve every ``harness_jobs`` row left ``running`` by the previous process.
+    """Resolve every job left ``running`` by the previous process.
 
-    The wave driver records the row in ``create_job`` and flips it to a terminal
+    The wave driver records the job in ``create_job`` and flips it to a terminal
     status in ``finish_job``. The packaged desktop quit is ``taskkill /T /F``
     (see ``src-tauri/src/backend.rs``), so the lifespan shutdown tail never runs
-    and a quit mid-fleet leaves the row at ``running`` FOREVER. Nothing swept it
+    and a quit mid-fleet leaves the job at ``running`` FOREVER. Nothing swept it
     at boot — only ``subagent_runs`` did, via ``sweep_orphaned_runs`` — so
     ``harness_playbook`` computed ``workingCount`` from a dead job and the
     sidebar reported a session as working indefinitely.
@@ -171,20 +191,22 @@ def sweep_orphaned_jobs() -> int:
     managed to record is left alone rather than destroyed.
     """
     try:
-        conn = _conn()
-        cur = conn.execute(
-            'UPDATE harness_jobs SET status = ?, '
-            "error = CASE WHEN error = '' OR error IS NULL THEN ? ELSE error END, "
-            "finished_at = COALESCE(finished_at, ?) "
-            "WHERE status = 'running'",
-            (
-                'failed',
-                'Lost: the backend restarted while this job was running.',
-                time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-            ),
-        )
-        brain_commit(conn)
-        return int(cur.rowcount or 0)
+        with _LOCK:
+            rows = _load_jobs()
+            count = 0
+            for row in rows.values():
+                if str(row.get('status')) != 'running':
+                    continue
+                row['status'] = 'failed'
+                if not row.get('error'):
+                    row['error'] = 'Lost: the backend restarted while this job was running.'
+                if not row.get('finished_at'):
+                    row['finished_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+                count += 1
+            if count:
+                _save_jobs(rows)
+                logger.info('marked %d orphaned harness job(s) as failed', count)
+            return count
     except Exception:
         logger.debug('harness job orphan sweep skipped', exc_info=True)
         return 0
@@ -194,59 +216,59 @@ def mark_dirty(job_id: str, note: str = '') -> None:
     if not job_id:
         return
     try:
-        conn = _conn()
-        conn.execute(
-            'UPDATE harness_jobs SET dirty = 1, error = CASE WHEN error = "" OR error IS NULL THEN ? ELSE error END WHERE id = ?',
-            (note[:2000] or 'Worker mutated the environment then exited without a clean episode.', job_id),
-        )
-        brain_commit(conn)
+        with _LOCK:
+            rows = _load_jobs()
+            row = rows.get(job_id)
+            if not row:
+                return
+            row['dirty'] = 1
+            if not row.get('error'):
+                row['error'] = (
+                    note[:2000]
+                    or 'Worker mutated the environment then exited without a clean episode.'
+                )
+            _save_jobs(rows)
     except Exception:
         logger.debug('mark_dirty failed', exc_info=True)
 
 
-def _row_to_job(r: Any) -> dict[str, Any]:
+def _row_to_job(r: dict[str, Any]) -> dict[str, Any]:
     try:
-        waves = json.loads(r['waves_json'] or '[]')
+        waves = json.loads(str(r.get('waves_json') or '[]'))
     except Exception:
         waves = []
     try:
-        tasks = json.loads(r['task_ids'] or '[]')
+        tasks = json.loads(str(r.get('task_ids') or '[]'))
     except Exception:
         tasks = []
     return {
-        'id': r['id'],
-        'sessionId': r['session_id'],
-        'status': r['status'],
-        'dirty': bool(r['dirty']),
-        'error': r['error'] or '',
+        'id': r.get('id'),
+        'sessionId': r.get('session_id'),
+        'status': r.get('status'),
+        'dirty': bool(r.get('dirty')),
+        'error': r.get('error') or '',
         'waves': waves,
         'taskIds': tasks,
         'outcomes': _parse_outcomes(r),
-        'createdAt': r['created_at'],
-        'finishedAt': r['finished_at'],
+        'createdAt': r.get('created_at'),
+        'finishedAt': r.get('finished_at'),
     }
 
 
 def list_jobs(session_id: str, *, limit: int = 30) -> list[dict[str, Any]]:
-    conn = _conn()
-    rows = conn.execute(
-        'SELECT id, session_id, status, dirty, error, waves_json, task_ids, outcomes_json, created_at, finished_at '
-        'FROM harness_jobs WHERE session_id = ? ORDER BY created_at DESC LIMIT ?',
-        (session_id, limit),
-    ).fetchall()
-    return [_row_to_job(r) for r in rows]
+    rows = [
+        row
+        for row in _load_jobs().values()
+        if str(row.get('session_id') or '') == session_id
+    ]
+    rows.sort(key=lambda row: str(row.get('created_at') or ''), reverse=True)
+    return [_row_to_job(row) for row in rows[: max(1, int(limit))]]
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
-    conn = _conn()
-    r = conn.execute(
-        'SELECT id, session_id, status, dirty, error, waves_json, task_ids, outcomes_json, created_at, finished_at '
-        'FROM harness_jobs WHERE id = ?',
-        (job_id,),
-    ).fetchone()
-    if not r:
-        return None
-    return _row_to_job(r)
+    with _LOCK:
+        row = _load_jobs().get(job_id)
+    return _row_to_job(row) if row else None
 
 
 async def cancel_job(job_id: str) -> dict[str, Any]:
