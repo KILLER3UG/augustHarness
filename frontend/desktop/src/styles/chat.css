@@ -595,7 +595,9 @@ details[open] > summary .disclosure-chevron {
 .august-composer {
   background: var(--dt-card) !important;
   border-color: transparent !important;
-  border-radius: 1rem !important;
+  /* The reference's rounded PILL: fully rounded ends at the one-row height,
+     settling into a big-radius card as the input grows past two lines. */
+  border-radius: 1.625rem !important;
   box-shadow: var(--elev-ring) !important;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
@@ -1846,4 +1848,152 @@ details[open] > summary .disclosure-chevron {
 }
 .thought-step-reasoning > .markdown-content > :last-child {
   margin-bottom: 0;
+}
+
+/* ── Reference pass: system HUD, memory cards, composer pill ──────────── */
+
+/* ── System HUD — the titlebar's muted mono telemetry strip ────────────
+   The reference prints "FPS N/A | GPU 0% | 61 °C | …" on the titlebar's
+   right; August samples only what its backend serves and prints N/A for the
+   rest. The strip is quiet by construction: tier-3 muted text at the smallest
+   scale, no borders, no background — chrome, not a control. */
+.system-hud {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 0.25rem;
+  margin-right: 0.25rem;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 78%, transparent);
+  font-family: var(--mono, ui-monospace);
+  font-size: 0.625rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.system-hud-cell {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Degraded backend: one warning dot ahead of the readouts. The strip itself
+   stays telemetry-only — the degraded state's explanation is the toast. */
+.system-hud-degraded {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--dt-warning);
+}
+
+/* Narrow shells lose the readouts before they crowd the title: the window
+   controls and drawer button win the space. */
+@container august-shell (max-width: 1180px) {
+  .system-hud { display: none; }
+}
+
+/* ── Memory disclosure cards — the reference's "Recalled memory ▾" ─────
+   One quiet bordered card, same grammar as the thinking card: a small
+   chevron header, a hairline-top body that lists the entries. Rendered by
+   TurnProvenanceChip (what the turn was GIVEN) and MemorySaveChip (what the
+   turn WROTE). */
+.memory-card {
+  margin-top: 0.5rem;
+  border: 1px solid var(--dt-line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--dt-muted) 30%, transparent);
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.memory-card-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  text-align: left;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 92%, transparent);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.memory-card-head:hover {
+  background: color-mix(in srgb, var(--dt-muted) 55%, transparent);
+  color: var(--dt-foreground);
+}
+
+.memory-card-head:focus-visible {
+  outline: 2px solid var(--dt-ring);
+  outline-offset: -2px;
+}
+
+.memory-card-head strong {
+  font-weight: 550;
+  font-size: 0.78125rem;
+  letter-spacing: -0.005em;
+}
+
+.memory-card-count {
+  color: color-mix(in srgb, var(--dt-muted-foreground) 70%, transparent);
+  font-family: var(--mono, ui-monospace);
+  font-size: 0.5625rem;
+}
+
+.memory-card-chevron {
+  margin-left: auto;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 70%, transparent);
+  transition: transform 0.18s ease;
+}
+
+.memory-card[data-open='true'] .memory-card-chevron {
+  transform: rotate(180deg);
+}
+
+.memory-card-body {
+  border-top: 1px solid var(--dt-line);
+  padding: 7px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.memory-card-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 0.71875rem;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--dt-fg-2, var(--dt-foreground)) 90%, transparent);
+}
+
+/* `<key>.md` — the store of record is one markdown file per fact, so the
+   entry renders under its own filename, not a bare key. */
+.memory-card-key {
+  font-family: var(--mono, ui-monospace);
+  font-size: 0.6875rem;
+  color: var(--dt-foreground);
+  overflow-wrap: anywhere;
+}
+
+.memory-card-entry svg {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 70%, transparent);
+}
+
+.memory-card-note {
+  margin-top: 3px;
+  font-size: 0.65625rem;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--dt-muted-foreground) 75%, transparent);
+}
+
+/* `hidden` must actually hide: the body's own `display: flex` would beat the
+   UA's `[hidden] { display: none }` (author styles outrank the UA sheet), so
+   the closed card's body would paint empty space. */
+.memory-card-body[hidden] {
+  display: none;
 }

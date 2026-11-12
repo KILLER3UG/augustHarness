@@ -97,10 +97,11 @@
      * mockup can put a row on the page and on a card without redefining. */
     --dt-line: rgb(26 28 23 / 0.11);
     --dt-line-strong: rgb(26 28 23 / 0.2);
-    /* Accent as TEXT — the mockup's #1e46b8 on paper. `--dt-primary` is a
-     * fill (white text on it); a link or an icon needs this darker rung to
-     * clear AA on the warm ground. */
-    --dt-accent-text: #1e46b8;
+    /* Accent as TEXT — the terracotta rung on paper, matching the dark
+     * theme's one accent family. `--dt-primary` is a fill (white text on it);
+     * a link or an icon needs this darker rung to clear AA on the warm ground
+     * (#a64f34 measures 4.9:1 on the paper). */
+    --dt-accent-text: #a64f34;
     /* Full-screen scrim behind modals/drawers; heavier over dark ground. */
     --dt-overlay-scrim: rgb(17 17 17 / 0.32);
     /* A separator that must stay visible over sunken or imagery surfaces —
@@ -123,12 +124,14 @@
     --dt-scrollbar: rgb(92 92 98 / 0.30);
     --dt-scrollbar-hover: rgb(92 92 98 / 0.48);
 
-    /* Brand — desaturated, reserved for action/focus.
-     * `#2f6df6` measured 4.37:1 on `#fbfbfa` — below AA for the `.text-primary`
-     * links and the focus ring it paints, and only ~3.5:1 under white button
-     * text. `#2456d8` clears both (5.97:1 on paper, ~6.1:1 under white). */
-    --dt-primary: #2456d8;
-    --dt-primary-hsl: 223.3 71.4% 49.4%;
+    /* Brand — the reference's terracotta, reserved for action/focus.
+     * The previous blue (#2456d8, chosen for AA after #2f6df6 failed it) is
+     * retired with this retune: the accent is SPARING and warm in both themes
+     * now. #a64f34 carries white text at ~5.5:1 and clears AA as the
+     * accent-text rung above, so the swap keeps every contrast decision the
+     * blue was making. */
+    --dt-primary: #a64f34;
+    --dt-primary-hsl: 14.2 52.3% 42.8%;
     --dt-primary-foreground: #ffffff;
     --dt-primary-foreground-hsl: 0 0% 100%;
     /* Selection language is a LIGHTER FILL OF THE SAME NEUTRAL, not a second
@@ -142,7 +145,7 @@
     --dt-border: #d9d4c6;
     --dt-border-hsl: 44 20% 81.4%;
     --dt-input: #d9d4c6;
-    --dt-ring: #2456d8;
+    --dt-ring: #a64f34;
 
     /* RGB triplets — the alpha-capable channel each of the roles above is
      * registered from in tailwind.config.cjs, so `bg-accent/50`,
@@ -153,7 +156,7 @@
     --dt-accent-rgb: 230 225 211;
     --dt-destructive-rgb: 210 80 63;
     --dt-input-rgb: 217 212 198;
-    --dt-ring-rgb: 36 86 216;
+    --dt-ring-rgb: 166 79 52;
 
     /* Status — muted, not neon */
     --dt-destructive: #d2503f;
@@ -169,7 +172,9 @@
 
     /* Chart series — the Signal Desk palette. Used by the Charts page and the
      * Canvas; theme-paired so a chart's legend and lines stay legible on paper
-     * and on charcoal. */
+     * and on charcoal. Chart hues stay categorical (chart-1 keeps its blue
+     * even with the accent moved to terracotta — a chart's series is its own
+     * vocabulary, not the brand). */
     --dt-chart-1: #2456d8;
     --dt-chart-2: #a64f34;
     --dt-chart-3: #a77e3e;
@@ -204,18 +209,18 @@
     /* Sidebar */
     --dt-sidebar: #fbf9f2;
     --dt-sidebar-foreground: #1a1c17;
-    --dt-sidebar-primary: #2456d8;
+    --dt-sidebar-primary: #a64f34;
     --dt-sidebar-primary-foreground: #ffffff;
     --dt-sidebar-accent: #eae6da;
     --dt-sidebar-accent-foreground: #1a1c17;
     --dt-sidebar-border: #e2ddcf;
-    --dt-sidebar-ring: #2456d8;
+    --dt-sidebar-ring: #a64f34;
     --dt-sidebar-rgb: 251 249 242;
     --dt-sidebar-foreground-rgb: 26 28 23;
-    --dt-sidebar-primary-rgb: 36 86 216;
+    --dt-sidebar-primary-rgb: 166 79 52;
     --dt-sidebar-accent-rgb: 234 230 218;
     --dt-sidebar-border-rgb: 226 221 207;
-    --dt-sidebar-ring-rgb: 36 86 216;
+    --dt-sidebar-ring-rgb: 166 79 52;
 
     /* Chat surfaces — derived from the base palette so they track the theme
        until the user overrides them (Settings → Design UI / customize_ui). */
@@ -253,70 +258,76 @@
     /* Help native form controls (select/option) use dark system chrome on Windows */
     color-scheme: dark;
 
-    /* Surface palette — deeper black like reference (Z/August), not charcoal */
-    --dt-background: #0F0F0F;
-    --dt-background-hsl: 0 0% 5.9%;
-    --dt-foreground: #f0f0f0;
-    --dt-foreground-hsl: 0 0% 94.1%;
-    --dt-fg-1: #f0f0f0;
-    /* Pure grey, matching its neighbours: the ramp went #f0f0f0 → #c8c8cc →
-     * #a6a6a6, and the middle rung was the only one carrying a blue cast. */
-    --dt-fg-2: #c8c8c8;
-    --dt-fg-3: #a6a6a6;
-    --dt-card: #151515;
-    --dt-card-hsl: 0 0% 8.2%;
-    --dt-card-foreground: #f0f0f0;
-    --dt-card-foreground-hsl: 0 0% 94.1%;
-    --dt-muted: #1b1b1b;
-    --dt-muted-hsl: 0 0% 10.6%;
-    --dt-muted-foreground: #a6a6a6;
-    --dt-muted-foreground-hsl: 0 0% 65.1%;
-    --dt-popover: #1b1b1b;
-    --dt-popover-hsl: 0 0% 10.6%;
-    --dt-popover-foreground: #f0f0f0;
-    --dt-popover-foreground-hsl: 0 0% 94.1%;
-    --dt-elevated: #242424;
+    /* Surface palette — the Claude reference's WARM near-black. The previous
+     * ramp was pure neutral grey (#0F0F0F … #a6a6a6); the reference page is
+     * #1F1E1D–#262624, its rail a step darker than the page, its surfaces a
+     * step lighter, and every text rung carries the same warm cast. Blue-black
+     * under warm ink is what made the previous dark theme read cold. */
+    --dt-background: #262624;
+    --dt-background-hsl: 60 2.7% 14.5%;
+    --dt-foreground: #f4f2ec;
+    --dt-foreground-hsl: 45 26.7% 94.1%;
+    --dt-fg-1: #f4f2ec;
+    /* Warm ramp: off-white → warm grey → muted warm grey, hue ~45. */
+    --dt-fg-2: #c9c7bf;
+    --dt-fg-3: #a5a29a;
+    --dt-card: #2c2b29;
+    --dt-card-hsl: 40 3.5% 16.7%;
+    --dt-card-foreground: #f4f2ec;
+    --dt-card-foreground-hsl: 45 26.7% 94.1%;
+    --dt-muted: #302f2d;
+    --dt-muted-hsl: 40 3.2% 18.2%;
+    --dt-muted-foreground: #a5a29a;
+    --dt-muted-foreground-hsl: 43.6 5.8% 62.5%;
+    --dt-popover: #2e2d2b;
+    --dt-popover-hsl: 40 3.4% 17.5%;
+    --dt-popover-foreground: #f4f2ec;
+    --dt-popover-foreground-hsl: 45 26.7% 94.1%;
+    --dt-elevated: #383633;
 
     /* Sunken chrome / scrim / hairline / paper / wash — see :root above. */
-    --dt-surface-sunken: #121212;
+    --dt-surface-sunken: #1f1e1d;
     /* The mockup's chart/code stage — one rung off the page, see :root. */
-    --dt-stage: #121212;
-    --dt-line: rgb(240 240 240 / 0.08);
-    --dt-line-strong: rgb(240 240 240 / 0.15);
-    --dt-accent-text: #9bb9ff;
+    --dt-stage: #1f1e1d;
+    --dt-line: rgb(244 242 236 / 0.08);
+    --dt-line-strong: rgb(244 242 236 / 0.14);
+    --dt-accent-text: #dd8465;
     --dt-overlay-scrim: rgb(0 0 0 / 0.55);
-    --dt-hairline-strong: #3d3d3d;
-    --dt-paper: #161618;
+    --dt-hairline-strong: #454440;
+    --dt-paper: #232221;
     /* Dark-paper schematic ink. The light slate values (#334155/#475569)
        measured 1.78:1 / 2.39:1 here and the label fill 1.01:1 — darker than
-       the canvas. Slate-300/400 and blue-400 clear 4.5:1 against #161618. */
+       the canvas. Slate-300/400 and blue-400 clear 4.5:1 against the paper. */
     --dt-symbol-stroke: #cbd5e1;
     --dt-symbol-wire: #94a3b8;
     --dt-symbol-current: #60a5fa;
     --dt-wash: rgb(255 255 255 / 0.04);
-    /* Dim grey on charcoal — reads as a groove, not a white bar. */
-    --dt-scrollbar: rgb(150 150 158 / 0.22);
-    --dt-scrollbar-hover: rgb(168 168 176 / 0.36);
+    /* Dim warm grey on the warm ground — reads as a groove, not a white bar. */
+    --dt-scrollbar: rgb(168 163 154 / 0.24);
+    --dt-scrollbar-hover: rgb(184 179 170 / 0.38);
 
-    /* Brand — bright enough for AAA on charcoal, still restrained */
-    --dt-primary: #6f9bff;
-    --dt-primary-hsl: 221.67 100% 71.76%;
-    --dt-primary-foreground: #0e0e10;
-    --dt-primary-foreground-hsl: 240 6.67% 5.88%;
+    /* Brand — the reference's sparing terracotta, used only for action,
+     * focus and the one active state. Dark text on it clears AA (~5.2:1);
+     * the coral itself is ~5.5:1 on the page as text. */
+    --dt-primary: #d97757;
+    --dt-primary-hsl: 14.8 63.1% 59.6%;
+    --dt-primary-foreground: #1f1e1d;
+    --dt-primary-foreground-hsl: 30 3.3% 11.8%;
     /* Neutral selection fills — see the `:root` note. */
-    --dt-secondary: #232323;
-    --dt-secondary-foreground: #f0f0f0;
-    --dt-accent: #232323;
-    --dt-accent-foreground: #f0f0f0;
-    --dt-border: #262626;
-    --dt-border-hsl: 0 0% 15%;
-    --dt-input: #2A2A2A;
-    --dt-ring: #6f9bff;
-    --dt-secondary-rgb: 35 35 35;
-    --dt-accent-rgb: 35 35 35;
+    --dt-secondary: #2f2e2b;
+    --dt-secondary-foreground: #f4f2ec;
+    --dt-accent: #2f2e2b;
+    --dt-accent-foreground: #f4f2ec;
+    /* Barely-there warm hairline: ~1.08:1 lift over the page at 1px. */
+    --dt-border: #393835;
+    --dt-border-hsl: 45 3.6% 21.6%;
+    --dt-input: #3a3936;
+    --dt-ring: #d97757;
+    --dt-secondary-rgb: 47 46 43;
+    --dt-accent-rgb: 47 46 43;
     --dt-destructive-rgb: 240 118 106;
-    --dt-input-rgb: 42 42 42;
-    --dt-ring-rgb: 111 155 255;
+    --dt-input-rgb: 58 57 54;
+    --dt-ring-rgb: 217 119 87;
 
     /* Status */
     --dt-destructive: #f0766a;
@@ -344,26 +355,28 @@
     --dt-danger-rgb: 240 118 106;
     --dt-info-rgb: 96 165 250;
 
-    /* Code surfaces */
-    --dt-code-inline: #9ec1ff;
-    --dt-code-block-bg: #0a0a0c;
-    --dt-code-block-fg: #e3e3e6;
+    /* Code surfaces — warm near-black under the warm page; the inline token
+       follows the accent family instead of the old blue. */
+    --dt-code-inline: #eba286;
+    --dt-code-block-bg: #1e1d1b;
+    --dt-code-block-fg: #e8e6df;
 
-    /* Sidebar — deeper, matches header #0F0F0F stack */
-    --dt-sidebar: #141414;
-    --dt-sidebar-foreground: #eeeeee;
-    --dt-sidebar-primary: #6f9bff;
-    --dt-sidebar-primary-foreground: #0e0e10;
-    --dt-sidebar-accent: #232323;
-    --dt-sidebar-accent-foreground: #f0f0f0;
-    --dt-sidebar-border: #262626;
-    --dt-sidebar-ring: #6f9bff;
-    --dt-sidebar-rgb: 20 20 20;
-    --dt-sidebar-foreground-rgb: 238 238 238;
-    --dt-sidebar-primary-rgb: 111 155 255;
-    --dt-sidebar-accent-rgb: 35 35 35;
-    --dt-sidebar-border-rgb: 38 38 38;
-    --dt-sidebar-ring-rgb: 111 155 255;
+    /* Sidebar — one step DARKER than the page (the reference rail sits below
+       the transcript, not beside it). */
+    --dt-sidebar: #1f1e1d;
+    --dt-sidebar-foreground: #eeede7;
+    --dt-sidebar-primary: #d97757;
+    --dt-sidebar-primary-foreground: #1f1e1d;
+    --dt-sidebar-accent: #2f2e2b;
+    --dt-sidebar-accent-foreground: #f4f2ec;
+    --dt-sidebar-border: #333230;
+    --dt-sidebar-ring: #d97757;
+    --dt-sidebar-rgb: 31 30 29;
+    --dt-sidebar-foreground-rgb: 238 237 231;
+    --dt-sidebar-primary-rgb: 217 119 87;
+    --dt-sidebar-accent-rgb: 47 46 43;
+    --dt-sidebar-border-rgb: 51 50 48;
+    --dt-sidebar-ring-rgb: 217 119 87;
 
     /* The ladder needs real alphas on charcoal: at `rgb(0 0 0 / 0.06)` a card
        and the page behind it are the same surface, so every "raised" panel
@@ -371,8 +384,9 @@
     --elev-raised: 0 1px 2px rgb(0 0 0 / 0.35), 0 4px 12px -4px rgb(0 0 0 / 0.55);
     --elev-overlay: 0 16px 40px -12px rgb(0 0 0 / 0.70);
 
-    /* A solid bubble, not a blend — see the `:root` note. */
-    --dt-user-bubble: #1b1b1b;
+    /* A solid bubble, not a blend — see the `:root` note. One step LIGHTER
+       than the page: the reference's user message sits above the ground. */
+    --dt-user-bubble: #30302e;
   }
 
 	  /* Text-size selector overrides the root font-size (scales all rems) */

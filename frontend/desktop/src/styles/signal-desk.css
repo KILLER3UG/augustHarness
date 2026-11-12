@@ -387,6 +387,19 @@
     z-index: 3;
   }
   .sd-app .titlebar-left { display: flex; align-items: center; gap: 13px; min-width: 0; }
+  /* The reference centers the chat title over the transcript: the middle
+     flex column takes the space between the left cluster and the actions and
+     centers the crumbs inside it. `margin-left:auto` on `.titlebar-actions`
+     becomes redundant with this column present, and the title truncates
+     against the column — it can never push the actions around. */
+  .sd-app .titlebar-center {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .sd-app .titlebar-center .crumbs { justify-content: center; }
   .sd-app .crumbs { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 0.75rem; }
   .sd-app .crumb-muted { color: var(--ink-3); white-space: nowrap; }
   .sd-app .crumb-slash { color: var(--ink-4); font-family: var(--mono); font-size: 0.625rem; }
@@ -2203,7 +2216,8 @@
 /* The user's message is a compact card on the right, exactly as the mockup
    draws it. The app's bubble had a larger radius and its own fill.
    NO max-width here. `UserMessageBubble`'s wrapper already carries
-   `max-w-[80%] ml-auto` and the bubble fills it (`w-full`), exactly as the
+   `max-w-[70%] ml-auto` (the reference bubble spans ~70% of the column) and
+   the bubble fills it (`w-full`), exactly as the
    mockup's `.message.user > .user-bubble` did. Adding the mockup's
    `max-width: 80%` to this INNER element made the cap compound: 80% resolved
    against a shrink-to-fit parent, so `hello` measured 48px wide and broke
@@ -2576,4 +2590,37 @@
   font-weight: 600;
   letter-spacing: -0.02em;
   margin: 0;
+}
+
+
+/* ── Collapsible section label rows ("Pinned ▾") ────────────────────────
+   The reference rail renders each section as a small label row with a
+   chevron that folds its list away. The toggle is the label itself; the
+   section's action buttons (sort, new folder) stay right of it and outside
+   the toggle's hit area. */
+.sd-app .section-head .section-head-toggle {
+  margin-left: 0;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+}
+.sd-app .section-head .section-head-toggle:hover {
+  color: var(--ink);
+  background: none;
+}
+.sd-app .section-head-chev {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: var(--ink-4);
+  transition: transform 0.18s var(--ease);
+}
+/* ▸ closed, ▾ open — the transcript rows' chevron grammar. */
+.sd-app .section-head-chev.is-open {
+  transform: rotate(90deg);
 }

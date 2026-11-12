@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { api } from '@/api/client';
+import { recordHealth, recordDetailed, recordGpu } from '@/store/system-hud';
 
 export type GatewayState =
   | { status: 'connecting' }
@@ -39,6 +40,8 @@ async function poll() {
     useGatewayStore.setState({
       gateway: { status: 'open', port: data.port ?? 0, uptime: data.uptime ?? 0 },
     });
+    // The titlebar's system HUD rides this same clock — no timer of its own.
+    recordHealth(true, data.uptime ?? null);
   } catch (e) {
     const current = useGatewayStore.getState().gateway.status;
     // Stay on "connecting" during first-launch bootstrap so the setup
@@ -49,6 +52,7 @@ async function poll() {
     useGatewayStore.setState({
       gateway: { status: 'closed', reason: e instanceof Error ? e.message : String(e) },
     });
+    recordHealth(false, null);
   }
 }
 
@@ -76,6 +80,20 @@ if (typeof window !== 'undefined') {
   interface DetailedHealth {
     status?: string;
   }
+  /** The slice of `/api/local-models/runtime` the system HUD reads — the
+   *  nvidia-smi detection (name + VRAM), not the llama install state. */
+  interface RuntimeHealth {
+    suggestion?: {
+      gpu?: {
+        nvidia?: boolean;
+        gpuName?: string | null;
+        vramTotalMb?: number | null;
+        vramFreeMb?: number | null;
+      };
+    };
+  }
+  /** One sample per ~30s tick: the detailed health probe and the GPU
+   *  detection ride the SAME existing interval — the HUD owns no clock. */
   async function pollDetailed(): Promise<void> {
     const gw = useGatewayStore.getState().gateway;
     if (gw.status !== 'open') return;
@@ -85,6 +103,7 @@ if (typeof window !== 'undefined') {
       useGatewayStore.setState({
         gateway: { ...gw, degraded },
       });
+      recordDetailed(degraded);
       if (degraded && !degradedAnnounced) {
         degradedAnnounced = true;
         toast.error('Session degraded', {
@@ -99,7 +118,25 @@ if (typeof window !== 'undefined') {
       }
     } catch {
       // The plain poll above owns offline reporting; a detailed-probe
-      // failure adds nothing the user needs to act on.
+      // failure adds nothing the user needs to act on. The HUD keeps its
+      // last good sample rather than flapping to a false "ok".
+    }
+    // GPU name + VRAM, same tick. A machine without nvidia-smi answers with
+    // `nvidia: false` — the HUD prints N/A, which is honest, not an error.
+    try {
+      const runtime = await api.get<RuntimeHealth>('/api/local-models/runtime');
+      const g = runtime.suggestion?.gpu;
+      recordGpu(
+        g?.nvidia
+          ? {
+              name: g.gpuName ?? null,
+              vramTotalMb: g.vramTotalMb ?? null,
+              vramFreeMb: g.vramFreeMb ?? null,
+            }
+          : null,
+      );
+    } catch {
+      /* no runtime endpoint — the GPU fields stay N/A */
     }
   }
   setInterval(() => {

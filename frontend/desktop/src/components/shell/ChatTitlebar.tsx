@@ -18,6 +18,7 @@ import {
 import { RightDrawerDropdown } from "./RightDrawerLauncher";
 import { closeRightDrawer, openRightDrawer, useRightDrawer } from "./RightDrawerState";
 import { BackgroundJobsButton } from "./BackgroundJobsButton";
+import { SystemHud } from "./SystemHud";
 import { MarqueeTitle } from "@/components/ui/MarqueeTitle";
 import { Button } from "@/components/ui/button";
 import { SignalIcon } from "@/components/ui/SignalIcon";
@@ -164,6 +165,22 @@ export function ChatTitlebar({
           </Button>
         )}
 
+        {live && (
+          <span className="live-pill">
+            <span className="live-dot" />
+            Live
+          </span>
+        )}
+      </div>
+
+      {/* The reference centers the chat title over the transcript, flanked by
+          the navigation cluster (left) and actions (right). A middle flex
+          column that centers its content gives that geometry without an
+          absolute overlay: the title truncates against the column instead of
+          colliding with the actions at narrow widths, and the drag region
+          rides the wrapper while the dropdown trigger stays interactive
+          inside it. */}
+      <div className="titlebar-center" data-tauri-drag-region>
         <div className="crumbs">
           {workspaceName ? (
             <>
@@ -189,7 +206,7 @@ export function ChatTitlebar({
                   <SignalIcon name="chev" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-48">
+              <DropdownMenuContent align="center" className="min-w-48">
                 <DropdownMenuItem onClick={() => setRenameOpen(true)}>
                   <Pencil className="size-3 mr-2" /> Rename chat…
                 </DropdownMenuItem>
@@ -219,13 +236,6 @@ export function ChatTitlebar({
             </strong>
           )}
         </div>
-
-        {live && (
-          <span className="live-pill">
-            <span className="live-dot" />
-            Live
-          </span>
-        )}
       </div>
 
       <div className="titlebar-actions">
@@ -275,6 +285,10 @@ export function ChatTitlebar({
           workersBadge={workersBadge}
           artifactsCount={artifactsCount}
         />
+
+        {/* The reference's muted mono telemetry strip, at the same slot. It
+            samples the gateway poll's clock — it adds no timer of its own. */}
+        <SystemHud />
 
         {/* Windows-style title bar buttons — Tauri only (dead no-ops in the
             mobile WebView). */}

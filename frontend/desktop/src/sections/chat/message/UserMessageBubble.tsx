@@ -57,7 +57,7 @@ export function UserMessageBubble({
 
   return (
     <>
-      <div className="group max-w-[80%] ml-auto flex flex-col items-end gap-1.5">
+      <div className="group max-w-[70%] ml-auto flex flex-col items-end gap-1.5">
         {hasAttachments && !editing ? (
           <FileAttachmentCardRow attachments={message.attachments!} />
         ) : null}

@@ -11,6 +11,7 @@ import {
   ArrowUpDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -46,7 +47,13 @@ export interface ChatViewOptions {
   onGroupProjectsChange: (next: boolean) => void;
 }
 
-/** Section header for PINNED / PROJECTS with optional folder create actions. */
+/** Section header for PINNED / PROJECTS with optional folder create actions.
+ *
+ *  The label row is COLLAPSIBLE — the reference rail renders each section as
+ *  a small "Pinned ▾" row that folds its list away. Collapse state is
+ *  deliberately session-local (not persisted): a rail that comes back exactly
+ *  as you left it is the folders' job (those persist), while a section you
+ *  folded for one glance re-opening on the next launch is the safer default. */
 export function Section({
   title,
   count,
@@ -64,10 +71,23 @@ export function Section({
   viewOptions?: ChatViewOptions;
   children?: React.ReactNode;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   return (
     <div className="august-sidebar-section">
       <div className="section-head">
-        <span className="section-head-label">
+        <Button
+          variant="bare"
+          type="button"
+          className="section-head-toggle"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-expanded={!collapsed}
+          title={collapsed ? `Show ${title}` : `Hide ${title}`}
+        >
+          <ChevronRight
+            className={cn('section-head-chev', !collapsed && 'is-open')}
+            aria-hidden
+          />
+          <span className="section-head-label">
           {/* Count removed, and the label is sentence case with normal
               tracking. Measured off the Claude reference at 2.4x, the section
               header reads `Chats and tasks` — sentence case, muted, with NO
@@ -90,6 +110,7 @@ export function Section({
               `New chat in Tasks` / `Delete all tasks` controls. */}
           {title}
         </span>
+        </Button>
         {(title === "Sessions" || title === "Recents" || title === "Projects" || title === "Chats and tasks") && (
           <div className="section-actions">
             {viewOptions && (
@@ -154,13 +175,14 @@ export function Section({
           </div>
         )}
       </div>
-      {count === 0 && title === "Pinned" ? (
-        <p className="section-empty">
-          {empty ?? "No items"}
-        </p>
-      ) : (
-        <div className="space-y-px">{children}</div>
-      )}
+      {!collapsed &&
+        (count === 0 && title === "Pinned" ? (
+          <p className="section-empty">
+            {empty ?? "No items"}
+          </p>
+        ) : (
+          <div className="space-y-px">{children}</div>
+        ))}
     </div>
   );
 }

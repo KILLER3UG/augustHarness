@@ -5,26 +5,23 @@
  * "know" something and can only guess whether it recalled it, was handed a
  * skill, or simply made it up.
  *
- * Shape: ONE chip group, because the three lists are one fact ("what this
- * turn was given") split three ways. The label is deliberately terse and the
- * detail lives in the tooltip — a transcript that has to be read should not
- * have to be scrolled to find out why an answer came out the way it did.
+ * Reference shape (the Claude pass): ONE quiet bordered card with a chevron
+ * header — "Recalled memory ▾" — collapsed by default, whose body lists the
+ * injected facts under their own `<key>.md` filenames (the store of record is
+ * one markdown file per fact) and the injected skills under their names. A
+ * turn that injected nothing renders NOTHING: the backend omits those keys
+ * entirely when the lists are empty, so a "0 facts" card would be a claim the
+ * shell never made, on every single turn.
  *
- * Silence is the default state. A turn that injected nothing and hit nothing
- * renders NOTHING: the backend omits those keys entirely when the lists are
- * empty, so a "0 skills · 0 facts" chip would be a claim the shell never
- * made, on every single turn.                                                          */
+ * Failure families are NOT memory — they stay a separate one-line warning
+ * under the card rather than borrowing its label.
+ */
 
-import { AlertTriangle, BookOpen, Brain } from 'lucide-react';
+import { useId, useState } from 'react';
+import { AlertTriangle, Brain, ChevronDown, SquareLibrary } from 'lucide-react';
 import type { WorkbenchTurnProvenance } from '@/types/workbench';
-import { SettingsTooltip } from '@/components/settings/SettingsTooltip';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-
-/** One chip's own label + count. `text` already carries the plural, so the
- *  tooltip and the chip can never disagree about "1 skill" vs "1 skills". */
-function countLabel(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
-}
 
 export function TurnProvenanceChip({ provenance }: { provenance?: WorkbenchTurnProvenance }) {
   const skills = provenance?.skillsInjected ?? [];
@@ -33,81 +30,107 @@ export function TurnProvenanceChip({ provenance }: { provenance?: WorkbenchTurnP
 
   if (skills.length === 0 && facts.length === 0 && families.length === 0) return null;
 
-  const skillsText = countLabel(skills.length, 'skill', 'skills');
-  const factsText = countLabel(facts.length, 'fact', 'facts');
-  const familiesText = countLabel(families.length, 'failure', 'failures');
+  return <ProvenanceCard skills={skills} facts={facts} families={families} />;
+}
+
+function ProvenanceCard({
+  skills,
+  facts,
+  families,
+}: {
+  skills: string[];
+  facts: string[];
+  families: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const uid = useId();
+  const headId = `provenance-head-${uid}`;
+  const bodyId = `provenance-body-${uid}`;
+
+  const hasMemory = facts.length > 0;
+  const hasSkills = skills.length > 0;
+  const label = hasMemory ? 'Recalled memory' : 'Loaded skills';
 
   return (
-    <SettingsTooltip
-      side="top"
-      className="max-w-full"
-      content={
-        <div className="space-y-1.5" data-testid="turn-provenance-detail">
-          {skills.length > 0 && (
-            <div>
-              <p className="mb-0.5 font-semibold uppercase tracking-wider text-muted-foreground/70">
-                {skillsText} injected
-              </p>
-              <ul className="space-y-0.5">
-                {skills.map((s) => (
-                  <li key={s} className="font-mono break-all">{s}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {facts.length > 0 && (
-            <p>
-              <span className="font-semibold">{factsText}</span> recalled from memory
-              {facts.length <= 3 ? `: ${facts.join(', ')}` : ''}
-            </p>
-          )}
-          {families.length > 0 && (
-            <p>
-              <span className="font-semibold">{familiesText}</span> hit this turn:{' '}
-              <span className="font-mono">{families.join(', ')}</span>
-            </p>
-          )}
-          <p className="text-muted-foreground/70">
-            The shell&apos;s own accounting for this turn — the same lists the
-            turn ledger records.
-          </p>
-        </div>
-      }
-      trigger={(t) => (
-        <span
-          tabIndex={0}
-          data-testid="turn-provenance-chip"
-          className={cn(
-            'inline-flex max-w-full cursor-help flex-wrap items-center gap-1.5 rounded-md',
-            'border border-border/50 bg-muted/30 px-1.5 py-0.5 text-2xs font-medium',
-            'uppercase tracking-wide text-muted-foreground',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-          )}
-          {...t}
+    <div className="min-w-0" data-testid="turn-provenance-chip">
+      <div className="memory-card" data-open={open} data-slot="memory-card">
+        <Button
+          variant="bare"
+          type="button"
+          id={headId}
+          className="memory-card-head"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls={bodyId}
         >
-          {skills.length > 0 && (
-            <span className="inline-flex items-center gap-1" data-testid="provenance-skills">
-              <BookOpen className="size-3" aria-hidden />
-              {skillsText}
-            </span>
+          {hasMemory ? (
+            <Brain className="size-3.5 shrink-0" aria-hidden />
+          ) : (
+            <SquareLibrary className="size-3.5 shrink-0" aria-hidden />
           )}
-          {facts.length > 0 && (
-            <span className="inline-flex items-center gap-1" data-testid="provenance-facts">
-              <Brain className="size-3" aria-hidden />
-              {factsText}
-            </span>
+          <strong>{label}</strong>
+          <span className="memory-card-count">
+            {facts.length > 0 && (
+              <span data-testid="provenance-facts">
+                {facts.length} fact{facts.length === 1 ? '' : 's'}
+              </span>
+            )}
+            {facts.length > 0 && skills.length > 0 ? ' · ' : ''}
+            {skills.length > 0 && (
+              <span data-testid="provenance-skills">
+                {skills.length} skill{skills.length === 1 ? '' : 's'}
+              </span>
+            )}
+          </span>
+          <ChevronDown className="memory-card-chevron size-3" aria-hidden />
+        </Button>
+        {/* The region stays mounted and `hidden` in the closed state — the
+            same pattern ThinkingDisclosure uses, so the trigger advertises a
+            real region in BOTH states rather than a body that only exists
+            while open. */}
+        <div
+          className="memory-card-body"
+          id={bodyId}
+          role="region"
+          aria-labelledby={headId}
+          hidden={!open}
+          data-testid="turn-provenance-detail"
+        >
+          {hasMemory && (
+            <>
+              <p className="memory-card-note !mt-0">Injected into this turn&apos;s prompt</p>
+              {facts.map((f) => (
+                <div key={f} className="memory-card-entry">
+                  <span className="memory-card-key">{f}.md</span>
+                </div>
+              ))}
+            </>
           )}
-          {families.length > 0 && (
-            <span
-              className="inline-flex items-center gap-1 text-warning/90"
-              data-testid="provenance-errors"
-            >
-              <AlertTriangle className="size-3" aria-hidden />
-              {familiesText}
-            </span>
+          {hasSkills && (
+            <>
+              <p className={cn('memory-card-note', hasMemory && '!mt-1.5')}>
+                {hasMemory ? 'Skills loaded alongside' : 'Loaded into this turn'}
+              </p>
+              {skills.map((s) => (
+                <div key={s} className="memory-card-entry">
+                  <SquareLibrary className="size-3 self-center" aria-hidden />
+                  <span className="memory-card-key">{s}</span>
+                </div>
+              ))}
+            </>
           )}
-        </span>
+        </div>
+      </div>
+      {families.length > 0 && (
+        <p
+          className="mt-1 inline-flex items-center gap-1 text-2xs text-warning/90"
+          data-testid="provenance-errors"
+        >
+          <AlertTriangle className="size-3" aria-hidden />
+          {families.length} failure famil{families.length === 1 ? 'y' : 'ies'} hit this turn:{' '}
+          <span className="font-mono">{families.join(', ')}</span>
+        </p>
       )}
-    />
+    </div>
   );
 }

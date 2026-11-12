@@ -1,18 +1,20 @@
-import { useMemo } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { BookmarkPlus, Undo2 } from 'lucide-react';
+import { ChevronDown, Undo2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { undoAugustRollback } from '@/api/api-client/manage';
 import { Button } from '@/components/ui/button';
 import type { ChatMessage } from '@/types/chat';
 
 /**
- * MemorySaveChip — at most ONE small receipt for a memory save on this turn,
+ * MemorySaveChip — at most ONE receipt for a memory save on this turn,
  * with the rollback entry the write door recorded as its Undo.
  *
- * The spec asks for one chip; a turn that saved three facts still shows the
- * single most recent one. Silence when the turn saved nothing, or when the
- * build predates `rollbackId` (the receipt then has nothing to undo by).
+ * Reference shape (the Claude pass): a quiet bordered card — "Added to
+ * memory ▾" — collapsed by default; the body names the fact under its own
+ * `<key>.md` filename and carries the Undo. Silence when the turn saved
+ * nothing, or when the build predates `rollbackId` (the receipt then has
+ * nothing to undo by).
  */
 export function MemorySaveChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const qc = useQueryClient();
@@ -45,27 +47,58 @@ export function MemorySaveChip({ tools }: { tools?: ChatMessage['tools'] }) {
       toast.error(`Undo failed: ${err instanceof Error ? err.message : String(err)}`),
   });
 
+  const [open, setOpen] = useState(false);
+  const uid = useId();
+  const headId = `memory-save-head-${uid}`;
+  const bodyId = `memory-save-body-${uid}`;
+
   if (!saved) return null;
   return (
-    <span
-      className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-2xs text-foreground/90"
+    <div
+      className="memory-card w-fit min-w-0 max-w-full"
+      data-open={open}
+      data-slot="memory-card"
       data-testid="memory-save-chip"
     >
-      <BookmarkPlus className="size-2.5 shrink-0 text-primary" aria-hidden />
-      <span className="max-w-[16rem] truncate" title={saved.key}>
-        Memory saved: {saved.key}
-      </span>
       <Button
+        variant="bare"
         type="button"
-        size="sm"
-        variant="ghost"
-        onClick={() => undo.mutate(saved.rollbackId)}
-        disabled={undo.isPending}
-        className="h-auto gap-0.5 px-1 py-0 text-2xs text-primary hover:bg-transparent hover:underline"
-        data-testid="memory-save-undo"
+        id={headId}
+        className="memory-card-head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={bodyId}
       >
-        <Undo2 className="size-2.5" aria-hidden /> Undo
+        <strong>Added to memory</strong>
+        <ChevronDown className="memory-card-chevron size-3" aria-hidden />
       </Button>
-    </span>
+      {/* The region stays mounted and `hidden` in the closed state — the
+          same pattern ThinkingDisclosure uses, so the trigger advertises a
+          real region in BOTH states rather than a body that only exists
+          while open. */}
+      <div
+        className="memory-card-body"
+        id={bodyId}
+        role="region"
+        aria-labelledby={headId}
+        hidden={!open}
+      >
+        <div className="memory-card-entry">
+          <span className="memory-card-key">{saved.key}.md</span>
+        </div>
+        <div className="mt-1.5">
+          <Button
+            type="button"
+            variant="bare"
+            onClick={() => undo.mutate(saved.rollbackId)}
+            disabled={undo.isPending}
+            className="inline-flex items-center gap-1 text-2xs text-primary hover:underline"
+            data-testid="memory-save-undo"
+          >
+            <Undo2 className="size-3" aria-hidden /> Undo this write
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -168,8 +168,10 @@ module.exports = {
         soft: 'var(--elev-raised)',
         // `ring` is the FOCUS ring (4px brand-tinted halo), not a surface
         // elevation — it is a different vocabulary from --elev-ring, which
-        // is the 1px border-coloured edge.
-        ring:    '0 0 0 4px rgb(74 138 255 / 0.18)',
+        // is the 1px border-coloured edge. The halo is the ACCENT's hue at
+        // low alpha (terracotta since the reference retune — the old blue
+        // halo read as a colour from outside the palette).
+        ring:    '0 0 0 4px rgb(217 119 87 / 0.20)',
         // `xs` is the hairline step used by the composer attachment chips;
         // it predates the four-rung ladder and stays on the Tailwind side
         // rather than becoming a fifth rung for two call sites.

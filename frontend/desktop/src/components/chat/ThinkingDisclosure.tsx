@@ -77,7 +77,21 @@ export const ThinkingDisclosure = memo(function ThinkingDisclosure({
   const displayDuration =
     duration !== undefined ? fmtElapsed(duration) : liveElapsed;
   // Explicit multi-count label (e.g. "Thinking (3)") wins when provided.
-  // Otherwise keep the classic single-thought labels.
+  // Otherwise the header reads the reference's way: "Thinking" while the
+  // model reasons, "Thought for 3s" once it is settled — whole seconds, the
+  // duration composed into the header text instead of trailing it.
+  const defaultLabel = pending
+    ? 'Thinking'
+    : displayDuration
+      ? `Thought for ${fmtWholeSeconds(duration ?? elapsed ?? 0)}`
+      : 'Thought';
+  const composedLabel = label != null && label !== '' ? label : defaultLabel;
+  // Trailing duration: while LIVE (the elapsed count is the "what is it
+  // doing" signal) and under an explicit caller label (the composition above
+  // only owns the default label's wording). A settled default label already
+  // contains its duration — "Thought for 3s" — so nothing trails it.
+  const showTrailingDuration =
+    displayDuration != null && (pending || (label != null && label !== ''));
   const bodyId = `thinking-body-${uid}`;
   const headerId = `thinking-head-${uid}`;
 
@@ -93,8 +107,8 @@ export const ThinkingDisclosure = memo(function ThinkingDisclosure({
         aria-controls={bodyId}
       >
         <SignalIcon name="brain" className="brain" />
-        <strong>{label != null && label !== '' ? label : 'Thinking'}</strong>
-        {displayDuration ? <span className="duration">{displayDuration}</span> : null}
+        <strong>{composedLabel}</strong>
+        {showTrailingDuration ? <span className="duration">{displayDuration}</span> : null}
         <SignalIcon name="chev" className="chev" />
       </Button>
 
@@ -144,4 +158,15 @@ function fmtElapsed(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.round(sec % 60);
   return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+/** Whole seconds for the settled header — the reference prints "Thought for
+ *  3s", not "3.2s". A sub-second thought still reports 1s (0s reads as a
+ *  glitch, and the block did think). */
+function fmtWholeSeconds(sec: number): string {
+  const s = Math.max(1, Math.round(sec));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rest = s % 60;
+  return rest ? `${m}m ${rest}s` : `${m}m`;
 }
