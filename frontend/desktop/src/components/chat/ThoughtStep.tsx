@@ -180,7 +180,7 @@ export function ThoughtStep({
                Opening reveals the block's full reasoning. */
             <div
               id={panelId}
-              className="thought-steps rounded-xl border border-border/40 bg-card/30 text-xs overflow-hidden"
+              className="thought-steps quiet-card text-xs overflow-hidden"
               data-slot="thought-steps"
               data-open={cardOpen}
             >

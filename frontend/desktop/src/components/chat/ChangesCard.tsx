@@ -159,7 +159,7 @@ export function ChangesCard({
   return (
     <div
       className={cn(
-        'mt-3 overflow-hidden rounded-2xl border border-border/40 bg-card/30 shadow-xs',
+        'quiet-card mt-3 overflow-hidden',
         className,
       )}
       data-slot="changes-card"

@@ -408,7 +408,7 @@ export function ActivitySummary({
             onAnimationComplete={() => setBodyClip(false)}
           >
             <div className="activity-summary-body">
-              <div className="activity-card-box rounded-xl border border-border/40 bg-card/30 divide-y divide-border/20 text-xs overflow-hidden" data-slot="activity-card">
+              <div className="activity-card-box quiet-card divide-y divide-border/20 text-xs overflow-hidden" data-slot="activity-card">
                 {children}
               </div>
             </div>
