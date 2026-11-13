@@ -1,5 +1,53 @@
 # August Proxy — Changelog
 
+## 2026-11-13 — 0.25.0 (the brain record leaves SQLite; the shell goes quiet)
+
+- **The memory record is files.** `dataDir/memory/` — one markdown file per fact
+  plus `MEMORY.md` — is the system of record; transcripts are per-session JSONL;
+  ledgers are self-capping JSONL. SQLite is retired: read once by a read-only
+  importer, then renamed `august_brain.sqlite.retired` with its WAL kept paired.
+  The one-time import moved the live store (21 sessions, 161 messages, 507,602
+  ledger rows) and recovered the owner's lost memories from the rollback log —
+  19 facts restored, the 7 pytest-probe watermarks skipped.
+- **`remember` works.** The read-before-write preflight is gone and auto-review
+  vetoes only when it actually answers (unavailable/prose/timeout is a missing
+  opinion; update/merge/reject naming a real target still refuse). Measured
+  before: 21 turns, zero memories ever written. One day after: 181 facts, all
+  described.
+- **Recall is pull-only.** The BM25 auto-tail is gone; a turn gets the frozen
+  boot index (which now NAMES every fact a budget omits), the always-in
+  profile/preference lane, and a delta of facts written since the session
+  opened. BM25 survives as explicit search, with aliases answering the model's
+  wording.
+- **The transcript index is a derived cache that cannot lie.** FTS5 over
+  `transcripts/*.jsonl`, rebuilt on boot, re-synced before every query, and
+  handing back to the plain scan whenever it cannot answer — absent, corrupt,
+  or a term shorter than its trigram window. The scan's own tie-break was
+  backwards (the oldest tied message won); both paths now agree.
+- **The thinking card shows the summary of all the thoughts.** One quiet line
+  per segment of the reasoning, a "+N more" receipt for the rest, and one
+  disclosure to the full chain — matching the reference's collapsed card,
+  which never shows raw reasoning.
+- **The shell opens instantly.** The full-screen bootstrap gate is deleted:
+  the workspace renders from frame one, a quiet pill reports the real install
+  phases, and sends made before readiness park in the offline queue and flush
+  when the API answers.
+- **Updates download automatically; restart is the only click.** A durable
+  "Not now" survives computer restarts (the startup path that cleared it is
+  removed), the staged installer sits inert, and nothing runs it except the
+  restart-now click. The rail's Update button opens Settings instead of
+  installing.
+- **The UI takes the Claude Desktop reference.** Warm near-black tokens with a
+  sparing terracotta accent, centered title with dropdown chevron, a mono
+  system HUD in the titlebar (fed by the existing health poll), composer pill,
+  70% user bubbles, collapsible rail sections, "Recalled memory ▾" /
+  "Added to memory ▾" cards, and one quiet-card recipe across the transcript —
+  hairline edge, no fill, one radius.
+- **The backup's narrowed scope is a recorded owner decision.** The archive
+  covers the brain record (`memory/` + `state/` + `config.json` + skills);
+  transcripts and telemetry are deliberately excluded, written down in
+  `brain_backup.py` and the memory docs so it reads as a scope statement.
+
 ## 2026-11-09 — 0.24.1 (precomputed compaction, the Explore reference, no hostile env)
 
 - **A namespaced model id no longer disables the LLM compactor.** The compactor

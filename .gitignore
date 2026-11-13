@@ -177,3 +177,4 @@ docs/ui-refactor/**/*.png
 # machine — data-dir paths, local DB contents, live diagnosis. Useful on the
 # machine that wrote them, not something to publish with the source.
 .workbuddy-ai/
+.perch/
