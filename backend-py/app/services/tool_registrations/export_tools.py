@@ -16,6 +16,7 @@ import json
 import logging
 
 from app.services import tool_registry
+from app.services.adviser_comments import import_adviser_comments
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,11 @@ async def _exportPaperDocxHandler(path: str, **kwargs: object) -> str:
     from app.services.paper_export import export_paper_docx
 
     result = export_paper_docx(path)
+    return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+
+async def _importAdviserCommentsHandler(docx: str, workspace: str, **kwargs: object) -> str:
+    result = import_adviser_comments(docx, workspace)
     return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
 
@@ -51,5 +57,28 @@ def register() -> None:
                 },
             },
             'required': ['path'],
+        },
+    )
+
+    tool_registry.register(
+        'import_adviser_comments',
+        (
+            'Import an adviser\'s margin comments from a Word (.docx) file into the paper '
+            'workspace. Pass the .docx the adviser returned and the paper workspace folder. '
+            'Writes drafts/adviser-comments.md listing every comment beside the passage of the '
+            'draft it was made on, so the feedback can be worked through against the draft. '
+            'Read-only over the .docx; writes one file into the workspace.'
+        ),
+        _importAdviserCommentsHandler,
+        {
+            'type': 'object',
+            'properties': {
+                'docx': {'type': 'string', 'description': 'The adviser-annotated .docx to read.'},
+                'workspace': {
+                    'type': 'string',
+                    'description': 'The paper workspace folder to write drafts/adviser-comments.md into.',
+                },
+            },
+            'required': ['docx', 'workspace'],
         },
     )
