@@ -25,9 +25,14 @@ The discipline that replaces the database's guarantees:
 
 Concurrency: writers are the backend's own threads; SQLite's locking is
 replaced by the atomic-replace rule (last complete write wins) and, for
-read-modify-write cycles, by the caller holding the same process lock the
-old connection pool serialised on. At this store's scale (tens of facts,
-hundreds of messages) that is sufficient and auditable by eye.
+read-modify-write cycles, by the caller holding the store's process lock
+(``memory_store.tables.store_lock`` / ``rest._record_lock``) across the
+WHOLE cycle — the read that feeds the write and the write itself. Locking
+only the write is not enough: a row read outside the lock and written
+inside it still loses the concurrent update that landed in between
+(measured: 12 of 24 concurrent saves to one key vanished that way). At
+this store's scale (tens of facts, hundreds of messages) that is
+sufficient and auditable by eye.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -49,6 +55,29 @@ TELEMETRY_DIR = 'telemetry'
 STATE_DIR = 'state'
 
 _ROTATE_KEEP_MIN = 1
+
+# os.replace on Windows needs exclusive access to the destination, and a
+# concurrent READER (an index rebuild, a recall scan — any Path.read_text)
+# holds a handle without FILE_SHARE_DELETE for the few microseconds it takes
+# to read. That surfaces as PermissionError (WinError 5) even when no other
+# WRITER is running — the record lock already serialises the writers. The
+# reader releases in microseconds, so a short bounded backoff clears it;
+# giving up would lose a real write to a read that was never going to change
+# the bytes.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_S = 0.002
+
+
+def _replace_atomic(tmp: str, dst: Path) -> None:
+    """``os.replace`` with a bounded retry for Windows sharing violations."""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, dst)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF_S * (attempt + 1))
 
 
 def home(kind: str) -> Path:
@@ -90,7 +119,7 @@ def write_json(path: Path | str, data: object) -> None:
             json.dump(data, handle, ensure_ascii=False, indent=1, default=str)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, p)
+        _replace_atomic(tmp, p)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -108,7 +137,7 @@ def write_text(path: Path | str, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, p)
+        _replace_atomic(tmp, p)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -189,7 +218,7 @@ def rewrite_jsonl(path: Path | str, rows: list[object]) -> None:
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + '\n')
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, p)
+        _replace_atomic(tmp, p)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)

@@ -53,6 +53,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -245,6 +246,50 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 check(f'GET {path}', False, f'{type(exc).__name__}: {exc}')
 
+        # The fact record is file-backed. A read-modify-write that does not
+        # hold the record lock across BOTH the read and the write loses
+        # concurrent updates to the same key — measured at 12 of 24 vanished
+        # when the write landed outside the lock. Two threads hammering one
+        # key must leave every version accounted for; this is a data-loss
+        # invariant, not a behaviour preference.
+        try:
+            from app.json_narrowing import as_int
+            from app.services.memory_store import mirror as _smoke_record
+            from app.services.memory_store import save_fact
+            from app.services.memory_store.rest import delete_fact as _delete_fact
+
+            _ck = 'smoke-concurrent-key'
+            try:
+                _delete_fact(_ck)
+            except Exception:  # noqa: BLE001 — absent on a fresh data dir
+                pass
+            save_fact(_ck, 'seed', description='smoke')
+            _errors: list[str] = []
+
+            def _hammer(tag: str) -> None:
+                for _i in range(12):
+                    try:
+                        save_fact(_ck, f'{tag}-{_i}', description='smoke')
+                    except Exception as exc:  # noqa: BLE001
+                        _errors.append(f'{tag}:{type(exc).__name__}')
+
+            _threads = [threading.Thread(target=_hammer, args=_t) for _t in 'AB']
+            for _t in _threads:
+                _t.start()
+            for _t in _threads:
+                _t.join()
+            _rows = {str(r.get('fact_key')): r for r in _smoke_record.load_facts()}
+            _got = as_int(_rows.get(_ck, {}).get('version'), 0)
+            _expected = 1 + 2 * 12
+            check(
+                'concurrent saves to one fact key lose none',
+                _got == _expected and not _errors,
+                f'version {_got} (expected {_expected})'
+                + (f'; errors {_errors[:2]}' if _errors else ''),
+            )
+        except Exception as exc:  # noqa: BLE001
+            check('concurrent saves to one fact key lose none', False, f'{type(exc).__name__}: {exc}')
+
         # ── Section 4 · The harness door ────────────────────────────────
         # /mcp/harness must be CLOSED while external access is off. The
         # route dispatches real model calls and real tool execution, and
@@ -331,11 +376,12 @@ def main() -> int:
         # a renamed spawn tool fails here instead of living as a dead row.
         # An empty registry is a failed probe, not a clean table.
         try:
+            from app.json_narrowing import as_dict, as_str
             from app.services.tool_registry import listTools
             from app.services.workbench.subagent import _SPAWN_TOOLS, _SUBAGENT_NEVER_TOOLS
 
             registered = {
-                str((t.get('function') or {}).get('name') or '')
+                as_str(as_dict(as_dict(t).get('function')).get('name'))
                 for t in listTools(include_host_agent=True)
             }
             unknown = sorted((_SUBAGENT_NEVER_TOOLS | _SPAWN_TOOLS) - registered)

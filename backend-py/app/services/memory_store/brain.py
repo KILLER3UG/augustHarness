@@ -1249,36 +1249,42 @@ def brain_update_row(store: str, row_id: object, patch: dict[str, object]) -> di
         return {'ok': False, 'error': f"store '{store}' does not support per-entry edit"}
     try:
         if resolved == 'facts':
-            target = next(
-                (r for r in record.load_facts() if as_int(r.get('id'), 0) == as_int(row_id, -1)),
-                None,
-            )
-            if target is None:
-                return {'ok': False, 'error': 'row not found'}
-            sets = {k: v for k, v in (patch or {}).items() if k in allowed}
-            if not sets:
-                return {'ok': False, 'error': 'no writable fields in patch'}
-            # M-3: a row that is ACTIVE again is neither superseded nor in
-            # conflict, so lifting its status lifts the lineage with it. Leaving
-            # `superseded_by` pointing at the fact that replaced it would make a
-            # restored row claim a parent it no longer has.
-            if str(sets.get('status') or '').strip().lower() == 'active':
-                sets.setdefault('superseded_by', '')
-                sets.setdefault('contradicts', '')
-            cols = [c.strip() for c in as_str(_BRAINStores['facts']['columns']).split(',')]
-            beforeWire = _row_as_wire(_project(target, cols))
-            row = dict(target)
-            row.update(sets)
-            # Bump updated_at so edited entries re-sort to the top of recency views.
-            if 'updated_at' not in sets:
-                row['updated_at'] = utc_now_text()
-            # A fact_value edit is a value TEXT patch — the file body stores it
-            # JSON-encoded exactly as delivered, byte for byte.
-            record.write_fact_file(row)
-            afterWire = _row_as_wire(_project(row, cols))
-            _record_row_rollback(resolved, str(row_id), beforeWire, afterWire)
-            _invalidate_fact_cache_if_facts(resolved)
-            return {'ok': True, 'store': resolved, 'row': afterWire}
+            # The whole read-modify-write runs under the record lock: the row
+            # is found and rewritten in one hold, so a concurrent save_fact on
+            # this key cannot be silently overwritten by this edit.
+            from app.services.memory_store.rest import _record_lock
+
+            with _record_lock():
+                target = next(
+                    (r for r in record.load_facts() if as_int(r.get('id'), 0) == as_int(row_id, -1)),
+                    None,
+                )
+                if target is None:
+                    return {'ok': False, 'error': 'row not found'}
+                sets = {k: v for k, v in (patch or {}).items() if k in allowed}
+                if not sets:
+                    return {'ok': False, 'error': 'no writable fields in patch'}
+                # M-3: a row that is ACTIVE again is neither superseded nor in
+                # conflict, so lifting its status lifts the lineage with it. Leaving
+                # `superseded_by` pointing at the fact that replaced it would make a
+                # restored row claim a parent it no longer has.
+                if str(sets.get('status') or '').strip().lower() == 'active':
+                    sets.setdefault('superseded_by', '')
+                    sets.setdefault('contradicts', '')
+                cols = [c.strip() for c in as_str(_BRAINStores['facts']['columns']).split(',')]
+                beforeWire = _row_as_wire(_project(target, cols))
+                row = dict(target)
+                row.update(sets)
+                # Bump updated_at so edited entries re-sort to the top of recency views.
+                if 'updated_at' not in sets:
+                    row['updated_at'] = utc_now_text()
+                # A fact_value edit is a value TEXT patch — the file body stores it
+                # JSON-encoded exactly as delivered, byte for byte.
+                record.write_fact_file(row)
+                afterWire = _row_as_wire(_project(row, cols))
+                _record_row_rollback(resolved, str(row_id), beforeWire, afterWire)
+                _invalidate_fact_cache_if_facts(resolved)
+                return {'ok': True, 'store': resolved, 'row': afterWire}
         if resolved == 'memory':
             if 'value' not in (patch or {}):
                 return {'ok': False, 'error': 'no writable fields in patch'}

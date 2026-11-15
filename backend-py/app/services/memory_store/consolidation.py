@@ -369,12 +369,17 @@ def _enforce_fact_budget() -> tuple[int, list[str]]:
     archived = 0
     for _score, _age, _row_id, key, scope in scored[:excess]:
         try:
-            row = record.read_fact_file(record.fact_path(key, scope))
-            if row is None or str(row.get('status') or 'active') != 'active':
-                continue
-            row['status'] = 'archived'
-            row['updated_at'] = utc_now_text()
-            record.write_fact_file(row)
+            # Read-modify-write under the record lock: the row is re-read and
+            # re-checked inside the same hold that writes it, so a concurrent
+            # save_fact on this key cannot be silently overwritten by this
+            # pass. The whole read-check-write is one atomic step.
+            with _record_lock():
+                row = record.read_fact_file(record.fact_path(key, scope))
+                if row is None or str(row.get('status') or 'active') != 'active':
+                    continue
+                row['status'] = 'archived'
+                row['updated_at'] = utc_now_text()
+                record.write_fact_file(row)
             archived += 1
             notes.append(f'archived {key!r} (over the fact budget)')
         except Exception:
@@ -646,50 +651,56 @@ def apply_retire_decision(proposal_id: int, approve: bool, decidedBy: str = 'use
     if not claim_proposal_decision(None, proposal_id, 'approved', decidedBy):
         return {'ok': False, 'error': f'proposal {proposal_id} was already decided; nothing changed'}
     try:
-        # Read what the retirement is about to overwrite. `updated_at` is part
-        # of the evidence the proposal was filed on — the retirement window is
-        # computed from it — so restoring the status alone would leave the fact
-        # looking freshly touched and change which future proposal it earns.
-        row = record.load_fact(key)
-        qualified = False
-        if row is not None:
-            kind = str(row.get('kind') or 'fact')
-            use_count = as_int(row.get('use_count'), 0)
-            touch = (
-                str(row.get('last_used_at') or '')
-                or str(row.get('updated_at') or '')
-                or str(row.get('created_at') or '')
-            )
-            stamp = _parse_stamp(touch)
-            age_days = (
-                (datetime.now(timezone.utc) - stamp).total_seconds() / 86400.0
-                if stamp is not None
-                else -1.0
-            )
-            status_ok = row.get('status') is None or str(row.get('status') or 'active') == 'active'
-            qualified = (
-                status_ok
-                and kind == raw_kind
-                and use_count == 0
-                and age_days > days
-                and (last_touch == '' or touch == last_touch)
-            )
-        if row is None or not qualified:
-            # Evidence no longer holds. We own the claim, so correct it: the
-            # proposal closes as rejected, the fact survives recalled, and the
-            # pair is the only state a crash can leave behind.
-            claim_proposal_decision(None, proposal_id, 'rejected', decidedBy, from_status='approved')
-            return {
-                'ok': True,
-                'decision': 'rejected',
-                'retired': False,
-                'key': key,
-                'error': 'memory changed after this proposal was filed; it was closed without retiring the fact',
-            }
-        row['status'] = 'retired'
-        row['updated_at'] = utc_now_text()
-        record.write_fact_file(row)
-        result: dict[str, Any] = {'ok': True, 'decision': 'approved', 'retired': True, 'key': key}
+        # The fact's read-validate-write is ONE step under the record lock: a
+        # concurrent `remember` on this key between the evidence check and the
+        # write would otherwise be overwritten and lost. The rejected path's
+        # proposal write does not take this lock, so the nesting is always
+        # facts -> proposals and never the reverse — no lock-order inversion.
+        with _record_lock():
+            # Read what the retirement is about to overwrite. `updated_at` is part
+            # of the evidence the proposal was filed on — the retirement window is
+            # computed from it — so restoring the status alone would leave the fact
+            # looking freshly touched and change which future proposal it earns.
+            row = record.load_fact(key)
+            qualified = False
+            if row is not None:
+                kind = str(row.get('kind') or 'fact')
+                use_count = as_int(row.get('use_count'), 0)
+                touch = (
+                    str(row.get('last_used_at') or '')
+                    or str(row.get('updated_at') or '')
+                    or str(row.get('created_at') or '')
+                )
+                stamp = _parse_stamp(touch)
+                age_days = (
+                    (datetime.now(timezone.utc) - stamp).total_seconds() / 86400.0
+                    if stamp is not None
+                    else -1.0
+                )
+                status_ok = row.get('status') is None or str(row.get('status') or 'active') == 'active'
+                qualified = (
+                    status_ok
+                    and kind == raw_kind
+                    and use_count == 0
+                    and age_days > days
+                    and (last_touch == '' or touch == last_touch)
+                )
+            if row is None or not qualified:
+                # Evidence no longer holds. We own the claim, so correct it: the
+                # proposal closes as rejected, the fact survives recalled, and the
+                # pair is the only state a crash can leave behind.
+                claim_proposal_decision(None, proposal_id, 'rejected', decidedBy, from_status='approved')
+                return {
+                    'ok': True,
+                    'decision': 'rejected',
+                    'retired': False,
+                    'key': key,
+                    'error': 'memory changed after this proposal was filed; it was closed without retiring the fact',
+                }
+            row['status'] = 'retired'
+            row['updated_at'] = utc_now_text()
+            record.write_fact_file(row)
+            result: dict[str, Any] = {'ok': True, 'decision': 'approved', 'retired': True, 'key': key}
     except Exception as exc:
         # The claim is already taken. Restore it to 'pending' so a failed flip
         # can be retried — the exact guarantee the SQL savepoint gave, in the
@@ -885,26 +896,29 @@ def _append_supersedes(winner_key: str, winner_scope: str, loser_key: str) -> No
     if not winner_key or not loser_key:
         return
     try:
-        row = record.read_fact_file(record.fact_path(winner_key, winner_scope))
-        if row is None:
-            row = record.load_fact(winner_key)
-        if row is None:
-            return
-        raw = row.get('supersedes')
-        current: list[str] = []
-        if isinstance(raw, list):
-            current = [str(x) for x in raw]
-        elif isinstance(raw, str) and raw.strip():
-            try:
-                loaded = json.loads(raw)
-                if isinstance(loaded, list):
-                    current = [str(x) for x in loaded]
-            except (json.JSONDecodeError, TypeError):
-                current = []
-        if loser_key not in current:
-            current.append(loser_key)
-        row['supersedes'] = json.dumps(current)
-        record.write_fact_file(row)
+        # Read-modify-write under the record lock so a concurrent write to the
+        # winner row cannot be lost between this read and this write.
+        with _record_lock():
+            row = record.read_fact_file(record.fact_path(winner_key, winner_scope))
+            if row is None:
+                row = record.load_fact(winner_key)
+            if row is None:
+                return
+            raw = row.get('supersedes')
+            current: list[str] = []
+            if isinstance(raw, list):
+                current = [str(x) for x in raw]
+            elif isinstance(raw, str) and raw.strip():
+                try:
+                    loaded = json.loads(raw)
+                    if isinstance(loaded, list):
+                        current = [str(x) for x in loaded]
+                except (json.JSONDecodeError, TypeError):
+                    current = []
+            if loser_key not in current:
+                current.append(loser_key)
+            row['supersedes'] = json.dumps(current)
+            record.write_fact_file(row)
     except Exception:
         logger.debug('supersedes lineage write failed', exc_info=True)
 

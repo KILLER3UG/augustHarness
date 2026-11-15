@@ -514,7 +514,13 @@ def save_fact(
                 row['verified_at'] = utc_now_text()
             row['updated_at'] = now
 
-    record.write_fact_file(row)
+        # The file write belongs INSIDE the lock. The row was read and
+        # versioned under it, so writing after the lock released let a
+        # concurrent save_fact on the same key interleave and silently discard
+        # this update — measured: 12 of 24 concurrent saves to one key lost,
+        # and the if_updated_at guard admitted two writers where exactly one
+        # should win. The read above and this write are one atomic step.
+        record.write_fact_file(row)
     try:
         from app.services.memory_store.fact_retrieval import invalidate_fact_index
 
