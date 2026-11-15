@@ -10,10 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.json_narrowing import as_str
-from app.lib.local_api_auth import require_local_token
 from app.models.camel_base import CamelModel
 from app.services.tools import agent_registry
 from app.services.workbench.subagent import register_detached_session_task
@@ -73,21 +72,6 @@ class DmSend(CamelModel):
 
     message: str
     from_agent: str = ''
-
-
-class RoomCreate(CamelModel):
-    name: str
-    members: list[str]
-
-
-class RoomSend(CamelModel):
-    message: str
-    thread_id: int | None = None
-
-
-class RoomUpdate(CamelModel):
-    name: str | None = None
-    members: list[str] | None = None
 
 
 class AgentJob(CamelModel):
@@ -255,77 +239,6 @@ async def sendBotDm(agentId: str, body: DmSend):
         raise HTTPException(status_code=500, detail='could not enqueue the message')
     dm._spawn(dm.deliver(dm_id))
     return {'status': 'queued', 'dmId': dm_id, 'to': agentId, 'sessionId': to_session}
-
-
-@router.post('/rooms')
-async def createRoom(body: RoomCreate):
-    """Create a group room (2-6 member Bots deliberate in deterministic rounds)."""
-    from app.services.bot_mode import rooms
-
-    try:
-        room_id = rooms.create_room(body.name, body.members)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if room_id <= 0:
-        raise HTTPException(status_code=500, detail='could not create room')
-    return {'status': 'ok', 'roomId': room_id, 'name': body.name, 'members': body.members}
-
-
-@router.get('/rooms')
-async def listRooms():
-    from app.services.bot_mode import rooms
-
-    return {'rooms': rooms.list_rooms()}
-
-
-@router.get('/rooms/{room_id}')
-async def getRoom(room_id: int):
-    from app.services.bot_mode import rooms
-
-    room = rooms.get_room(room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail='no such room')
-    return {'room': room, 'log': rooms.room_log(room_id)}
-
-
-@router.post('/rooms/{room_id}/send')
-async def sendToRoom(room_id: int, body: RoomSend, _auth: bool = Depends(require_local_token)):
-    """Post a user message and run the deterministic round driver (≤3 rounds /
-    ≤10 messages, G-1 review rounds, G-2 escalation). Returns the summary +
-    the fresh log so the UI renders without a second fetch."""
-    from app.services.bot_mode import rooms
-
-    if rooms.get_room(room_id) is None:
-        raise HTTPException(status_code=404, detail='no such room')
-    message = (body.message or '').strip()
-    if not message:
-        raise HTTPException(status_code=400, detail='message is required')
-    summary = await rooms.run_room(room_id, message, thread_id=body.thread_id)
-    return {'summary': summary, 'log': rooms.room_log(room_id)}
-
-
-@router.delete('/rooms/{room_id}')
-async def deleteRoom(room_id: int):
-    from app.services.bot_mode import rooms
-
-    if not rooms.delete_room(room_id):
-        raise HTTPException(status_code=404, detail='no such room')
-    return {'status': 'ok', 'deleted': room_id}
-
-
-@router.patch('/rooms/{room_id}')
-async def updateRoom(room_id: int, body: RoomUpdate):
-    from app.services.bot_mode import rooms
-
-    if rooms.get_room(room_id) is None:
-        raise HTTPException(status_code=404, detail='no such room')
-    try:
-        updated = rooms.update_room(room_id, name=body.name, members=body.members)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if updated is None:
-        raise HTTPException(status_code=500, detail='could not update room')
-    return {'status': 'ok', 'room': updated}
 
 
 @router.delete('/bots/{agentId}')

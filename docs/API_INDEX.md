@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-453 routes across 378 paths,
+447 routes across 375 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -193,7 +193,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/harness/proposals/promotion/demote-scan` | Part 17 Phase E measurement: demote suggestions for promoted items that never triggered outside their origin … |
 | `POST` | `/api/harness/proposals/promotion/run` | Run the cross-project promotion judge now. |
 
-## Subagents & agents (56)
+## Subagents & agents (50)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -215,12 +215,6 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/agents/jobs` | query: 0 |
 | `POST` | `/api/agents/jobs` | Enqueue a job and start real sub-agent execution in the background. |
 | `GET` | `/api/agents/jobs/{job_id}` | path: job_id |
-| `GET` | `/api/agents/rooms` | Listrooms |
-| `POST` | `/api/agents/rooms` | Create a group room (2-6 member Bots deliberate in deterministic rounds). |
-| `GET` | `/api/agents/rooms/{room_id}` | path: room_id |
-| `PATCH` | `/api/agents/rooms/{room_id}` | path: room_id · body: JSON |
-| `DELETE` | `/api/agents/rooms/{room_id}` | path: room_id |
-| `POST` | `/api/agents/rooms/{room_id}/send` | Post a user message and run the deterministic round driver (≤3 rounds / ≤10 messages, G-1 review rounds, G-2 … |
 | `GET` | `/api/agents/tree` | Return a recursive agent tree (frontend AgentTree). |
 | `POST` | `/api/subagents/{taskId}/resume` | Re-run a finished/failed sub-agent with the same goal + agent role. |
 | `POST` | `/api/subagents/{taskId}/steer` | Queue a steering message for the worker's next round (does not interrupt). |
@@ -572,4 +566,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (453 operations).
+Generated from `docs/api/openapi.json` (447 operations).
