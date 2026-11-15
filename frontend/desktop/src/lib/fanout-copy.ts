@@ -32,13 +32,24 @@ export function fanoutRunningMessage(
  * "4 at a time" when the parent asked for 4 is noise.
  */
 export function fanoutDoneMessage(data: {
+  phase?: string;
   requested?: number;
   childrenStarted?: number;
   childrenPeak?: number;
   maxConcurrent?: number;
   requestedConcurrency?: number;
+  childrenCap?: number;
   reason?: string;
 }): string {
+  // A refused dispatch started nothing. "Ran 20 sub-agents" over zero workers
+  // would be the same lie the receipt exists to prevent, so say it was refused
+  // and name the cap that refused it.
+  if (data.phase === 'refused' || (data.childrenStarted === 0 && data.reason)) {
+    const asked = typeof data.requested === 'number' && data.requested > 0 ? `${data.requested} ` : '';
+    const cap = typeof data.childrenCap === 'number' && data.childrenCap > 0 ? ` (cap ${data.childrenCap})` : '';
+    return `Refused ${asked}sub-agents${cap}`;
+  }
+
   const started = data.childrenStarted;
   const peak = data.childrenPeak;
   const count =

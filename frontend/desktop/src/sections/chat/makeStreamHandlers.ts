@@ -1114,11 +1114,13 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       const id = seq !== undefined ? `fanout-${seq}` : undefined;
       const line = isClose
         ? fanoutDoneMessage({
+            phase,
             requested: data.requested,
             childrenStarted: data.childrenStarted,
             childrenPeak: data.childrenPeak,
             maxConcurrent: data.maxConcurrent,
             requestedConcurrency: data.requestedConcurrency,
+            childrenCap: data.childrenCap,
             reason: data.reason,
           })
         : fanoutRunningMessage(data.requested, data.maxConcurrent ?? data.requestedConcurrency);
