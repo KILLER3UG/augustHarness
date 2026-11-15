@@ -17,6 +17,7 @@ import logging
 
 from app.services import tool_registry
 from app.services.adviser_comments import import_adviser_comments
+from app.services.defense_prep import prepare_defense
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ async def _exportPaperDocxHandler(path: str, **kwargs: object) -> str:
 
 async def _importAdviserCommentsHandler(docx: str, workspace: str, **kwargs: object) -> str:
     result = import_adviser_comments(docx, workspace)
+    return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+
+async def _prepareDefenseHandler(path: str, **kwargs: object) -> str:
+    result = prepare_defense(path)
     return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
 
@@ -80,5 +86,26 @@ def register() -> None:
                 },
             },
             'required': ['docx', 'workspace'],
+        },
+    )
+
+    tool_registry.register(
+        'prepare_defense',
+        (
+            'Build defense materials for a Research Paper Studio paper: a slide deck '
+            '(exports/defense-slides.pptx) covering objectives, methodology, results and '
+            'conclusions, plus practice questions (drafts/defense-qa.md) derived from the '
+            'traceability matrix. Pass the paper workspace folder. Read-only over the drafts.'
+        ),
+        _prepareDefenseHandler,
+        {
+            'type': 'object',
+            'properties': {
+                'path': {
+                    'type': 'string',
+                    'description': 'The paper workspace folder to prepare the defense for.',
+                },
+            },
+            'required': ['path'],
         },
     )
