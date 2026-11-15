@@ -95,6 +95,11 @@ Configurable per school; APA 7 is the default citation style.
    set at once. *Done when `check_paper_citations` reports no unverified
    citation in any draft.*
 
+   When the user asks "where did this come from?", run `locate_claim` over the
+   workspace: it returns the source record and the matching passage behind a
+   claim, so the user can check the claim by hand. It is a retrieval aid — it
+   does not judge whether the source proves the claim.
+
 4. **Draft the traceability matrix.** Link each Chapter 1 objective to the
    Chapter 3 method that addresses it, the Chapter 4 result that answers it,
    and the Chapter 5 conclusion that states it. Write it as a markdown table
@@ -150,5 +155,7 @@ imperfect.
   record, and any that does not is flagged to the user.
 - `check_traceability` over the workspace reports no empty link and no row
   that has drifted from the chapter drafts.
+- `locate_claim` returns the source record and passage behind a claim, so the
+  user can check it by hand.
 - Every chapter file has a provenance sidecar.
 - The exported `.docx` matches the current chapter drafts.

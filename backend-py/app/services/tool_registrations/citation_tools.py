@@ -31,6 +31,7 @@ from typing import Any
 
 from app.services import tool_registry
 from app.services.citation_resolver import resolve_citation
+from app.services.claim_locator import locate_claim
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,12 @@ def _identifiers(text: str) -> list[str]:
     for match in _ARXIV_RE.finditer(text):
         _add(match.group(1))
     return found
+
+
+def _isReferenceList(rel: str) -> bool:
+    """True when a workspace-relative path is the paper's reference list."""
+    p = Path(rel)
+    return p.name.lower() == 'references.md' or 'reference' in p.parent.name.lower()
 
 
 def _markdownFiles(root: Path) -> list[Path]:
@@ -122,6 +129,19 @@ async def _checkPaperCitations(path: str, **kwargs: object) -> str:
         elif text.strip():
             noIdentifier.append(str(file.relative_to(root)))
 
+    # In-text vs reference-list cross-check. A citation named in the body that
+    # never appears in the reference list is an untraceable claim; a reference
+    # entry the body never cites is padding that inflates the bibliography.
+    # Both are matched on the resolved identifier (DOI / arXiv id), not on the
+    # author-year string, so a wording change cannot hide the mismatch.
+    referenceIds: set[str] = set()
+    bodyIds: set[str] = set()
+    for rel, ids in perFile.items():
+        target = referenceIds if _isReferenceList(rel) else bodyIds
+        target.update(i.lower().rstrip('.,;)') for i in ids)
+    inTextMissingFromRefs = sorted(bodyIds - referenceIds)
+    refsNeverCited = sorted(referenceIds - bodyIds)
+
     total = sum(len(ids) for ids in perFile.values())
     capped = total > _MAX_CHECKS
     verified: list[dict[str, Any]] = []
@@ -158,6 +178,8 @@ async def _checkPaperCitations(path: str, **kwargs: object) -> str:
             'filesScanned': len(files),
             'filesWithCitations': len(perFile),
             'noIdentifier': noIdentifier,
+            'inTextMissingFromRefs': inTextMissingFromRefs,
+            'refsNeverCited': refsNeverCited,
             'citationsChecked': checked,
             'verified': verified,
             'unverified': unverified,
@@ -179,6 +201,10 @@ async def _checkPaperCitations(path: str, **kwargs: object) -> str:
 async def _verifyCitationHandler(citation: str, **kwargs: object) -> str:
     record = await resolve_citation(citation)
     return json.dumps(record, ensure_ascii=False, indent=2, default=str)
+
+
+async def _locateClaimHandler(claim: str, path: str, **kwargs: object) -> str:
+    return json.dumps(locate_claim(claim, path), ensure_ascii=False, indent=2, default=str)
 
 
 def register() -> None:
@@ -226,5 +252,27 @@ def register() -> None:
                 },
             },
             'required': ['path'],
+        },
+    )
+
+    tool_registry.register(
+        'locate_claim',
+        (
+            'Show where a claim came from: find the source record and passage in the paper\'s '
+            'library that best match a claim, so the user can check it by hand. Pass the claim '
+            'text and the paper workspace folder. This is a retrieval aid — it shows where the '
+            'wording came from, not whether the source proves the claim.'
+        ),
+        _locateClaimHandler,
+        {
+            'type': 'object',
+            'properties': {
+                'claim': {'type': 'string', 'description': 'The claim to trace.'},
+                'path': {
+                    'type': 'string',
+                    'description': 'The paper workspace folder holding the sources/ library.',
+                },
+            },
+            'required': ['claim', 'path'],
         },
     )
