@@ -87,10 +87,13 @@ Configurable per school; APA 7 is the default citation style.
    citation block with a real identifier.*
 
 3. **Resolve every citation.** Each citation must resolve to a real record —
-   title, authors, year, and a DOI or URL — using free sources in this order:
-   Crossref, then OpenAlex, then arXiv. A citation that resolves nowhere is
-   flagged and **never cited**. Resolve at claim time, not from memory of the
-   reference. *Done when no unresolved citation remains in any draft.*
+   title, authors, year, and a DOI or URL. Verify it with `verify_citation`,
+   which resolves against free sources in this order: Crossref, then OpenAlex,
+   then arXiv. A citation that comes back unverified is flagged and **never
+   cited**. Resolve at claim time, not from memory of the reference. After
+   drafting, run `check_paper_citations` over the workspace to audit the whole
+   set at once. *Done when `check_paper_citations` reports no unverified
+   citation in any draft.*
 
 4. **Draft the traceability matrix.** Link each Chapter 1 objective to the
    Chapter 3 method that addresses it, the Chapter 4 result that answers it,
@@ -141,8 +144,9 @@ imperfect.
 
 ## Verification
 
-- Every citation in `drafts/` and the references list resolves to a real
-  record; the unresolved set is empty or explicitly flagged to the user.
+- `check_paper_citations` over the workspace reports no unverified citation;
+  every citation in `drafts/` and the references list resolves to a real
+  record, and any that does not is flagged to the user.
 - `traceability.md` has no dangling objective, method, result, or conclusion.
 - Every chapter file has a provenance sidecar.
 - The exported `.docx` matches the current chapter drafts.

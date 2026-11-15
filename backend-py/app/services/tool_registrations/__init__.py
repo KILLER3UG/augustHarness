@@ -18,6 +18,7 @@ def register_all() -> None:
         bot_tools,
         bulk_tools,
         circuit_tools,
+        citation_tools,
         decision_tools,
         desktop_tools,
         file_tools,
@@ -67,6 +68,9 @@ def register_all() -> None:
     bot_tools.register()
     skill_tools.register()
     bulk_tools.register()
+    # Citation integrity: verify_citation + check_paper_citations — the
+    # Research Paper Studio's "every citation exists" gate.
+    citation_tools.register()
     # The shared space: one folder every session and bot can read and write
     # (the rerun-proven collaboration surface) — see services/tools/shared_space.
     shared_tools.register()
