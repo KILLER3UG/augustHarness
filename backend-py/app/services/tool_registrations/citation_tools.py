@@ -106,6 +106,11 @@ async def _checkPaperCitations(path: str, **kwargs: object) -> str:
 
     files = _markdownFiles(root)
     perFile: dict[str, list[str]] = {}
+    # A source record with no DOI, arXiv id or URL cannot be checked at all —
+    # and that is exactly where an invented reference hides. Naming them is
+    # the point: an audit that stays silent about the unchecked would read as
+    # a clean bill of health.
+    noIdentifier: list[str] = []
     for file in files:
         try:
             text = file.read_text(encoding='utf-8', errors='replace')
@@ -114,6 +119,8 @@ async def _checkPaperCitations(path: str, **kwargs: object) -> str:
         ids = _identifiers(text)
         if ids:
             perFile[str(file.relative_to(root))] = ids
+        elif text.strip():
+            noIdentifier.append(str(file.relative_to(root)))
 
     total = sum(len(ids) for ids in perFile.values())
     capped = total > _MAX_CHECKS
@@ -150,6 +157,7 @@ async def _checkPaperCitations(path: str, **kwargs: object) -> str:
             'workspace': str(root),
             'filesScanned': len(files),
             'filesWithCitations': len(perFile),
+            'noIdentifier': noIdentifier,
             'citationsChecked': checked,
             'verified': verified,
             'unverified': unverified,
