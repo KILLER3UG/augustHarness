@@ -39,6 +39,7 @@ import { commandErrorOneLiner } from '@/lib/command-error-line';
 import { friendlyError } from '@/lib/error-copy';
 import { pathBasename } from '@/lib/tool-labels';
 import { recoveryMessage } from '@/lib/recovery-copy';
+import { fanoutDoneMessage, fanoutRunningMessage } from '@/lib/fanout-copy';
 import { pushBrowserAction } from '@/lib/browser-store';
 import { playReceiveChime } from '@/lib/chat-chime';
 import { OsNotifyService } from '@/lib/os-notify';
@@ -1095,6 +1096,42 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       // A 'system' block, like the warning notice: it persists with the
       // transcript, so the user still sees it after a reload.
       streamBlocks = appendBlockEvent(streamBlocks, { type: 'system', content: notice, id });
+      scheduleUpdate();
+    },
+    onSubagentFanout: (data, seq) => {
+      // Fleet-level receipt for one dispatch. The per-worker rows come from
+      // the subagentStart/Done stream; this single line carries the children
+      // cap, the APPLIED concurrency and the observed peak, so a dispatch that
+      // was bounded answers "why did only 6 of 8 lanes start" without a
+      // separate surface.
+      //
+      // `phase` separates the two emissions of one dispatch: `dispatched` at
+      // launch, `ended`/`refused` at the close. Only the CLOSE is persisted —
+      // the launch line would sit in the transcript forever claiming work is
+      // still running.
+      const phase = typeof data.phase === 'string' ? data.phase : '';
+      const isClose = phase === 'ended' || phase === 'refused';
+      const id = seq !== undefined ? `fanout-${seq}` : undefined;
+      const line = isClose
+        ? fanoutDoneMessage({
+            requested: data.requested,
+            childrenStarted: data.childrenStarted,
+            childrenPeak: data.childrenPeak,
+            maxConcurrent: data.maxConcurrent,
+            requestedConcurrency: data.requestedConcurrency,
+            reason: data.reason,
+          })
+        : fanoutRunningMessage(data.requested, data.maxConcurrent ?? data.requestedConcurrency);
+      // Durable only for the close: a re-delivered launch frame derives the
+      // same block id and is dropped by the guard below, so a cursor replay
+      // cannot duplicate the line.
+      if (!isClose) {
+        streamBlocks = appendBlockEvent(streamBlocks, { type: 'system', content: line });
+        scheduleUpdate();
+        return;
+      }
+      if (id && streamBlocks.some((b) => b.id === id)) return;
+      streamBlocks = appendBlockEvent(streamBlocks, { type: 'system', content: line, id });
       scheduleUpdate();
     },
     onContextPressure: ({ contextUsedPct, attentionPressure, totalTokens, maxContext, remainingTokens, promptCache, contextSections }) => {

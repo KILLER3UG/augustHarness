@@ -97,15 +97,6 @@ const SCHEMA_ONLY = new Map([
     'subagentTodos',
     'Carried on the subagent block; routed by apply-subagent-event, not by this switch.',
   ],
-  [
-    'subagentFanout',
-    'On the wire and documented in API_REFERENCE, and the backend persists it in the ' +
-      'session event log — where the per-turn `turn_outcomes` row has no column for the ' +
-      'children cap, the applied concurrency and the observed peak. The desktop ' +
-      'transcript renders the subagent LANE and not the fanout budget readout, so the ' +
-      'desktop UI drops it; that gap is tracked in docs/GAPS_AND_BUGS.md. An API ' +
-      'consumer reading the SSE stream still receives it.',
-  ],
 ]);
 
 function read(rel) {

@@ -410,6 +410,28 @@ export interface WorkbenchEventHandlers {
     proposalId: string;
     workBreakdown: Array<{ goal?: string; agentId?: string }>;
   }) => void;
+  /** Fleet-level receipt for one sub-agent dispatch. The per-worker rows are
+   *  `onSubagentStart`/`onSubagentDone`; this is the single line that carries
+   *  the children cap, the APPLIED concurrency and the observed peak, so a
+   *  dispatch that was silently bounded reads as a bound. Emitted at launch
+   *  (`dispatched`) and again at the close (`ended`/`refused`). */
+  onSubagentFanout?: (data: {
+    fanoutId?: string;
+    phase?: string;
+    reason?: string;
+    requested?: number;
+    childrenCap?: number;
+    requestedConcurrency?: number;
+    maxConcurrent?: number;
+    childrenStarted?: number;
+    childrenPeak?: number;
+    childrenFinished?: number;
+    roundBudget?: number;
+    roundsUsed?: number;
+    elapsedMs?: number;
+    /** SSE frame id — stable across a cursor replay, so a re-delivered frame
+     *  derives the same block id and the twin guard can drop it. */
+  }, seq?: number) => void;
   /** Text block emitted from inside a running sub-agent. Rendered as a
    *  `finalOutput` block inside the matching nested sub-agent block. */
   onSubagentText?: (data: {

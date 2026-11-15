@@ -288,6 +288,32 @@ export const WorkbenchSubagentProposedEventSchema = WorkbenchBaseSchema.extend({
   workBreakdown: z.array(z.object({ goal: z.string().optional(), agentId: z.string().optional() })).optional(),
 });
 
+/** Fleet-level receipt for one sub-agent dispatch.
+ *
+ *  The subagent LANE rows are per-worker; this is the one line that answers
+ *  "why did only 6 of the 8 lanes I asked for start". The backend emits it
+ *  twice per dispatch — `dispatched` at launch and `ended`/`refused` at the
+ *  close — and persists the terminal one in the session event log. The numbers
+ *  are the children cap, the APPLIED concurrency (what the process pool actually
+ *  ran), and the observed peak, so a dispatch that was silently bounded is
+ *  visible as a bound rather than as missing workers. */
+export const WorkbenchSubagentFanoutEventSchema = WorkbenchBaseSchema.extend({
+  type: z.literal('subagentFanout'),
+  fanoutId: z.string().optional(),
+  phase: z.string().optional(),
+  reason: z.string().optional(),
+  requested: z.number().optional(),
+  childrenCap: z.number().optional(),
+  requestedConcurrency: z.number().optional(),
+  maxConcurrent: z.number().optional(),
+  childrenStarted: z.number().optional(),
+  childrenPeak: z.number().optional(),
+  childrenFinished: z.number().optional(),
+  roundBudget: z.number().optional(),
+  roundsUsed: z.number().optional(),
+  elapsedMs: z.number().optional(),
+});
+
 /** Warning events (e.g. model fallback notices) — the backend sends only
  *  `message`; `kind` is optional for legacy payloads. */
 export const WorkbenchWarningEventSchema = WorkbenchBaseSchema.extend({
@@ -497,6 +523,7 @@ export const WorkbenchEventSchema = z.discriminatedUnion('type', [
   WorkbenchSubagentToolResultEventSchema,
   WorkbenchSubagentDoneEventSchema,
   WorkbenchSubagentProposedEventSchema,
+  WorkbenchSubagentFanoutEventSchema,
   WorkbenchWarningEventSchema,
   WorkbenchRecoveryEventSchema,
   WorkbenchUserMessageInjectedEventSchema,

@@ -235,6 +235,29 @@ export function dispatchWorkbenchEvent(
         workstream: typeof p?.workstream === 'string' ? p.workstream : undefined,
       });
       break;
+    case 'subagentFanout': {
+      // Fleet-level receipt for a whole dispatch. The per-worker rows come from
+      // `subagentStart`/`subagentDone`; this is the one line that carries the
+      // children cap, the APPLIED concurrency and the observed peak, so a
+      // dispatch that was silently bounded reads as a bound rather than as
+      // workers that never appeared. Emitted at launch and again at the close.
+      handlers.onSubagentFanout?.({
+        fanoutId: typeof p?.fanoutId === 'string' ? p.fanoutId : undefined,
+        phase: typeof p?.phase === 'string' ? p.phase : undefined,
+        reason: typeof p?.reason === 'string' ? p.reason : undefined,
+        requested: Number.isFinite(Number(p?.requested)) ? Number(p.requested) : undefined,
+        childrenCap: Number.isFinite(Number(p?.childrenCap)) ? Number(p.childrenCap) : undefined,
+        requestedConcurrency: Number.isFinite(Number(p?.requestedConcurrency)) ? Number(p.requestedConcurrency) : undefined,
+        maxConcurrent: Number.isFinite(Number(p?.maxConcurrent)) ? Number(p.maxConcurrent) : undefined,
+        childrenStarted: Number.isFinite(Number(p?.childrenStarted)) ? Number(p.childrenStarted) : undefined,
+        childrenPeak: Number.isFinite(Number(p?.childrenPeak)) ? Number(p.childrenPeak) : undefined,
+        childrenFinished: Number.isFinite(Number(p?.childrenFinished)) ? Number(p.childrenFinished) : undefined,
+        roundBudget: Number.isFinite(Number(p?.roundBudget)) ? Number(p.roundBudget) : undefined,
+        roundsUsed: Number.isFinite(Number(p?.roundsUsed)) ? Number(p.roundsUsed) : undefined,
+        elapsedMs: Number.isFinite(Number(p?.elapsedMs)) ? Number(p.elapsedMs) : undefined,
+      }, seq);
+      break;
+    }
     case 'subagentProposed':
       handlers.onSubagentProposed?.({
         proposalId: typeof p?.proposalId === 'string' ? p.proposalId : '',
