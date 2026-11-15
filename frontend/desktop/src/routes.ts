@@ -159,7 +159,13 @@ export const SECTION_ROUTES: readonly SectionRoute[] = [
         return React.createElement(LiveSurface, { onSwitchToChat: () => navigate('/') });
       }),
     ),
-    nav: true,
+    // Hidden from the rail and the command palette: voice/live is out of scope
+    // for v1 (docs/agent/product.md — the redesign's "out of scope" list). The
+    // ROUTE stays so an existing deep link or a stale bookmark resolves to the
+    // surface instead of the catch-all; the CODE is deleted in Phase 3, once no
+    // importer remains. Removing it from `nav` is the whole change — the
+    // palette and the rail both read SECTION_NAV_ITEMS.
+    nav: false,
   },
   {
     path: '/history',
