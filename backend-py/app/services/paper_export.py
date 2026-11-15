@@ -127,6 +127,33 @@ def _addMarkdown(document: Any, markdown: str) -> None:
         _addRuns(p, line.strip())
 
 
+def _addPageNumbers(document: Any) -> None:
+    """Put a centred page number in the footer of every page.
+
+    python-docx has no page-number API, so this writes the field by hand using
+    the ``fldChar`` begin/instrText/end form, which LibreOffice and Word both
+    render. (The simpler ``fldSimple`` spelling is not rendered by LibreOffice.)
+    """
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    for section in document.sections:
+        footer = section.footer
+        paragraph = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run()
+        begin = OxmlElement('w:fldChar')
+        begin.set(qn('w:fldCharType'), 'begin')
+        instr = OxmlElement('w:instrText')
+        instr.set(qn('xml:space'), 'preserve')
+        instr.text = 'PAGE'
+        end = OxmlElement('w:fldChar')
+        end.set(qn('w:fldCharType'), 'end')
+        for element in (begin, instr, end):
+            run._r.append(element)
+
+
 def export_paper_docx(workspace: str | Path) -> dict[str, Any]:
     """Export a paper workspace to ``exports/<slug>-<date>.docx``.
 
@@ -152,7 +179,14 @@ def export_paper_docx(workspace: str | Path) -> dict[str, Any]:
     skipped: list[str] = []
     word_count = 0
     for name in _CHAPTER_FILES:
+        # Section files live in drafts/, but references.md and appendices.md
+        # are commonly kept at the workspace root. Accept either, so a paper
+        # cannot be exported without its reference list.
         chapter = root / 'drafts' / name
+        if not chapter.is_file():
+            alt = root / name
+            if alt.is_file():
+                chapter = alt
         if not chapter.is_file():
             skipped.append(name)
             continue
@@ -170,6 +204,8 @@ def export_paper_docx(workspace: str | Path) -> dict[str, Any]:
             'no chapter files found under drafts/ — nothing to export. '
             'Expected at least one of: ' + ', '.join(_CHAPTER_FILES)
         )
+
+    _addPageNumbers(document)
 
     exports = root / 'exports'
     exports.mkdir(parents=True, exist_ok=True)
