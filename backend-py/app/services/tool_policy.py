@@ -122,6 +122,7 @@ _PROMPT_WRITE = frozenset({
     'forget',
     # Artifact creation — each writes a file into the workspace.
     'create_pptx', 'render_chart', 'render_video', 'draw_circuit',
+    'export_paper_docx',
     # Circuit workbench mutations — netlist files + rendered PNG output.
     'circuit_create_netlist', 'circuit_update_netlist', 'circuit_render_3d',
     # The board as a schematic element, written into a deck: the board's
@@ -219,6 +220,7 @@ _PROMPT_BUCKETS = {
 FILE_WRITING_TOOLS = frozenset({
     'board_flash',
     'create_pptx', 'pptx_comment', 'render_chart', 'render_video',
+    'export_paper_docx',
     'create_html_artifact', 'draw_circuit',
     'circuit_render_3d', 'circuit_render_logic', 'circuit_render_schematic',
     'firmware_stimulus', 'hdl_timing_diagram', 'kicad_render',

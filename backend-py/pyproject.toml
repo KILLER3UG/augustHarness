@@ -22,6 +22,8 @@ dependencies = [
     # circuit tools). imageio-ffmpeg bundles a static ffmpeg.exe so video
     # rendering works fully offline.
     "python-pptx>=1.0.0",
+    # Research Paper Studio: export a paper workspace to a formatted .docx.
+    "python-docx>=1.1.0",
     "Pillow>=11.0.0",
     # Artifact judge: PDF page rasterization (pypdfium2 ships its own
     # libpdfium — no system poppler/ghostscript needed).

@@ -21,6 +21,7 @@ def register_all() -> None:
         citation_tools,
         decision_tools,
         desktop_tools,
+        export_tools,
         file_tools,
         goal_tools,
         harness_tools,
@@ -75,6 +76,8 @@ def register_all() -> None:
     # Traceability: the matrix tying objectives to methods, results and
     # conclusions, checked against the chapter drafts.
     traceability_tools.register()
+    # Paper export: the workspace's markdown drafts become a formatted .docx.
+    export_tools.register()
     # The shared space: one folder every session and bot can read and write
     # (the rerun-proven collaboration surface) — see services/tools/shared_space.
     shared_tools.register()
