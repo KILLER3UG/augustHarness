@@ -97,9 +97,10 @@ Configurable per school; APA 7 is the default citation style.
 
 4. **Draft the traceability matrix.** Link each Chapter 1 objective to the
    Chapter 3 method that addresses it, the Chapter 4 result that answers it,
-   and the Chapter 5 conclusion that states it. Run the consistency check and
-   fix mismatches before drafting prose. *Done when no objective, method,
-   result, or conclusion is left dangling.*
+   and the Chapter 5 conclusion that states it. Write it as a markdown table
+   in `traceability.md`, one row per objective, then run `check_traceability`
+   over the workspace and fix what it flags. *Done when `check_traceability`
+   reports no empty link and no row that has drifted from the chapters.*
 
 5. **Draft chapter by chapter.** Write one chapter at a time from
    `paper-state.md` plus the relevant `sources/` records — never the whole
@@ -147,6 +148,7 @@ imperfect.
 - `check_paper_citations` over the workspace reports no unverified citation;
   every citation in `drafts/` and the references list resolves to a real
   record, and any that does not is flagged to the user.
-- `traceability.md` has no dangling objective, method, result, or conclusion.
+- `check_traceability` over the workspace reports no empty link and no row
+  that has drifted from the chapter drafts.
 - Every chapter file has a provenance sidecar.
 - The exported `.docx` matches the current chapter drafts.

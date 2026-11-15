@@ -33,6 +33,7 @@ def register_all() -> None:
         shared_tools,
         skill_tools,
         system_tools,
+        traceability_tools,
         web_tools,
     )
     from app.services.tools import tool_bridges
@@ -71,6 +72,9 @@ def register_all() -> None:
     # Citation integrity: verify_citation + check_paper_citations — the
     # Research Paper Studio's "every citation exists" gate.
     citation_tools.register()
+    # Traceability: the matrix tying objectives to methods, results and
+    # conclusions, checked against the chapter drafts.
+    traceability_tools.register()
     # The shared space: one folder every session and bot can read and write
     # (the rerun-proven collaboration surface) — see services/tools/shared_space.
     shared_tools.register()
