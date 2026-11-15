@@ -1,402 +1,94 @@
-/* ── Bots rail — roster rows with identicon avatars + presence ──────── */
-/* Bot Mode Phase A: one row per Bot (avatar + title + last activity),
- * opening the Bot's canonical chat. Vertical section in the session
- * sidebar (no horizontal pill tabs). Hidden Bots stay accessible via
- * the eye toggle in the row menu. */
-
-import { useMemo, useState, useEffect, useLayoutEffect, useRef, useId } from 'react';
-import { BackdropEscape } from '@/components/overlays/BackdropEscape';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { motion, AnimatePresence } from 'framer-motion';
-import { EyeOff, Eye, EllipsisVertical, Plus, Trash2, Copy, Shuffle, Search, Bell, BellOff, Users, X, Bot as BotIcon } from 'lucide-react';
+import { Bot as BotIcon, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { cn } from '@/lib/utils';
-import { sessionRow } from '@/lib/motion';
-import { botAvatarSvg } from '@/lib/bot-avatar';
-import { BotCreateModal } from '@/components/sidebar/BotCreateModal';
-import { RoomView } from '@/components/sidebar/RoomView';
-import { Backdrop } from '@/components/overlays/Backdrop';
-import { QueryErrorState } from '@/components/QueryErrorState';
 import {
-  createBot,
   deleteBot,
   ensureBotChat,
   listBots,
-  listRooms,
   updateBotUiMeta,
   type Bot,
-  type Room,
-} from '@/api/api-client';
-import { getWorkbenchSessions } from '@/api/workbench';
-import { useActiveChatStreamsStore } from '@/store/chat-active-streams';
+} from '@/api/api-client/bots';
+import { composerSeed } from '@/store/composer-seed';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
-/** A Bot is "active now" when its chat wrote within 90 s. */
-const ACTIVE_WINDOW_MS = 90_000;
+/**
+ * BotsRail — the whole bot surface: a compact list, and a detail view.
+ *
+ * DESIGN (the "agent acts, user supervises" principle)
+ * ----------------------------------------------------
+ * Bots are a TOOLABLE concept. The orchestrator creates, configures and retires
+ * them through `create_bot` / `update_bot` / `retire_bot`, and the turn shows a
+ * receipt card (BotReceiptChip). So this surface is no longer where a user BUILDS
+ * a bot — it is where they SEE what exists, OPEN one, and make a small correction
+ * when the agent got a detail wrong.
+ *
+ * What was removed, and why:
+ *   - the create modal (BotCreateModal, 536 lines, with its avatar picker,
+ *     skills picker, memory-scope and workspace fields) — replaced by one
+ *     "Ask the agent to create a bot" action that seeds the composer. Every field
+ *     it collected is now something the agent asks about in conversation, which
+ *     is the point of the redesign.
+ *   - group rooms (the Rooms section, the rooms modal, the New Group Chat menu
+ *     item) — multi-bot rooms were rejected by the owner; they are deleted, not
+ *     hidden.
+ *   - the activity mute toggle and the "Active now" strip — notification chrome
+ *     the chat itself already covers.
+ *   - the search box — a roster of a handful of bots does not need search; the
+ *     rail is a list you can read.
+ *   - the row menu (hide / copy handle / randomise avatar / duplicate / delete)
+ *     and the profile card that hosted it — the detail view carries the actions
+ *     that matter, and the rest was chrome for a generated face.
+ *
+ * What stayed:
+ *   - the list, one row per bot, with the canonical chat's last-message preview
+ *     and relative time (the two facts that help you choose a row).
+ *   - a detail view: name, role, tools, and the actions.
+ */
+
+/** The composer prompt that replaces the manual creation flow. */
+const ASK_AGENT_PROMPT =
+  'Create a bot for me. Ask me what you need — name, what it should do, how it should work, ' +
+  'and which tools it needs — then create it with create_bot.';
 
 function timeAgo(iso?: string | null): string {
   if (!iso) return '';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return 'now';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
-  return `${Math.floor(ms / 86_400_000)}d ago`;
-}
-
-function isRecent(iso?: string | null): boolean {
-  if (!iso) return false;
-  return Date.now() - new Date(iso).getTime() < ACTIVE_WINDOW_MS;
-}
-function BotAvatar({ bot, size = 22 }: { bot: Bot; size?: number }) {
-  // Identicon per name; uiMeta.avatar may be a bare salt string (legacy) or
-  // a {salt, locked, source} descriptor. Accept both so reloads
-  // of pre-F2 bots keep their face.
-  const avatar = bot.uiMeta?.avatar;
-  const salt = typeof avatar === 'string' ? avatar : avatar?.salt || '';
-  const html = botAvatarSvg(bot.name, salt).replace(/width="64" height="64"/, '');
-  return (
-    <span
-      className="shrink-0 rounded-full overflow-hidden ring-1 ring-white/10"
-      style={{ width: size, height: size }}
-      aria-hidden
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-}
-
-interface BotRowMenuProps {
-  bot: Bot;
-  onDeleted: () => void;
-}
-
-function BotRowMenu({ bot, onDeleted }: BotRowMenuProps) {
-  const [open, setOpen] = useState(false);
-  const queryClient = useQueryClient();
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const menuId = useId();
-
-  const toggleHidden = useMutation({
-    mutationFn: (hidden: boolean) => updateBotUiMeta(bot.id, { hidden }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['bots'] }),
-    onError: () => toast.error('Could not update Bot'),
-  });
-
-  // Randomize = new salt (deterministic per salt → same face until randomized
-  // again). The roster never reorders; only the face changes.
-  const randomize = useMutation({
-    mutationFn: () =>
-      updateBotUiMeta(bot.id, {
-        avatar: {
-          salt: Math.random().toString(36).slice(2, 8),
-          locked: true,
-          source: 'shuffle',
-        },
-      }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['bots'] }),
-    onError: () => toast.error('Could not randomize avatar'),
-  });
-
-  // Duplicate = full clone of the record + persona (plan: "full clone of
-  // record + persona + skills refs"). cloneFrom copies role/model/provider/
-  // toolsets server-side; canonical chat is created on birth (create_bot).
-  const duplicate = useMutation({
-    mutationFn: () =>
-      createBot({
-        name: `${bot.name}-copy`,
-        title: `${bot.uiMeta?.title || bot.name} (copy)`,
-        description: bot.description || '',
-        cloneFrom: bot.id,
-      }),
-    onSuccess: () => {
-      toast.success('Bot duplicated');
-      void queryClient.invalidateQueries({ queryKey: ['bots'] });
-      void queryClient.invalidateQueries({ queryKey: ['bots', 'chats'] });
-    },
-    onError: () => toast.error('Could not duplicate Bot'),
-  });
-
-  const remove = useMutation({
-    mutationFn: () => deleteBot(bot.id),
-    onSuccess: () => {
-      toast.success(`Bot "${bot.uiMeta?.title || bot.name}" deleted`);
-      onDeleted();
-      void queryClient.invalidateQueries({ queryKey: ['bots'] });
-    },
-    onError: () => toast.error('Could not delete Bot'),
-  });
-
-  const closeMenu = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    const previouslyFocused = document.activeElement;
-    window.queueMicrotask(() => {
-      menuRef.current
-        ?.querySelector<HTMLElement>('[role="menuitem"]')
-        ?.focus();
-    });
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setOpen(false);
-        if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
-        return;
-      }
-      if (e.key === "ArrowDown" && document.activeElement === triggerRef.current) {
-        e.preventDefault();
-        setOpen(true);
-        return;
-      }
-      if (!menuRef.current?.contains(e.target as Node)) return;
-      if (!["ArrowDown", "ArrowUp"].includes(e.key)) return;
-      e.preventDefault();
-      const items = Array.from(
-        menuRef.current.querySelectorAll<HTMLElement>('[role="menuitem"]'),
-      );
-      if (items.length === 0) return;
-      const currentIndex = items.indexOf(document.activeElement as HTMLElement);
-      const nextIndex = e.key === "ArrowDown"
-        ? (currentIndex + 1 + items.length) % items.length
-        : (currentIndex - 1 + items.length) % items.length;
-      items[nextIndex]?.focus();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div className="relative focus-within:opacity-100">
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((v) => !v);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            setOpen(true);
-          }
-        }}
-        className="rounded p-0.5 text-tier-2 opacity-100 transition hover:text-tier-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-        aria-label="Bot actions"
-        aria-expanded={open}
-        aria-haspopup="menu"
-        aria-controls={menuId}
-      >
-        <EllipsisVertical className="size-3" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={closeMenu} />
-          <div
-            id={menuId}
-            ref={menuRef}
-            role="menu"
-            className="absolute right-0 top-6 z-50 w-36 rounded-md border border-border/50 bg-popover py-1 text-xs shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                toggleHidden.mutate(!bot.uiMeta?.hidden);
-                closeMenu();
-              }}
-              className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-foreground/90 hover:bg-white/5"
-            >
-              {bot.uiMeta?.hidden ? <Eye className="size-3" /> : <EyeOff className="size-3" />}
-              {bot.uiMeta?.hidden ? 'Unhide Bot' : 'Hide Bot'}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                void navigator.clipboard?.writeText(bot.name).then(() =>
-                  toast.success('Bot name copied'),
-                );
-                closeMenu();
-              }}
-              className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-foreground/90 hover:bg-white/5"
-            >
-              <Copy className="size-3" />
-              Copy @handle
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                randomize.mutate();
-                closeMenu();
-              }}
-              className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-foreground/90 hover:bg-white/5"
-              title="New deterministic face for this Bot"
-            >
-              <Shuffle className="size-3" />
-              Randomize avatar
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                duplicate.mutate();
-                closeMenu();
-              }}
-              className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-foreground/90 hover:bg-white/5"
-            >
-              <Copy className="size-3" />
-              Duplicate Bot
-            </button>
-            <div className="my-1 h-px bg-border/40" />
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                remove.mutate();
-                closeMenu();
-              }}
-              className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-destructive hover:bg-white/5"
-            >
-              <Trash2 className="size-3" />
-              Delete Bot
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-interface BotRowProps {
-  bot: Bot;
-  sessionId?: string;
-  active: boolean;
-  onOpenChat: (bot: Bot) => void;
-  onOpenProfile: (bot: Bot) => void;
-  /** Summary of the Bot's canonical chat (preview + updatedAt for presence). */
-  summary?: { lastPreview?: string; updatedAt?: string | null };
-}
-
-function BotRow({ bot, sessionId, active, onOpenProfile, summary }: BotRowProps) {
-  const streaming = useActiveChatStreamsStore((s) => (sessionId ? s.active[sessionId] : undefined));
-  const title = bot.uiMeta?.title || bot.name;
-  const recent = isRecent(summary?.updatedAt);
-  return (
-    <motion.div
-      layout
-      variants={sessionRow}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className={cn(
-        'august-bot-row group relative rounded-md',
-        active ? 'bg-white/[0.05]' : 'hover:bg-white/[0.03]',
-      )}
-    >
-      <button
-        type="button"
-        onClick={() => onOpenProfile(bot)}
-        className="flex w-full items-center gap-2 px-2 py-1 text-left min-w-0"
-        title={bot.description || title}
-        data-testid={`bot-row-${bot.name}`}
-      >
-        <span className="relative">
-          <BotAvatar bot={bot} />
-          {(streaming || recent) && (
-            <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-success animate-pulse" />
-          )}
-        </span>
-        <span className="flex-1 min-w-0 flex flex-col">
-          <span className="flex items-baseline justify-between gap-1">
-            <span
-              className={cn(
-                'truncate text-xs',
-                bot.uiMeta?.hidden ? 'text-tier-3 italic' : 'text-tier-1',
-              )}
-            >
-              {title}
-            </span>
-            {summary?.updatedAt && (
-              <span className="shrink-0 text-xs text-tier-2 tabular-nums">
-                {timeAgo(summary.updatedAt)}
-              </span>
-            )}
-          </span>
-          {summary?.lastPreview ? (
-            <span className="truncate text-xs text-tier-3">
-              {summary.lastPreview}
-            </span>
-          ) : null}
-        </span>
-      </button>
-      <span className="absolute right-1 top-1/2 -translate-y-1/2">
-        <BotRowMenu bot={bot} onDeleted={() => undefined} />
-      </span>
-    </motion.div>
-  );
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (secs < 60) return 'now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.round(hrs / 24);
+  return `${days}d`;
 }
 
 export interface BotsRailProps {
   /** Open a workbench session by id (the canonical Bot Chat). */
   onOpenSession: (sessionId: string) => void;
   activeSessionId?: string;
-  /** Optional: open the group-room creator (New Group Chat menu item). */
-  onNewGroupChat?: () => void;
+  /** Navigate to the chat surface so a seeded prompt is visible and sendable. */
+  onGoToChat?: () => void;
 }
 
-/** Vertical roster section: every Bot, hidden ones dimmed, presence dots live. */
-export function BotsRail({ onOpenSession, activeSessionId, onNewGroupChat }: BotsRailProps) {
-  // Rail chrome — search, notification mute, "+" menu; F2: the
-  // New Bot flow is a modal with an avatar picker (replaces the inline form).
-  const [search, setSearch] = useState('');
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [showModal, setShowModal] = useState(false);
-  const [showRooms, setShowRooms] = useState(false);
-  const [profileBot, setProfileBot] = useState<Bot | null>(null);
-  const [muted, setMuted] = useState(() => {
-    try {
-      return localStorage.getItem('august.bots.muted') === '1';
-    } catch {
-      return false;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem('august.bots.muted', muted ? '1' : '0');
-    } catch {
-      /* private mode */
-    }
-  }, [muted]);
+export function BotsRail({ onOpenSession, activeSessionId, onGoToChat }: BotsRailProps) {
+  const qc = useQueryClient();
+  const [detail, setDetail] = useState<Bot | null>(null);
 
-  const botsQuery = useQuery({
-    queryKey: ['bots'],
-    queryFn: listBots,
-  });
-  const bots = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (botsQuery.data?.bots ?? [])
-      .slice()
-      .sort((a, b) => {
+  const botsQuery = useQuery({ queryKey: ['bots'], queryFn: listBots });
+  const bots = useMemo(
+    () =>
+      (botsQuery.data?.bots ?? []).slice().sort((a, b) => {
         const ah = a.uiMeta?.hidden ? 1 : 0;
         const bh = b.uiMeta?.hidden ? 1 : 0;
         return ah - bh;
-      })
-      .filter(
-        (b) =>
-          !q ||
-          b.name.toLowerCase().includes(q) ||
-          (b.uiMeta?.title || '').toLowerCase().includes(q) ||
-          (b.description || '').toLowerCase().includes(q),
-      );
-  }, [botsQuery.data, search]);
+      }),
+    [botsQuery.data],
+  );
 
-  // Resolve each Bot's canonical chat id once (for presence + open).
   const chatsQuery = useQuery({
     queryKey: ['bots', 'chats'],
     queryFn: async () => {
@@ -407,7 +99,7 @@ export function BotsRail({ onOpenSession, activeSessionId, onNewGroupChat }: Bot
             const chat = await ensureBotChat(bot.id);
             out[bot.id] = chat.sessionId;
           } catch {
-            /* Bot without a chat yet — row still renders */
+            /* a bot with no chat yet still renders as a row */
           }
         }),
       );
@@ -418,26 +110,10 @@ export function BotsRail({ onOpenSession, activeSessionId, onNewGroupChat }: Bot
   });
   const botSessionIds = chatsQuery.data ?? {};
 
-  const openChat = async (bot: Bot) => {
-    try {
-      const chat = await ensureBotChat(bot.id);
-      onOpenSession(chat.sessionId);
-    } catch {
-      toast.error('Could not open Bot Chat');
-    }
-  };
-
-  const anyBots = (botsQuery.data?.bots?.length ?? 0) > 0;
-  // A failed roster fetch is not an empty roster — the rail used to render
-  // "No Bots yet — create one", which both lied and nudged the user toward
-  // creating a duplicate of a Bot that already exists.
-  const rosterFailed = botsQuery.isError && !botsQuery.data;
-
-  // Session summaries power the roster rows (last-message preview +
-  // timestamp) and the "Active now" strip (updatedAt within 90 s).
   const summariesQ = useQuery({
     queryKey: ['bots', 'summaries'],
     queryFn: async () => {
+      const { getWorkbenchSessions } = await import('@/api/workbench');
       const sessions = await getWorkbenchSessions();
       const out: Record<string, { lastPreview?: string; updatedAt?: string | null }> = {};
       for (const s of sessions) {
@@ -447,323 +123,261 @@ export function BotsRail({ onOpenSession, activeSessionId, onNewGroupChat }: Bot
       }
       return out;
     },
-    enabled: anyBots,
+    enabled: (botsQuery.data?.bots?.length ?? 0) > 0,
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
   const summaries = summariesQ.data ?? {};
 
-  // Rooms render as rail rows mixed with Bots. The "open rooms
-  // modal" button (Users icon) stays as a secondary entry, but the canonical
-  // way to see a room is now its rail row.
-  const roomsQuery = useQuery({
-    queryKey: ['bot-rooms'],
-    queryFn: () => listRooms().then((r) => r.rooms),
-    refetchInterval: 30_000,
-    staleTime: 15_000,
-  });
-  const rooms = (roomsQuery.data ?? []) as Room[];
+  const openChat = async (bot: Bot) => {
+    try {
+      const chat = await ensureBotChat(bot.id);
+      onOpenSession(chat.sessionId);
+    } catch {
+      toast.error('Could not open this bot’s chat');
+    }
+  };
 
-  // "Active now": Bots that wrote within the window, in roster order —
-  // the strip never reorders the roster itself.
-  const activeNow = bots.filter(
-    (b) => !b.uiMeta?.hidden && isRecent(summaries[b.id]?.updatedAt),
-  );
+  /** The replacement for the create modal: seed the composer and go to chat. */
+  const askAgent = () => {
+    composerSeed.set(ASK_AGENT_PROMPT);
+    onGoToChat?.();
+  };
+
+  const anyBots = (botsQuery.data?.bots?.length ?? 0) > 0;
+  const rosterFailed = botsQuery.isError && !botsQuery.data;
 
   return (
     <div className="august-bots-rail">
       <div className="flex items-center justify-between px-2 mb-1">
         <div className="flex items-center gap-1">
           <h3 className="text-xs text-tier-2 font-medium">Bots</h3>
-          {anyBots && (
-            <span className="text-xs text-tier-2 tabular-nums">
-              {botsQuery.data?.bots.length ?? 0}
-            </span>
-          )}
+          {anyBots && <span className="text-xs text-tier-2 tabular-nums">{bots.length}</span>}
         </div>
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => setShowRooms(true)}
-            className="p-0.5 rounded text-tier-2 hover:text-tier-1 transition-colors hover:bg-white/[0.03]"
-            title="Group rooms"
-            aria-label="Group rooms"
-            data-testid="bots-open-rooms"
-          >
-            <Users className="size-3" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setMuted((v) => !v)}
-            className="p-0.5 rounded text-tier-2 hover:text-tier-1 transition-colors hover:bg-white/[0.03]"
-            title={muted ? 'Unmute Bot activity' : 'Mute Bot activity'}
-            aria-label={muted ? 'Unmute Bot activity' : 'Mute Bot activity'}
-            aria-pressed={muted}
-          >
-            {muted ? <BellOff className="size-3" /> : <Bell className="size-3" />}
-          </button>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setMenuOpen((v) => !v)}
-              className="p-0.5 rounded text-tier-2 hover:text-tier-1 transition-colors hover:bg-white/[0.03]"
-              title="New"
-              aria-label="New"
-              aria-expanded={menuOpen}
-            >
-              <Plus className="size-3" />
-            </button>
-            {menuOpen && (
-              <>
-                <BackdropEscape onEscape={() => setMenuOpen(false)} />
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div
-                  role="menu"
-                  className="absolute right-0 top-5 z-50 w-40 rounded-md border border-border/50 bg-popover py-1 text-xs shadow-2xl"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setShowModal(true);
-                    }}
-                    className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-foreground/90 hover:bg-white/5"
-                    data-testid="bots-menu-new-bot"
-                  >
-                    <BotIcon className="size-3" /> New Bot
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      if (onNewGroupChat) onNewGroupChat();
-                      else setShowRooms(true);
-                    }}
-                    className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-foreground/90 hover:bg-white/5"
-                    data-testid="bots-menu-new-group"
-                  >
-                    <Users className="size-3" /> New Group Chat
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+        {/* One action, and it is the agent-driven one. */}
+        <button
+          type="button"
+          onClick={askAgent}
+          className="rounded p-0.5 text-tier-2 transition-colors hover:bg-white/[0.03] hover:text-tier-1"
+          title="Ask the agent to create a bot"
+          aria-label="Ask the agent to create a bot"
+          data-testid="bots-ask-agent"
+        >
+          <Plus className="size-3" />
+        </button>
       </div>
 
-      {anyBots && (
-        <div className="px-1.5 pb-1">
-          <div className="flex items-center gap-1.5 rounded-md border border-sidebar-border/50 bg-white/[0.03] px-2 py-1">
-            <Search className="size-3 shrink-0 text-tier-3" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search bots…"
-              aria-label="Search bots"
-              className="min-w-0 flex-1 bg-transparent text-xs text-sidebar-foreground/80 outline-none placeholder:text-tier-3"
-            />
-          </div>
-        </div>
-      )}
-
-      {!muted && activeNow.length > 0 && (
-        <div
-          className="mb-1 flex flex-wrap items-center gap-1 px-1.5"
-          data-testid="bots-active-now"
-        >
-          <span className="text-xs uppercase tracking-wide text-success-fg">
-            Active now
-          </span>
-          {activeNow.map((b) => (
-            <button
-              key={b.id}
-              type="button"
-              onClick={() => void openChat(b)}
-              className="rounded-full border border-success/25 bg-success/10 px-1.5 py-0.5 text-xs text-success-fg hover:bg-success/20 transition"
-              title={`Open ${b.uiMeta?.title || b.name}`}
-            >
-              {b.uiMeta?.title || b.name}
-            </button>
-          ))}
-        </div>
-      )}
-
       <div className="space-y-0.5">
-        <AnimatePresence initial={false} mode="popLayout">
-          {bots.map((bot) => (
-            <BotRow
+        {bots.map((bot) => {
+          const title = bot.uiMeta?.title || bot.name;
+          const sessionId = botSessionIds[bot.id];
+          const active = !!sessionId && sessionId === activeSessionId;
+          const summary = summaries[bot.id];
+          return (
+            <div
               key={bot.id}
-              bot={bot}
-              sessionId={botSessionIds[bot.id]}
-              active={!!botSessionIds[bot.id] && botSessionIds[bot.id] === activeSessionId}
-              onOpenChat={openChat}
-              onOpenProfile={setProfileBot}
-              summary={summaries[bot.id]}
-            />
-          ))}
-        </AnimatePresence>
+              className={cn(
+                'august-bot-row group relative rounded-md',
+                active ? 'bg-white/[0.05]' : 'hover:bg-white/[0.03]',
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => setDetail(bot)}
+                onDoubleClick={() => void openChat(bot)}
+                className="flex w-full min-w-0 items-center gap-2 px-2 py-1 text-left"
+                title={bot.description || title}
+                data-testid={`bot-row-${bot.name}`}
+              >
+                <BotIcon className="size-3 shrink-0 text-muted-foreground/70" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-baseline justify-between gap-1">
+                    <span
+                      className={cn(
+                        'truncate text-xs',
+                        bot.uiMeta?.hidden ? 'text-tier-3 italic' : 'text-tier-1',
+                      )}
+                    >
+                      {title}
+                    </span>
+                    {summary?.updatedAt && (
+                      <span className="shrink-0 text-xs text-tier-2 tabular-nums">
+                        {timeAgo(summary.updatedAt)}
+                      </span>
+                    )}
+                  </span>
+                  {summary?.lastPreview && (
+                    <span className="block truncate text-xs text-tier-3">
+                      {summary.lastPreview}
+                    </span>
+                  )}
+                </span>
+              </button>
+            </div>
+          );
+        })}
+
         {rosterFailed ? (
-          <div className="px-1.5">
-            <QueryErrorState
-              compact
-              error={botsQuery.error}
-              onRetry={() => void botsQuery.refetch()}
-              retrying={botsQuery.isRefetching}
-              title="Couldn't load Bots"
-              note="The roster request failed — your Bots may still exist."
-            />
-          </div>
+          <p className="px-2 py-1 text-xs text-tier-3 italic">
+            Couldn’t load the roster — your bots may still exist.
+          </p>
         ) : !anyBots ? (
-          <p className="px-2 py-1 text-xs text-tier-3 italic">
-            No Bots yet — create one to give it a forever-chat.
-          </p>
-        ) : bots.length === 0 ? (
-          <p className="px-2 py-1 text-xs text-tier-3 italic">
-            No Bots match “{search}”.
-          </p>
+          <button
+            type="button"
+            onClick={askAgent}
+            className="w-full px-2 py-1 text-left text-xs text-tier-3 italic hover:text-tier-2"
+            data-testid="bots-empty-ask"
+          >
+            No bots yet — ask the agent to make one.
+          </button>
         ) : null}
       </div>
 
-      {/* F3: rooms as rail rows, mixed with Bots. Clicking opens the existing
-          room view (kept as a Backdrop with full RoomView — the "two-pane
-          page" the plan says goes away is the standalone page, not the room
-          detail; the rail row is now the canonical entry point). */}
-      {rooms.length > 0 && (
-        <div className="mt-1.5 space-y-0.5" data-testid="bots-rooms-in-rail">
-          <div className="flex items-center justify-between px-2 pt-1">
-            <h3 className="text-xs text-tier-2 font-medium">Rooms</h3>
-            <span className="text-xs text-tier-2 tabular-nums">
-              {rooms.length}
-            </span>
-          </div>
-          <AnimatePresence initial={false} mode="popLayout">
-            {rooms.map((room) => (
-              <button
-                key={room.id}
-                type="button"
-                onClick={() => setShowRooms(true)}
-                className="group flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-white/[0.03]"
-                data-testid={`bots-room-row-${room.id}`}
-                title={room.name}
-              >
-                <Users className="size-3 shrink-0 text-muted-foreground/60" />
-                <span className="min-w-0 flex-1 truncate text-xs text-foreground/85">
-                  {room.name}
-                </span>
-                <span className="shrink-0 text-xs text-tier-2 tabular-nums">
-                  {room.members.length}
-                </span>
-                {room.needs_you && (
-                  <span
-                    className="ml-1 inline-block size-1.5 shrink-0 rounded-full bg-warning"
-                    title="needs you"
-                    aria-label="needs you"
-                  />
-                )}
-              </button>
-            ))}
-          </AnimatePresence>
-        </div>
+      {detail && (
+        <BotDetail
+          bot={detail}
+          sessionId={botSessionIds[detail.id]}
+          onClose={() => setDetail(null)}
+          onOpenChat={openChat}
+        />
       )}
+    </div>
+  );
+}
 
-      {showModal && <BotCreateModal onClose={() => setShowModal(false)} />}
+/**
+ * BotDetail — the minimal edit surface: name, role, tools, retire.
+ *
+ * Deliberately not a form for every registry field. The two things a user
+ * actually corrects are the title (what it is called) and whether it should exist
+ * at all. Tools are read-only here: a bot can never be granted more than the
+ * agent that made it (the ceiling lives in bot_tools.py), so an editable list
+ * would imply a freedom that does not exist.
+ */
+function BotDetail({
+  bot,
+  sessionId,
+  onClose,
+  onOpenChat,
+}: {
+  bot: Bot;
+  sessionId?: string;
+  onClose: () => void;
+  onOpenChat: (bot: Bot) => void | Promise<void>;
+}) {
+  const qc = useQueryClient();
+  const [title, setTitle] = useState(bot.uiMeta?.title || bot.name);
 
-      {profileBot && (
-        /* `trapFocus`: this modal claims `aria-modal="true"`, so Tab must
-           stay inside it. */
-        <Backdrop onClose={() => setProfileBot(null)} className="z-[60]" trapFocus>
-          <div
-            className="relative w-[min(94vw,420px)] rounded-2xl border border-border/70 bg-card p-6 text-center shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label={profileBot.uiMeta?.title || profileBot.name}
-            data-testid="bot-profile"
-          >
-            <button
-              type="button"
-              onClick={() => setProfileBot(null)}
-              className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
-              aria-label="Close"
-            >
-              <X className="size-4" />
-            </button>
-            <div className="mx-auto mb-3 flex justify-center">
-              <BotAvatar bot={profileBot} size={72} />
-            </div>
-            <h2 className="text-lg font-semibold text-foreground">
-              {profileBot.uiMeta?.title || profileBot.name}
+  const save = useMutation({
+    mutationFn: () => updateBotUiMeta(bot.id, { title: title.trim() || bot.name }),
+    onSuccess: () => {
+      toast.success('Bot updated');
+      void qc.invalidateQueries({ queryKey: ['bots'] });
+      onClose();
+    },
+    onError: () => toast.error('Could not update the bot'),
+  });
+
+  const retire = useMutation({
+    mutationFn: () => deleteBot(bot.id),
+    onSuccess: () => {
+      toast.success('Bot retired');
+      void qc.invalidateQueries({ queryKey: ['bots'] });
+      onClose();
+    },
+    onError: () => toast.error('Could not retire the bot'),
+  });
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={bot.uiMeta?.title || bot.name}
+      data-testid="bot-detail"
+      onClick={onClose}
+    >
+      <div
+        className="w-[min(94vw,420px)] rounded-2xl border border-border/70 bg-card p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold text-foreground">
+              {bot.uiMeta?.title || bot.name}
             </h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Bot · @{profileBot.name}
-            </p>
-            {/* Plan F5 device line — confirms the bot is wired to *this* install. */}
-            <p className="mt-1 text-xs uppercase tracking-wide text-muted-foreground/60">
-              This device
-            </p>
-            {profileBot.description && (
-              <p className="mx-auto mt-3 max-w-xs text-xs leading-relaxed text-muted-foreground/90">
-                {profileBot.description}
-              </p>
-            )}
-            <p className="mx-auto mt-4 max-w-xs text-xs text-muted-foreground/70">
-              Open this bot&apos;s continuous chat. Its background work keeps running when you
-              switch away.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                const b = profileBot;
-                setProfileBot(null);
-                void openChat(b);
-              }}
-              className="mt-4 rounded-lg bg-primary px-4 py-1.5 text-[0.8125rem] font-medium text-primary-foreground transition hover:opacity-90"
-              data-testid="bot-profile-open-chat"
-            >
-              Open chat
-            </button>
-            {/* Plan F5: the profile hosts the row-menu actions so the rail
-                row stays quiet. Same handlers as the rail-row menu. */}
-            <div className="mt-4 border-t border-border/40 pt-3">
-              <BotRowMenu
-                bot={profileBot}
-                onDeleted={() => setProfileBot(null)}
-              />
-            </div>
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">@{bot.name}</p>
           </div>
-        </Backdrop>
-      )}
-
-      {/* The rooms panel gets NO `trapFocus`, deliberately: it HOSTS
-          `RoomView`, which can raise its own room-settings modal, and that
-          modal is portaled to `document.body` — outside this dialog's DOM.
-          Two live traps would then fight over every Tab press (the outer one
-          pulls focus back into this panel, the inner one pulls it into the
-          settings modal). The settings modal owns the trap instead; this
-          panel still closes on Escape. */}
-      {showRooms && (
-        <Backdrop onClose={() => setShowRooms(false)} className="z-[60]">
-          <div
-            className="relative flex h-[min(88vh,820px)] w-[min(96vw,1040px)] overflow-hidden rounded-2xl border border-border/70 bg-background shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Group rooms"
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
+            aria-label="Close"
           >
-            <button
-              type="button"
-              onClick={() => setShowRooms(false)}
-              className="absolute right-3 top-2 z-10 rounded-md p-1 text-muted-foreground hover:bg-white/5 hover:text-foreground"
-              aria-label="Close rooms"
-            >
-              <X className="size-4" />
-            </button>
-            <div className="min-h-0 flex-1 pt-8">
-              <RoomView />
-            </div>
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {bot.description && (
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground/90">
+            {bot.description}
+          </p>
+        )}
+
+        <label className="mt-4 block text-xs text-muted-foreground" htmlFor="bot-detail-title">
+          Title
+        </label>
+        <input
+          id="bot-detail-title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="mt-1 w-full rounded-md border border-border/60 bg-transparent px-2 py-1 text-xs text-foreground outline-none focus:border-primary/60"
+          placeholder="What this bot is called"
+          data-testid="bot-detail-title"
+        />
+
+        {bot.role && (
+          <div className="mt-4">
+            <p className="text-xs text-muted-foreground">Role</p>
+            <p className="mt-1 text-xs text-foreground/80" data-testid="bot-detail-role">
+              {bot.role}
+            </p>
           </div>
-        </Backdrop>
-      )}
+        )}
+
+        <div className="mt-5 flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void onOpenChat(bot)}
+            disabled={!sessionId}
+            data-testid="bot-detail-open"
+          >
+            Open chat
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => save.mutate()}
+            disabled={save.isPending}
+            data-testid="bot-detail-save"
+          >
+            <Pencil className="size-3" aria-hidden /> Save
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="ml-auto text-destructive hover:text-destructive"
+            onClick={() => retire.mutate()}
+            disabled={retire.isPending}
+            data-testid="bot-detail-retire"
+          >
+            <Trash2 className="size-3" aria-hidden /> Retire
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

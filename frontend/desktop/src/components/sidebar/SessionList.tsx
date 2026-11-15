@@ -1289,6 +1289,9 @@ export function SessionList({
                 const ui = sessions.find((s) => s.workbenchSessionId === sid);
                 if (ui) onSelect(ui);
               }}
+              // "Ask the agent to create a bot" seeds the composer and then has
+              // to be visible — it lives on the chat surface, not the rail.
+              onGoToChat={() => navigate('/')}
             />
           </div>
         ) : null}

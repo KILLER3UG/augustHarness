@@ -27,6 +27,7 @@ import {
   resolveActiveSession,
 } from '@/store/sessions';
 import { useActiveChatStreamsStore } from '@/store/chat-active-streams';
+import { composerSeed } from '@/store/composer-seed';
 import { AnimatePresence } from 'framer-motion';
 import { SCROLL_TO_TOP_THRESHOLD } from '@/components/chat/ScrollToTopButton';
 import { NEAR_BOTTOM_PX } from '@/lib/chat-scroll';
@@ -869,6 +870,11 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
 
   useEffect(() => {
     setInput(loadComposerDraft(sessionId));
+    // A prompt handed in from outside the chat (the sidebar's "ask the agent to
+    // create a bot") lands here, and only here — it is not a draft, so it does
+    // not survive a later navigation. Consumed once, by design.
+    const seeded = composerSeed.take();
+    if (seeded) setInput(seeded);
     setLoadedSessionId(sessionId);
     if (!sessionId) return;
     clearQueuedMessages(sessionId);
