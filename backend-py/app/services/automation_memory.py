@@ -533,7 +533,7 @@ def deliver_to_bot_chat(
 
     Returns a status string for the run record; never raises into the caller.
     """
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     agent_id = as_str(job.get('agentId'))
     if not agent_id:

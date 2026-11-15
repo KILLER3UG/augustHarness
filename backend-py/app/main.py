@@ -328,7 +328,7 @@ async def lifespan(app: FastAPI):
     # Bot Mode Phase A boot backfill: the default assistant Bot (and its
     # canonical chat) always exists — no model call, registry + session only.
     try:
-        from app.services.bot_mode import roster as _bot_roster
+        from app.services import agent_roster as _bot_roster
 
         _bot_roster.ensure_default_bot(actor='boot')
     except Exception:

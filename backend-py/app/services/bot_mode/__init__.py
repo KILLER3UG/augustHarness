@@ -10,6 +10,7 @@ DMs land, and ``/new`` reroutes to compaction (the forever-chat never
 forks the relationship).
 """
 
-from app.services.bot_mode import roster, routines
+from app.services import agent_roster as roster
+from app.services.bot_mode import routines
 
 __all__ = ['roster', 'routines']

@@ -133,7 +133,7 @@ async def createAgent(
 ) -> str:
     # Bot Mode (one agent concept): agent creation goes through the roster
     # so every agent is a Bot with a canonical chat. Idempotent on name.
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
     from app.services.tools import agent_registry
     from app.services.workbench.context import currentSessionId
     from app.services.workbench.sessions import get_workbench_session
@@ -239,7 +239,7 @@ async def deleteAgent(agentId: str) -> str:
     # memberships and canonical chat) — a bare registry delete leaves all of it
     # behind and re-mints a NEW id for `assistant` on the next boot, stranding
     # every chat bound to the old one.
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     default = roster.get_default_bot()
     if default and as_str(default.get('id')) == agentId:

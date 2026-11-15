@@ -336,7 +336,7 @@ def parse_mentions(text: str, members: list[str]) -> list[str]:
     Returns member ids in roster order, de-duplicated. ``@everyone`` → all.
     Unknown handles are ignored (they pass through as plain text elsewhere).
     """
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     if not text:
         return []
@@ -391,7 +391,7 @@ def member_session(room_id: int, agent_id: str):
     Stamped ``botAgentId`` (so M-2 scope + the DM/room run context resolve)
     and ``botRoom`` (the room id) so the log is attributable + isolated.
     """
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
     from app.services.workbench import sessions as sessions_mod
 
     room = get_room(room_id)
@@ -447,7 +447,7 @@ async def _member_turn(
 
 
 def _handle(_agent_id: str, msg: dict[str, object]) -> str:
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     sender = as_str(msg.get('sender_agent'))
     bot = roster.get_bot(sender)
@@ -586,7 +586,7 @@ async def run_room(
 
 
 def _matches_handle(agent_id: str, token: str) -> bool:
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     tok = (token or '').lower().replace(' ', '')
     bot = roster.get_bot(agent_id)

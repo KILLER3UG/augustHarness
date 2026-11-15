@@ -22,8 +22,8 @@ _INSTALL_COMPLETE = 'install_complete'
 
 async def installComplete() -> str:
     """The install_complete tool handler — close the bot's guided setup."""
+    from app.services import agent_roster as roster
     from app.services import automations_store, session_scope
-    from app.services.bot_mode import roster
     from app.services.workbench.workbench import get_session
 
     session = get_session()
@@ -81,8 +81,8 @@ def filter_setup_tools(tools: list[dict[str, object]], session: object) -> list[
     re-checks, so a forged call still fails closed.
     """
     try:
+        from app.services import agent_roster as roster
         from app.services import session_scope
-        from app.services.bot_mode import roster
 
         scope = session_scope.resolve_scope(session)
         if session_scope.is_bot_scope(scope) and roster.bot_setup_pending(session_scope.bot_agent_id(scope)):

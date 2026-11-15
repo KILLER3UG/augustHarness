@@ -58,7 +58,7 @@ def roster_lines() -> list[str]:
     stay tight. Cached upstream by capability epoch (the caller keeps prompt
     bytes stable within a session); this function is the pure render.
     """
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     lines: list[str] = []
     for bot in roster.list_bots():

@@ -111,7 +111,7 @@ async def createAgent(body: AgentCreate):
     canonical chat + intro turn (``title``/``clone_from`` map to uiMeta).
     """
     if body.title or body.clone_from:
-        from app.services.bot_mode import roster
+        from app.services import agent_roster as roster
 
         return roster.create_bot(
             name=body.name,
@@ -153,7 +153,7 @@ async def getTree(root: str = '', maxDepth: int = Query(4)):
 async def listBots():
     """Bots roster: every registry record with normalized uiMeta (hidden
     included — display filtering is the client's job)."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     return {'bots': roster.list_bots()}
 
@@ -161,7 +161,7 @@ async def listBots():
 @router.post('/bots/ensure-default')
 async def ensureDefaultBot():
     """Boot backfill: create the default assistant Bot if missing."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     return roster.ensure_default_bot(actor='ui')
 
@@ -169,14 +169,14 @@ async def ensureDefaultBot():
 @router.get('/bots/avatar')
 async def botAvatar(name: str = Query(...), salt: str = Query('')):
     """Deterministic identicon SVG for a Bot name (inline-renderable)."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     return {'svg': roster.avatar_svg(name, salt=salt)}
 
 
 @router.get('/bots/{agentId}')
 async def getBot(agentId: str):
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     bot = roster.get_bot(agentId)
     if not bot:
@@ -187,7 +187,7 @@ async def getBot(agentId: str):
 @router.put('/bots/{agentId}/ui-meta')
 async def updateBotUiMeta(agentId: str, body: UiMetaUpdate):
     """Merge uiMeta fields (title/avatar/hidden/groups)."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     updates = {k: v for k, v in body.model_dump(by_alias=True).items() if v is not None}
     bot = roster.update_bot(agentId, updates, actor='ui')
@@ -199,7 +199,7 @@ async def updateBotUiMeta(agentId: str, body: UiMetaUpdate):
 @router.get('/bots/{agentId}/chat')
 async def getBotChat(agentId: str):
     """Resolve (not create) the Bot's canonical chat session id."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     chat = roster.find_canonical_bot_chat(agentId)
     if chat is None:
@@ -210,7 +210,7 @@ async def getBotChat(agentId: str):
 @router.post('/bots/{agentId}/chat')
 async def ensureBotChat(agentId: str):
     """Create-if-missing the Bot's canonical chat (idempotent)."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     chat = roster.ensure_canonical_bot_chat(agentId)
     return {'sessionId': chat.id, 'title': chat.title, 'agentId': agentId}
@@ -330,7 +330,7 @@ async def updateRoom(room_id: int, body: RoomUpdate):
 
 @router.delete('/bots/{agentId}')
 async def deleteBot(agentId: str):
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     if not roster.delete_bot(agentId, actor='ui'):
         raise HTTPException(status_code=400, detail='Bot cannot be deleted (default bot)')
@@ -559,7 +559,7 @@ async def updateAgent(agentId: str, body: AgentUpdate):
     }
     updates = {k: v for k, v in dumped.items() if v is not None}
     if ui_leaves:
-        from app.services.bot_mode import roster
+        from app.services import agent_roster as roster
 
         if roster.update_bot(agentId, ui_leaves, actor='ui') is None:
             raise HTTPException(status_code=404, detail='Agent not found')
@@ -580,7 +580,7 @@ async def deleteAgent(agentId: str):
     assistant Bot is undeletable from EVERY surface, not just /bots — the
     legacy path used to bypass roster.delete_bot's guard and leave the
     Bot's canonical chat orphaned."""
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     if not agent_registry.getAgent(agentId):
         raise HTTPException(status_code=404, detail='Agent not found')

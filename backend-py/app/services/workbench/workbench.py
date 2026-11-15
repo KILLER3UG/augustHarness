@@ -1299,7 +1299,7 @@ def buildSystemPrompt(
         if _ss.is_bot_scope(_scope):
             _agent_id = _ss.bot_agent_id(_scope)
             try:
-                from app.services.bot_mode import roster as _roster
+                from app.services import agent_roster as _roster
 
                 _bot = _roster.get_bot(_agent_id)
                 _handle = as_str(_bot.get('name')) if _bot else _agent_id

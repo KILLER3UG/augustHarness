@@ -378,7 +378,7 @@ async def manage_agents(body: ActionBody):
             # of it and left `assistant` to be re-minted under a NEW id at next boot,
             # stranding every chat bound to the old one. Also names the actor: the
             # default `'system'` mislabeled a human-initiated request in the audit.
-            from app.services.bot_mode import roster
+            from app.services import agent_roster as roster
 
             roster.delete_bot(body.id, actor='ui')
         except Exception:

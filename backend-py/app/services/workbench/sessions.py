@@ -1430,7 +1430,7 @@ def reset_workbench_session(
     session = get_workbench_session(session_id)
     if session is not None and isinstance(session.metadata, dict):
         if str(session.metadata.get('canonicalBotChat') or ''):
-            from app.services.bot_mode import roster
+            from app.services import agent_roster as roster
 
             roster.reroute_new_for_canonical_chat(session_id)
             return get_workbench_session(session_id)

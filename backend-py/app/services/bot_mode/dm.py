@@ -334,7 +334,7 @@ def resolve_target(target: str) -> str:
     retry with a real handle. Matching is tolerant: ``@researcher``,
     ``researcher``, the display title, and the raw id all resolve.
     """
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     raw = (target or '').strip().lstrip('@').strip()
     if not raw:
@@ -351,7 +351,7 @@ def resolve_target(target: str) -> str:
 
 
 def _handle_for(agent_id: str) -> str:
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     bot = roster.get_bot(agent_id)
     return as_str(bot.get('name')) if bot else agent_id
@@ -452,7 +452,7 @@ async def messageAgent(target: str = '', message: str = '') -> str:
                 'run by replying.',
                 reason_code=REASON_UNATTENDED,
             )
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     try:
         chat = roster.ensure_canonical_bot_chat(to_agent)
@@ -540,7 +540,7 @@ async def deliver(dm_id: int, *, runner: object = None) -> str:
     ONE turn per DM (this function runs it exactly once) and the in-flight
     guard in ``messageAgent`` stops concurrent ping-pong.
     """
-    from app.services.bot_mode import roster
+    from app.services import agent_roster as roster
 
     row = get_dm(dm_id)
     if not row:
