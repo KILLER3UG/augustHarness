@@ -39,11 +39,27 @@ import logging
 
 from app.json_narrowing import as_list, as_str
 from app.services import tool_registry
+from app.services.best_effort import best_effort
 
 logger = logging.getLogger(__name__)
 
 
 # ── the ceiling ──────────────────────────────────────────────────────────────
+
+
+def _canonical_chat_id(agent_id: str) -> str:
+    """The Bot's canonical chat id, or '' when it has none.
+
+    The chat is a workbench session stamped ``metadata.canonicalBotChat`` — it is
+    not on the agent record, so reading ``uiMeta`` for it returns nothing. One
+    helper so create and list cannot drift on this.
+    """
+    from app.services import agent_roster as roster
+
+    with best_effort('bot_tools.canonical_chat'):
+        chat = roster.find_canonical_bot_chat(agent_id)
+        return as_str(getattr(chat, 'id', '')) if chat is not None else ''
+    return ''
 
 
 def _parent_tool_surface(parent_id: str) -> set[str] | None:
@@ -147,6 +163,13 @@ async def _createBot(
         )
         bot = roster.get_bot(as_str(bot.get('id'))) or bot
 
+    # create_bot builds its return record BEFORE it creates the canonical chat, and
+    # the chat id lives on the session's metadata (metadata.canonicalBotChat),
+    # not on the agent record — so neither the returned dict nor a re-read of the
+    # registry carries it. Look it up where it actually lives; the UI's "open this
+    # bot" needs it and an empty string would be a dead link.
+    chat_id = _canonical_chat_id(as_str(bot.get('id')))
+
     receipt = {
         'kind': 'bot_created',
         'agentId': as_str(bot.get('id')),
@@ -154,7 +177,7 @@ async def _createBot(
         'role': as_str(bot.get('role')) or as_str(role).strip(),
         'permissions': granted,
         'droppedPermissions': dropped,
-        'canonicalChatId': as_str(bot.get('canonicalChatId')),
+        'canonicalChatId': chat_id,
     }
     # The receipt is the tool RESULT: the UI renders it as a compact card with
     # edit and undo, and the orchestrator reads it to report what it made.
@@ -172,6 +195,10 @@ async def _listBots() -> str:
     for bot in roster.list_bots():
         agentId = as_str(bot.get('id'))
         record = agent_registry.getAgent(agentId) or {}
+        # Same reason as create_bot: the canonical chat id is on the session's
+        # metadata, so the record's uiMeta does not carry it. Read it from where
+        # it lives, and treat a miss as "no chat yet" rather than a crash.
+        chat_id = _canonical_chat_id(agentId)
         out.append(
             {
                 'agentId': agentId,
@@ -180,7 +207,7 @@ async def _listBots() -> str:
                 'permissions': as_list(record.get('permissions')),
                 'tools': as_list(record.get('tools')),
                 'model': as_str(record.get('model')),
-                'canonicalChatId': as_str(bot.get('canonicalChatId')),
+                'canonicalChatId': chat_id,
             }
         )
     if not out:
