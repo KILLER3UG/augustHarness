@@ -181,8 +181,10 @@ _PROMPT_AGENT = frozenset({
     'create_agent', 'list_agents', 'list_daemons', 'spawn_daemon',
     'list_background_tasks', 'read_background_task', 'kill_background_task',
             'spawn_subagents', 'update_agent', 'set_agent_mode',
-    'review_change', 'commit_step', 'step_review',
+            'review_change', 'commit_step', 'step_review',
             'list_workstreams', 'send_subagent_message', 'interrupt_subagent',
+            # Bot tools: the orchestrator's own door to the roster.
+            'create_bot', 'list_bots', 'update_bot', 'retire_bot',
             # Bot Mode routines: Bot-owned scheduled jobs.
             'create_routine', 'list_routines',
             # Bot Mode Phase C: the single agent-to-agent DM send path.
@@ -242,6 +244,10 @@ _PLAN_BLOCKED_EXACT = frozenset({
     'desktop_click', 'desktop_type', 'desktop_press_key', 'desktop_ui_act',
     'desktop_open_url',
     'create_agent', 'update_agent', 'delete_agent', 'create_alias',
+    # Bot tools — the same class as create_agent: they persist a roster record
+    # (and its canonical chat) that outlives the turn, so plan mode must treat
+    # them as mutations. list_bots is a read and stays readable.
+    'create_bot', 'update_bot', 'retire_bot',
     # Guided setup closes a bot's config state (create_agent precedent).
     'install_complete',
     'update_alias', 'delete_alias', 'configure_fallback',

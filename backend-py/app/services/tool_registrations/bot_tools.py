@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # ── the ceiling ──────────────────────────────────────────────────────────────
 
 
-def _parent_tool_surface(parentId: str) -> set[str] | None:
+def _parent_tool_surface(parent_id: str) -> set[str] | None:
     """The tools the creating agent may actually use, or None for unrestricted.
 
     ``None`` means the chain declares nothing (``_declaredPermissions`` returns
@@ -57,9 +57,9 @@ def _parent_tool_surface(parentId: str) -> set[str] | None:
     """
     from app.services.tools import agent_registry
 
-    if not parentId:
+    if not parent_id:
         return None
-    agent = agent_registry.getAgent(parentId)
+    agent = agent_registry.getAgent(parent_id)
     if not isinstance(agent, dict):
         # A dangling parent is not a restriction (see _effectivePermissions: an
         # unknown lineage returns None, never an empty set), so the child keeps
@@ -73,7 +73,7 @@ def _parent_tool_surface(parentId: str) -> set[str] | None:
     return set(perms)
 
 
-def _ceiling_for(asked: list[str], parentId: str) -> tuple[list[str], list[str]]:
+def _ceiling_for(asked: list[str], parent_id: str) -> tuple[list[str], list[str]]:
     """Clamp the requested tool list to the creating agent's own surface.
 
     Returns ``(granted, dropped)``. An empty ``asked`` means "no restriction
@@ -82,7 +82,7 @@ def _ceiling_for(asked: list[str], parentId: str) -> tuple[list[str], list[str]]
     unbounded. Naming the tools is always narrower than inheriting, so an
     explicit list can only ever reduce the ceiling.
     """
-    parent = _parent_tool_surface(parentId)
+    parent = _parent_tool_surface(parent_id)
     if not asked:
         return ([] if parent is None else sorted(parent)), []
     if parent is None:

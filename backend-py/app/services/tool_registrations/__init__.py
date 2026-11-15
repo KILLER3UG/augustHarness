@@ -15,6 +15,7 @@ def register_all() -> None:
         agent_tools,
         artifact_tools,
         board_tools,
+        bot_tools,
         bulk_tools,
         circuit_tools,
         decision_tools,
@@ -60,6 +61,10 @@ def register_all() -> None:
     session_tools.register()
     system_tools.register()
     agent_tools.register()
+    # Bot tools: the orchestrator creates, configures and retires bots itself.
+    # They follow the create_agent precedent — persistent mutations, so they are
+    # plan-blocked and carry a confirmation (see tool_policy).
+    bot_tools.register()
     skill_tools.register()
     bulk_tools.register()
     # The shared space: one folder every session and bot can read and write

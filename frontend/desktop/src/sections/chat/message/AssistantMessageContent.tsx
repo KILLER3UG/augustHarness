@@ -5,6 +5,7 @@ import { TurnProvenanceChip } from '@/components/chat/TurnProvenanceChip';
 import { SavePointChip } from '@/components/chat/SavePointChip';
 import { SkillReceiptChip } from '@/components/chat/SkillReceiptChip';
 import { MemorySaveChip } from '@/components/chat/MemorySaveChip';
+import { BotReceiptChip } from '@/components/chat/BotReceiptChip';
 import type { WorkbenchCheckpoint } from '@/api/workbench';
 import type { ChatMessage, MessageBlock } from '@/types/chat';
 import type { GitDiffResult } from '@/api/git';
@@ -337,6 +338,10 @@ export function AssistantMessageContent({
         )}
         {!(isLast && streaming) && <SkillReceiptChip tools={message.tools} />}
         {!(isLast && streaming) && <MemorySaveChip tools={message.tools} />}
+        {/* The bot the orchestrator created on this turn, with its permissions
+            and an undo. Agent-driven creation still gets a view/edit/undo
+            surface — the card is that surface, not a creation form. */}
+        {!(isLast && streaming) && <BotReceiptChip tools={message.tools} />}
       </div>
       <AssistantMessageActions
         showActions={showActions}
