@@ -35,8 +35,8 @@ def normalizeGuardMode(mode: str) -> str:
     """Normalize guard mode to one of: plan, ask, edit, full."""
     lower = mode.strip().lower().replace('_', '-').replace(' ', '-')
     if not lower:
-        # Unset is not a typo: the callers that create a session with an explicit
-        # 'full' (Bot DMs, rooms) mean it.
+        # Unset is not a typo: the callers that create a session with an
+        # explicit 'full' (Bot DMs) mean it.
         return 'full'
     aliases = {
         'plan': 'plan',

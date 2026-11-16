@@ -397,8 +397,7 @@ def delete_bot(agent_id: str, actor: str = 'ui') -> bool:
 
 def _cascade_delete_bot_data(agent_id: str) -> None:
     """Remove a deleted Bot's private footprint so it doesn't linger in the
-    store: its ``bot:<id>`` facts, its DM rows, its room memberships (dropping
-    rooms that fall below the 2-member minimum), and its canonical Bot Chat
+    store: its ``bot:<id>`` facts, its DM rows, and its canonical Bot Chat
     session. Best-effort — a failure here never blocks the delete."""
     scope = f'bot:{agent_id}'
     try:
@@ -416,13 +415,6 @@ def _cascade_delete_bot_data(agent_id: str) -> None:
         dm_store.purge_agent(agent_id)
     except Exception:
         logger.debug('bot cascade delete (dms) failed for %s', agent_id, exc_info=True)
-    # Drop the Bot from every room; delete rooms left under 2 members.
-    try:
-        from app.services.bot_mode import rooms as rooms_store
-
-        rooms_store.purge_agent(agent_id)
-    except Exception:
-        logger.debug('bot cascade delete (rooms) failed for %s', agent_id, exc_info=True)
     # Canonical Bot Chat session.
     try:
         chat = find_canonical_bot_chat(agent_id)

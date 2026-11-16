@@ -215,7 +215,8 @@ def purge_agent(agent_id: str) -> None:
 # delta inside ONE turn, and every DM hop is a FRESH turn in a DIFFERENT session
 # — so two or three Bots handing one ask back and forth never look like a spin:
 # each individual turn ends `finished`. `has_inflight` caps one (from→to) pair
-# and `rooms.MAX_ROUNDS` caps one user send, but an A→B→C→A cycle is neither.
+# and the composer's own send path caps one user send, but an unbroken run of
+# Bot turns is neither.
 # The one thing that bounds it is a ceiling on how long a Bot chat may keep
 # working with no human in it — DeepSeek-Bot's `MAX_UNATTENDED_MESSAGES`, whose
 # comment is the whole design: "reset only by a human".
