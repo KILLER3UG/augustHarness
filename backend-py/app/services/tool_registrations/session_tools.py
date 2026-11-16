@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.json_narrowing import as_int, as_str
 from app.services import tool_registry
+from app.services.memory_quality import MERGE_SIMILARITY, duplicateOf
 from app.services.memory_quality import coercivePreferenceReason as _coercivePreferenceReason
 from app.services.memory_quality import memoryIsJunk as _memoryIsJunk
 from app.services.sensitive_topics import sensitiveMemoryReason as _sensitiveMemoryReason
@@ -891,6 +892,24 @@ async def _remember(
         'version': _after.get('version'),
         'rollbackId': _rollbackId or None,
     }
+    # Near-duplicate awareness at write time (a WARNING, never a veto —
+    # identity is the only rung this door refuses, per _duplicateFactKey's
+    # rationale). A paraphrase of an existing fact lands as its own row until
+    # the 24h merge pass; naming the close neighbour in the result lets the
+    # model merge on its next turn instead of waiting for the daemon.
+    if before is None:
+        try:
+            _ratio, _neighborKey = duplicateOf(text, scope=factScope)
+            if _neighborKey and _neighborKey != factKey and _ratio >= MERGE_SIMILARITY:
+                _neighbor = memory_store.get_fact(_neighborKey) or {}
+                _result['similarTo'] = {
+                    'key': _neighborKey,
+                    'ratio': round(_ratio, 2),
+                    'title': str(_neighbor.get('title') or ''),
+                    'hint': 'already stored under this key — update it instead of writing a new fact',
+                }
+        except Exception:
+            pass
     # 059: an edit carries its history — "now X, previously Y" — so the model
     # (and the receipt the user sees) can tell a correction from a first save.
     if before is not None:
