@@ -61,7 +61,7 @@ export function useProviderOnboardingState() {
   const sessions = useSessionsStore((s) => s.sessions);
   const hasWorkspace = sessions.some((s) => Boolean(s.workspacePath));
 
-  const providers = providersQ.data ?? [];
+  const providers = useMemo(() => providersQ.data ?? [], [providersQ.data]);
   const hasProvider = providers.length > 0;
   const hasLocalProvider = providers.some((p) => isLoopbackUrl(p.baseUrl ?? ''));
 
@@ -78,7 +78,26 @@ export function useProviderOnboardingState() {
     staleTime: 30_000,
   });
   const chatDefault = (cognitiveQ.data?.fleet?.chat_default ?? '').trim();
+  const chatDefaultProvider = (cognitiveQ.data?.fleetProviders?.chat_default ?? '').trim();
   const chatDefaultSet = chatDefault.length > 0;
+
+  /* Reachability gate for the sensible default: a provider the health monitor
+   * has marked offline is not "downloaded or reachable", so "Done without
+   * picking" must never fall back to it. Unknown (not yet probed) stays
+   * eligible — a fresh install must not be locked out before its first probe. */
+  const healthQ = useQuery<{ results?: { provider?: string; online?: boolean }[] }>({
+    queryKey: ['providers-health'],
+    queryFn: () => api.get('/api/providers/health'),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const offlineProviders = useMemo(() => {
+    const offline = new Set<string>();
+    for (const row of healthQ.data?.results ?? []) {
+      if (row.provider && row.online === false) offline.add(row.provider);
+    }
+    return offline;
+  }, [healthQ.data]);
 
   const setDefaultModel = async (modelId: string, providerName: string) => {
     await api.put('/api/config/cognitive', {
@@ -88,41 +107,52 @@ export function useProviderOnboardingState() {
     await qc.invalidateQueries({ queryKey: ['config-cognitive'] });
   };
 
-  /** Sensible default: the first enabled provider with a catalog, preferring
-   * a pinned model, then a free one, then the first listed. */
+  /** Sensible default: local-first (the spec's local-first principle — the
+   * default model keeps data on the machine when one is connected), then the
+   * first enabled provider with a catalog; within a provider prefer a pinned
+   * model, then a free one, then the first listed. Providers the health
+   * monitor marked offline are never chosen. */
   const defaultModelChoice = useMemo<{ modelId: string; providerName: string } | null>(() => {
-    for (const p of providers) {
-      if (!p.enabled || p.models.length === 0) continue;
+    const eligible = providers.filter(
+      (p) => p.enabled && p.models.length > 0 && !offlineProviders.has(p.id),
+    );
+    const localFirst = [...eligible].sort(
+      (a, b) =>
+        Number(isLoopbackUrl(b.baseUrl ?? '')) - Number(isLoopbackUrl(a.baseUrl ?? '')),
+    );
+    for (const p of localFirst) {
       const preferred =
         p.models.find((m) => m.pinned) ?? p.models.find((m) => m.free) ?? p.models[0];
       if (preferred?.id) return { modelId: preferred.id, providerName: p.name };
     }
     return null;
-  }, [providers]);
+  }, [providers, offlineProviders]);
 
-  /** The one-click choices shown inline in the checklist: every enabled
-   * provider's catalog, recommended choice first, capped to keep the
-   * checklist a checklist. */
-  const modelChoices = useMemo<{ modelId: string; providerName: string; badge?: string }[]>(
-    () => {
-      const out: { modelId: string; providerName: string; badge?: string }[] = [];
-      for (const p of providers) {
-        if (!p.enabled) continue;
-        for (const m of p.models) {
-          if (out.length >= 8) break;
-          const badge = m.pinned ? 'pinned' : m.free ? 'free' : undefined;
-          out.push({ modelId: m.id, providerName: p.name, badge });
-        }
+  /** The one-click choices shown inline in the checklist: every enabled,
+   * reachable provider's catalog, recommended choice first, capped to keep
+   * the checklist a checklist. Each choice labels where the data goes. */
+  const modelChoices = useMemo<
+    { modelId: string; providerName: string; badge?: string; local: boolean }[]
+  >(() => {
+    const out: { modelId: string; providerName: string; badge?: string; local: boolean }[] = [];
+    for (const p of providers) {
+      if (!p.enabled || offlineProviders.has(p.id)) continue;
+      const local = isLoopbackUrl(p.baseUrl ?? '');
+      for (const m of p.models) {
+        if (out.length >= 8) break;
+        const badge = m.pinned ? 'pinned' : m.free ? 'free' : undefined;
+        out.push({ modelId: m.id, providerName: p.name, badge, local });
       }
-      const rec = defaultModelChoice;
-      if (!rec) return out;
-      const idx = out.findIndex((c) => c.modelId === rec.modelId && c.providerName === rec.providerName);
-      if (idx <= 0) return out;
-      const [hit] = out.splice(idx, 1);
-      return [hit, ...out];
-    },
-    [providers, defaultModelChoice],
-  );
+    }
+    const rec = defaultModelChoice;
+    if (!rec) return out;
+    const idx = out.findIndex(
+      (c) => c.modelId === rec.modelId && c.providerName === rec.providerName,
+    );
+    if (idx <= 0) return out;
+    const [hit] = out.splice(idx, 1);
+    return [hit, ...out];
+  }, [providers, defaultModelChoice, offlineProviders]);
 
   const googleConnected = Boolean(googleQ.data?.connections?.google?.connected);
   const googleReady = Boolean(
@@ -145,6 +175,14 @@ export function useProviderOnboardingState() {
       (localStorage.getItem(SKIP_KEY) === 'true' || localStorage.getItem(DONE_KEY) === 'true'),
   );
 
+  const chatDefaultLocal = useMemo(() => {
+    if (!chatDefaultSet) return false;
+    const row = providers.find(
+      (p) => p.name === chatDefaultProvider || p.id === chatDefaultProvider,
+    );
+    return row ? isLoopbackUrl(row.baseUrl ?? '') : false;
+  }, [providers, chatDefaultProvider, chatDefaultSet]);
+
   const checks: SetupCheckItem[] = useMemo(
     () => [
       {
@@ -158,7 +196,9 @@ export function useProviderOnboardingState() {
         id: 'model',
         label: 'Pick your default model',
         description: chatDefaultSet
-          ? `Default model: ${chatDefault}`
+          ? chatDefaultLocal
+            ? `Default model: ${chatDefault} — runs locally, data stays on this device`
+            : `Default model: ${chatDefault} — cloud via ${chatDefaultProvider || 'the provider'}`
           : defaultModelChoice
             ? `One click — ${defaultModelChoice.modelId} becomes the default`
             : 'Choose the model your chats use by default',
@@ -198,9 +238,8 @@ export function useProviderOnboardingState() {
         href: '/settings/plugins',
       },
     ],
-    [hasProvider, hasWorkspace, googleConnected, doctorOk, doctorDetail, hasLocalProvider, chatDefaultSet, chatDefault, defaultModelChoice],
+    [hasProvider, hasWorkspace, googleConnected, doctorOk, doctorDetail, hasLocalProvider, chatDefaultSet, chatDefault, chatDefaultProvider, chatDefaultLocal, defaultModelChoice],
   );
-
   const requiredDone = hasProvider; // workspace is strongly recommended but provider is the hard gate
   const allCoreDone = hasProvider && hasWorkspace;
 

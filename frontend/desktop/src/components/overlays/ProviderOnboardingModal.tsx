@@ -234,6 +234,9 @@ export function ProviderOnboardingModal() {
                             {c.badge ? (
                               <span className="ml-1 text-2xs text-muted-foreground">{c.badge}</span>
                             ) : null}
+                            <span className="ml-1 text-2xs text-muted-foreground">
+                              {c.local ? '· local' : '· cloud'}
+                            </span>
                           </Button>
                         ))}
                       </div>
