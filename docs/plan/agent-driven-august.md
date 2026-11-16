@@ -92,7 +92,97 @@ Open items for Part A (ordered):
    clean-profile first-launch picker.
 9. A.9 fallback chain stays off by default; answer attribution in UI.
 
-## Evidence and conventions
+## Part A progress (all committed on fix/local-model-2026-11-16)
+
+- **A.1 tool surface** — b8a064f6. Measured after (app estimator, scratch dir,
+  ctx 8192): full 39 tools / ~10.6k fixed total (was 139 tools / ~26.9k —
+  disclosure never activated); bare 18 tools / ~2,655 fixed total = **32% of
+  8k ✓**; at 4k the micro set gives 14 tools / ~2,196 = 54% (target 35% at 4k
+  NOT met — the bridges + memory CRUD + workspace minimum cost ~1.1k tokens;
+  best number, reported honestly). Small-model default: the capability probe
+  now suggests `bare` for tool-capable models with ≤8k windows. Per-skill-pack
+  behavior comes from the BM25 preload: a research-flavored conversation
+  preloads check_paper_citations/check_traceability/web tools (verified).
+- **A.3 wake-up brief** — d5c039c0. Verified live: the cerebellum role
+  currently resolves to **kilo-auto/free (KiloCode — CLOUD)**, so the brief
+  DOES leave the machine today; the receipt + Settings now label it, and the
+  new titlesOnly mode produces the digest-only brief (verified both paths).
+- **A.4/A.5 release + crash** — 69695e95, verified live
+  (docs/evidence/local-model-release-crash.txt): injected battery releases;
+  a busy server is deferred with a visible event; a mid-run kill is marked
+  FAILED with GPU (RTX 4050 Laptop) + driver (616.64) recorded and restarted
+  once; the phantom-ready resurrect race is fixed.
+- **A.6 output floor** — a2cc7108. 1024-token floor on all three provider
+  paths for loopback models; the thinking-only rescue already existed.
+- **A.7 provenance** — 11b1be1e, verified: chapter drafts get the sidecar
+  automatically; non-drafts and non-paper workspaces do not.
+- **A.9 fallback chain** — verified: `chat_chain` fleet default is blank
+  (OFF); when armed, the done event carries usedFallback and the chat
+  renders "answered via <model>".
+- **d72fb870** — tool-result cap scales with the model window (the A.2 run
+  caught a 12.6k-token request on the 8k model from one 64 KiB tool result).
+
+### A.2 reliability run (fallback OFF, LFM3-1.7B-Q8_0, bare profile, Vulkan)
+
+Batch 1 (6 tasks): **35 tool calls / 35 results — 34 ok, 1 malformed, 0
+unrepaired failures; 6/6 tasks completed except one context-overflow turn
+(fixed by d72fb870)**. Bridge overhead is the dominant pattern: tool_search
+10 + tool_describe 6 + tool_call 8 of 35 calls (69%) — the bare surface pays
+a discovery round-trip for every deferred tool. Bridged targets all worked:
+create_bot, list_bots ×3, verify_citation, search_files, retire_bot (the full
+bot lifecycle ran through the bridges, receipt included). Batch 2 (9 more
+tasks) is running to cross the 100-call target; final numbers at the stop.
+
+## Part B inventory (static pass — live click-through is Part C, not yet run)
+
+Screens (SECTION_ROUTES, `frontend/desktop/src/routes.ts`): Chat `/`+`/c/:id`,
+Automations, Runs, Board, Charts, Artifacts, History, Learning, Docs — **9 nav
+items**. Settings renders as a DIALOG over the live chat (not a route swap).
+Live (`/live`) still exists as a hidden route (nav:false, deletion deferred to
+"Phase 3" per its comment) — the brief says Live/voice is deleted; the CODE is
+still there (LiveSurface, LiveControls, useLiveSession…). Board is still a
+SEPARATE nav page — the brief says Board folded into Runs. Both are
+discrepancies to raise at the stop; removal waits for approval either way.
+
+Settings: 51 registry ids across ~30 section files — far more than the
+minimal surface the brief wants; defaults review belongs to Part C/D.
+
+Chat screen visible by default (titlebar + sidebar + composer): show-sidebar,
+session menu, search-or-run, canvas, theme toggle, window buttons
+(minimize/maximize/close), new chat, session list, Bots rail, composer with
+model picker + mentions + attachments + send. ~15 controls before any
+conversation content — the audit's minimalism target needs this counted
+exactly in the live app (Part C).
+
+Verdicts (major surfaces, static):
+- Chat thread + composer: KEEP (the one surface).
+- BotsRail + BotDetail + BotReceiptChip: KEEP (minimal bot UI per spec).
+- Automations page: KEEP (routines stay), but creation should be agent-driven
+  from chat — verify in Part C whether a manual create form exists (GAP/
+  AGENT-REPLACEABLE candidate).
+- Runs page: KEEP (absorbs Board per spec — the separate Board page is the
+  drift).
+- History/Archive: KEEP (user owns the work; view/undo).
+- Charts/Artifacts: KEEP as views of agent-made artifacts; any manual editor
+  forms are AGENT-REPLACEABLE candidates (parity proof required first).
+- Learning hub: KEEP (view) — agent writes via skill/memory doors.
+- Docs: KEEP (reads the validated docs/state map).
+- Live surface: removal candidate (spec says deleted) — owner approval first.
+- Right drawer (files/jobs/plan/notes/subagents/diff/browser/canvas/circuit/
+  preview sections): these are VIEW surfaces for agent work — KEEP as views;
+  each needs the Part C check "does the agent surface this where the user
+  needs it".
+- Model picker in composer: KEEP (user owns model choice).
+- Onboarding (ProviderOnboardingModal): KEEP; default model prefers local
+  (already shipped in 9bf5b30d/4a24cd4b).
+
+GAP checks to run live (Part C): start a paper project → sources → draft →
+traceability → export by chat alone; create/edit/retire a bot by chat with
+the receipt; subagent fan-out with inline progress; teach a recurring
+workflow by chat; change a memory fact / setting / skill by chat with undo;
+wake-up brief on resume + dismiss + quiet mode; every risky action shows a
+card and cannot proceed without it.
+
 
 - Evidence folder: `docs/evidence/` (screenshots, probe outputs). Scratch
   probes stay in the Hermes scratch dir, never committed.
