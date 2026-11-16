@@ -270,13 +270,30 @@ class DaemonManager:
         try:
             import json as _json
 
-            stored = [
-                r
-                for r in _load_daemon_rows().values()
-                if str(r.get('status') or '') == 'running'
-            ]
+            rows = _load_daemon_rows()
+            # Boot sweep: a row whose stored status is terminal, or whose
+            # wall-clock deadline passed while the app was closed, is dead —
+            # drop it from the file instead of leaving it to linger. The
+            # status column used to be write-only, so terminal rows never
+            # existed and every force-killed quit left its rows 'running'
+            # until the persisted TTL ran out.
+            alive: dict[str, dict[str, object]] = {}
+            skipped = 0
+            for did, r in rows.items():
+                status = str(r.get('status') or '')
+                try:
+                    wall = float(str(r.get('expires_at') or '0') or '0')
+                except (TypeError, ValueError):
+                    wall = 0.0
+                if status != 'running' or (wall > 0 and wall <= time.time()):
+                    skipped += 1
+                    continue
+                alive[did] = r
+            if skipped:
+                _save_daemon_rows(alive)
+                logger.info('Daemon boot sweep: dropped %d terminal/expired row(s)', skipped)
             n = 0
-            for r in stored:
+            for r in alive.values():
                 did = str(r.get('id'))
                 if did in self._daemons:
                     continue
@@ -447,6 +464,38 @@ class DaemonManager:
         except Exception:
             logger.debug('daemon notify auto-turn failed', exc_info=True)
 
+    def _persist_terminal(self, daemonId: str) -> None:
+        """Persist a daemon's terminal status to the durable store.
+
+        The durable status column used to be write-only: spawn wrote
+        'running', the natural-exit path updated only the in-memory result,
+        and only kill() deleted the row — so a force-killed quit left
+        finished daemons rehydrating as 'running' on next boot, waking every
+        poll interval on model calls with no UI to stop them. Best-effort:
+        a failed write must never break the notify that follows.
+        """
+        try:
+            import json as _json
+            from datetime import datetime, timezone
+
+            info = self._daemons.get(daemonId)
+            if not info:
+                return
+            res = info.get('result')
+            r = res if isinstance(res, DaemonResult) else DaemonResult()
+            rows = _load_daemon_rows()
+            row = rows.get(daemonId)
+            if not isinstance(row, dict):
+                return
+            row['status'] = r.status
+            row['result_json'] = _json.dumps(
+                {'status': r.status, 'output': r.output, 'error': r.error}
+            )
+            row['updated_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            _save_daemon_rows(rows)
+        except Exception:
+            logger.debug('daemon terminal status persist failed for %s', daemonId, exc_info=True)
+
     async def _runLoop(self, daemonId: str) -> None:
         """Main daemon loop: poll on interval, evaluate watch condition."""
         info = self._daemons.get(daemonId)
@@ -465,6 +514,7 @@ class DaemonManager:
             setDaemonContext()
         except Exception:
             logger.debug('daemon context set failed', exc_info=True)
+        cancelled = False
         while True:
             try:
                 if as_float(info.get('backoff_until'), 0.0) > time.time():
@@ -485,6 +535,7 @@ class DaemonManager:
                 await asyncio.sleep(POLL_INTERVAL)
             except asyncio.CancelledError:
                 logger.info('Daemon cancelled: %s', daemonId)
+                cancelled = True
                 break
             except Exception as exc:
                 logger.error('Daemon error: %s: %s', daemonId, exc)
@@ -503,8 +554,12 @@ class DaemonManager:
 
         # Natural loop end (completed / self-stop / retries exhausted). A
         # kill() removed the entry (and user-stopped daemons must not wake
-        # the model), so notify only while still registered.
-        if daemonId in self._daemons:
+        # the model), so notify only while still registered. A cancelled
+        # loop (kill / shutdown) is not a terminal state: kill() already
+        # deleted the durable row, and shutdown keeps it so a graceful
+        # restart can still resurrect the daemon for its remaining TTL.
+        if not cancelled and daemonId in self._daemons:
+            self._persist_terminal(daemonId)
             self._notifyParent(daemonId, 'finished')
 
     async def _runOnce(self, daemonId: str) -> DaemonResult | None:
