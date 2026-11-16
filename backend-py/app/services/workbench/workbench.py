@@ -1712,6 +1712,36 @@ def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, obje
         return tools
 
     tools = tool_defs_cache.get_or_build(fmt, _build_base)
+    # The bot ceiling binds the SURFACE, not just the executor. A bot's
+    # canonical chat is offered only what its ceiling names (own declaration
+    # ∩ parent chain, the same predicate the subagent loop enforces) — a
+    # ceiling that only filtered the resident list would still let
+    # tool_search discover off-ceiling tools, and AGENTS.md forbids
+    # advertising a capability the model cannot use. The discovery bridges
+    # stay reachable (they are access mechanisms, not capabilities): the
+    # ceiling binds where the effect lands, at dispatch (_checkToolGuard
+    # re-checks the bridged inner call). Main chats resolve to 'global'
+    # scope and skip this entirely.
+    try:
+        from app.services import session_scope as _ss_ceiling
+
+        _botId = _ss_ceiling.bot_agent_id(_ss_ceiling.resolve_scope(session))
+    except Exception:
+        _botId = ''
+    if _botId and tools:
+        from app.services.tools.agent_registry import _effectivePermissions
+
+        _perm = _effectivePermissions(_botId)
+        if _perm is not None and 'all' not in _perm:
+
+            def _inCeiling(name: str) -> bool:
+                if name in ('tool_search', 'tool_describe', 'tool_call'):
+                    return True
+                if name in _perm:
+                    return True
+                return any(name.startswith(p) for p in _perm if p)
+
+            tools = [t for t in tools if _inCeiling(_toolDefName(t))]
     messages = getattr(session, 'messages', None) or []
     contextMsgs = list(messages) if isinstance(messages, list) else []
     contextWindow = DEFAULT_CONTEXT_WINDOW
@@ -6841,6 +6871,31 @@ def _checkToolGuard(session: WorkbenchSession, toolName: str, args: dict[str, ob
                 f"Tool '{toolName}' is blocked by read-only sandbox. "
                 'Switch sandbox mode to Workspace or Full access to make changes.'
             )
+
+    # The dispatch-time half of the bot ceiling (the surface half lives in
+    # _sessionToolDefs): a bot's canonical chat executes under the same
+    # predicate the subagent loop enforces. Surface assembly alone made the
+    # ceiling advisory — a directly named off-ceiling tool (or one reached
+    # through the tool_call bridge's re-dispatch, which runs THIS guard on
+    # the inner name) still executed. The discovery bridges are exempt here:
+    # they bind where the effect lands (the inner call), not at discovery.
+    if toolName:
+        try:
+            from app.services import session_scope as _ss_guard
+
+            _botAgentId = _ss_guard.bot_agent_id(_ss_guard.resolve_scope(session))
+        except Exception:
+            _botAgentId = ''
+        if _botAgentId and toolName not in ('tool_search', 'tool_describe', 'tool_call'):
+            from app.services.tools.agent_registry import evaluateAgentTool
+
+            _ceilingVerdict = evaluateAgentTool(_botAgentId, toolName)
+            if not as_bool(_ceilingVerdict.get('allowed', False)):
+                return (
+                    f"Tool '{toolName}' is outside this bot's permission ceiling "
+                    f'({_ceilingVerdict.get("reason", "not permitted")}). Use a tool the '
+                    'bot was granted, or ask the orchestrator to update its tools.'
+                )
 
     # Session-deletion tools promise "confirm with the user before deleting"
     # — deleting the session that is CURRENTLY executing would destroy the

@@ -656,17 +656,20 @@ def validate_tool_args(name: str, args: dict[str, object]) -> tuple[list[str], l
 
 
 def _tool_schema_check_mode() -> str:
-    """off | warn | strict, from brain-config (``toolSchemaCheck``, default off).
+    """off | warn | strict, from brain-config (``toolSchemaCheck``, default warn).
 
-    off = today's behavior; warn = the result carries ``[param_warnings]``;
-    strict = the call refuses BEFORE the handler runs.
+    warn = the result carries ``[param_warnings]`` — the validator, the
+    did-you-mean hints and the receipts all exist and were always built;
+    shipping them OFF meant a small model that misshapes an argument got
+    the raw handler error instead of the fix. strict = the call refuses
+    BEFORE the handler runs; off = today's behavior, still available.
     """
     try:
         from app.services.brain_config_service import getRuntimeConfig
 
-        return str(getRuntimeConfig().get('toolSchemaCheck', 'off') or 'off').lower()
+        return str(getRuntimeConfig().get('toolSchemaCheck', 'warn') or 'warn').lower()
     except Exception:
-        return 'off'
+        return 'warn'
 
 
 async def dispatch(name: str, args: dict[str, object]) -> str:
