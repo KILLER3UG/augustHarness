@@ -3,7 +3,7 @@
 /* Tracks provider, workspace, Google, plus doctor (backend/MCP/disk).    */
 
 import { useMemo, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { providersApi, type Provider } from '@/api/providers';
 import { getWorkbenchDoctor, type DoctorReport } from '@/api/workbench';
@@ -13,7 +13,7 @@ const SKIP_KEY = 'august-onboarding-skipped';
 const DONE_KEY = 'august-setup-checklist-done';
 
 export type SetupCheckItem = {
-  id: 'provider' | 'workspace' | 'google' | 'doctor' | 'local';
+  id: 'provider' | 'model' | 'workspace' | 'google' | 'doctor' | 'local';
   label: string;
   description: string;
   done: boolean;
@@ -64,6 +64,66 @@ export function useProviderOnboardingState() {
   const providers = providersQ.data ?? [];
   const hasProvider = providers.length > 0;
   const hasLocalProvider = providers.some((p) => isLoopbackUrl(p.baseUrl ?? ''));
+
+  /* The default-model step: `chat_default` in the cognitive fleet is what
+   * gives every new chat a working model without a per-session pick, so
+   * first launch is "pick a model (local or API), done". */
+  const qc = useQueryClient();
+  const cognitiveQ = useQuery<{
+    fleet?: Record<string, string>;
+    fleetProviders?: Record<string, string>;
+  }>({
+    queryKey: ['config-cognitive'],
+    queryFn: () => api.get('/api/config/cognitive'),
+    staleTime: 30_000,
+  });
+  const chatDefault = (cognitiveQ.data?.fleet?.chat_default ?? '').trim();
+  const chatDefaultSet = chatDefault.length > 0;
+
+  const setDefaultModel = async (modelId: string, providerName: string) => {
+    await api.put('/api/config/cognitive', {
+      fleet: { chat_default: modelId },
+      fleetProviders: { chat_default: providerName },
+    });
+    await qc.invalidateQueries({ queryKey: ['config-cognitive'] });
+  };
+
+  /** Sensible default: the first enabled provider with a catalog, preferring
+   * a pinned model, then a free one, then the first listed. */
+  const defaultModelChoice = useMemo<{ modelId: string; providerName: string } | null>(() => {
+    for (const p of providers) {
+      if (!p.enabled || p.models.length === 0) continue;
+      const preferred =
+        p.models.find((m) => m.pinned) ?? p.models.find((m) => m.free) ?? p.models[0];
+      if (preferred?.id) return { modelId: preferred.id, providerName: p.name };
+    }
+    return null;
+  }, [providers]);
+
+  /** The one-click choices shown inline in the checklist: every enabled
+   * provider's catalog, recommended choice first, capped to keep the
+   * checklist a checklist. */
+  const modelChoices = useMemo<{ modelId: string; providerName: string; badge?: string }[]>(
+    () => {
+      const out: { modelId: string; providerName: string; badge?: string }[] = [];
+      for (const p of providers) {
+        if (!p.enabled) continue;
+        for (const m of p.models) {
+          if (out.length >= 8) break;
+          const badge = m.pinned ? 'pinned' : m.free ? 'free' : undefined;
+          out.push({ modelId: m.id, providerName: p.name, badge });
+        }
+      }
+      const rec = defaultModelChoice;
+      if (!rec) return out;
+      const idx = out.findIndex((c) => c.modelId === rec.modelId && c.providerName === rec.providerName);
+      if (idx <= 0) return out;
+      const [hit] = out.splice(idx, 1);
+      return [hit, ...out];
+    },
+    [providers, defaultModelChoice],
+  );
+
   const googleConnected = Boolean(googleQ.data?.connections?.google?.connected);
   const googleReady = Boolean(
     googleQ.data?.connections?.google?.connected ||
@@ -93,6 +153,16 @@ export function useProviderOnboardingState() {
         description: 'Anthropic, OpenAI, or any OpenAI-compatible endpoint',
         done: hasProvider,
         href: '/settings/providers',
+      },
+      {
+        id: 'model',
+        label: 'Pick your default model',
+        description: chatDefaultSet
+          ? `Default model: ${chatDefault}`
+          : defaultModelChoice
+            ? `One click — ${defaultModelChoice.modelId} becomes the default`
+            : 'Choose the model your chats use by default',
+        done: chatDefaultSet,
       },
       {
         id: 'workspace',
@@ -128,7 +198,7 @@ export function useProviderOnboardingState() {
         href: '/settings/plugins',
       },
     ],
-    [hasProvider, hasWorkspace, googleConnected, doctorOk, doctorDetail, hasLocalProvider],
+    [hasProvider, hasWorkspace, googleConnected, doctorOk, doctorDetail, hasLocalProvider, chatDefaultSet, chatDefault, defaultModelChoice],
   );
 
   const requiredDone = hasProvider; // workspace is strongly recommended but provider is the hard gate
@@ -174,5 +244,9 @@ export function useProviderOnboardingState() {
     skip,
     markDone,
     resetDismissed,
+    chatDefaultSet,
+    setDefaultModel,
+    defaultModelChoice,
+    modelChoices,
   };
 }

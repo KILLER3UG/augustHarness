@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Circle,
   Cloud,
+  Cpu,
   FolderOpen,
   HardDrive,
   Mail,
@@ -21,12 +22,14 @@ import { useProviderOnboardingState } from '@/hooks/useProviderOnboardingState';
 import { providersApi } from '@/api/providers';
 import { refreshProviderCatalog } from '@/lib/provider-catalog';
 import { Backdrop } from '@/components/overlays/Backdrop';
+import { Button } from '@/components/ui/button';
 import { MODAL_LAYER, useUserOwnedPanelOpen } from '@/components/overlays/modal-layers';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import { cn } from '@/lib/utils';
 
 const ICONS = {
   provider: Cloud,
+  model: Cpu,
   workspace: FolderOpen,
   google: Mail,
   doctor: Activity,
@@ -42,6 +45,10 @@ export function ProviderOnboardingModal() {
     checks,
     allCoreDone,
     hasProvider,
+    chatDefaultSet,
+    setDefaultModel,
+    defaultModelChoice,
+    modelChoices,
   } = useProviderOnboardingState();
   const navigate = useNavigate();
   const qc = useQueryClient();
@@ -96,6 +103,15 @@ export function ProviderOnboardingModal() {
       return;
     }
     void navigate(href);
+  };
+
+  /* "Done" implies a working default model: if the user never picked one,
+   * apply the sensible default so chat works without a per-session pick. */
+  const handleFinish = () => {
+    if (!chatDefaultSet && defaultModelChoice) {
+      void setDefaultModel(defaultModelChoice.modelId, defaultModelChoice.providerName);
+    }
+    markDone();
   };
 
   return (
@@ -203,6 +219,25 @@ export function ProviderOnboardingModal() {
                         </p>
                       </div>
                     </button>
+                    {item.id === 'model' && !item.done && modelChoices.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5 pl-8">
+                        {modelChoices.map((c) => (
+                          <Button
+                            key={`${c.providerName}:${c.modelId}`}
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void setDefaultModel(c.modelId, c.providerName)}
+                            title={`${c.modelId} — ${c.providerName}`}
+                            className="rounded-lg border-border/60 bg-black/20 text-xs text-foreground/90 hover:border-primary/60"
+                          >
+                            {c.modelId}
+                            {c.badge ? (
+                              <span className="ml-1 text-2xs text-muted-foreground">{c.badge}</span>
+                            ) : null}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
                   </li>
                 );
               })}
@@ -234,7 +269,7 @@ export function ProviderOnboardingModal() {
               </button>
               <button
                 type="button"
-                onClick={markDone}
+                onClick={handleFinish}
                 disabled={!allCoreDone && !hasProvider}
                 className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-40"
                 title={
