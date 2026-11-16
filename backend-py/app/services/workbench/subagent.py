@@ -83,9 +83,6 @@ _SUBAGENT_NEVER_TOOLS = frozenset(
         # Same reason as `create_agent`, and these two were missing: the whole
         # agent-management surface lets a turn rewrite shared authority state.
         'update_agent', 'delete_agent',
-        # A subagent completing its parent's guided setup would close config
-        # state nobody walked through.
-        'install_complete',
         # Secret requests route to the user via the main turn's card; a
         # subagent's result transcript is not a place a secret form lives,
         # and durable secrets are the main model's door only.

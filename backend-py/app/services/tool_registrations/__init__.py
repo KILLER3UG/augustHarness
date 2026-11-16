@@ -10,7 +10,7 @@ from __future__ import annotations
 def register_all() -> None:
     """Register all built-in tool groups (and external self-config/provider tools)."""
     from app.services import integration_tools, provider_setup_tool, self_config_tools
-    from app.services.bot_mode import dm, routines, setup
+    from app.services.bot_mode import dm, routines
     from app.services.tool_registrations import (
         agent_tools,
         artifact_tools,
@@ -87,9 +87,6 @@ def register_all() -> None:
     # orchestrator's main chat — the per-session gate lives in workbench
     # toolDefinitions).
     dm.register()
-    # Guided setup for bots: install_complete is advertised only while a
-    # bot's setup is pending (bot_mode/setup.filter_setup_tools).
-    setup.register()
     # Chat-requested secrets: request_secret/secret_check — the value goes
     # from the masked form straight into the encrypted store.
     secret_tools.register()

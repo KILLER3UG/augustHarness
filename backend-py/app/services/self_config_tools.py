@@ -129,7 +129,6 @@ async def createAgent(
     parent_agent: str = '',
     model: str = '',
     provider: str = '',
-    setup_required: bool = False,
 ) -> str:
     # Bot Mode (one agent concept): agent creation goes through the roster
     # so every agent is a Bot with a canonical chat. Idempotent on name.
@@ -185,7 +184,6 @@ async def createAgent(
             role=role,
             model=model,
             provider=provider,
-            setup_required=bool(setup_required),
             actor='agent',
         )
         return _ok(agent=agent)
@@ -422,11 +420,6 @@ def register() -> None:
                 'role': {'type': 'string', 'description': "Role label (e.g. 'Researcher')."},
                 'model': {'type': 'string', 'description': 'Model id — Foreman bot only.'},
                 'provider': {'type': 'string', 'description': 'Provider name — Foreman bot only.'},
-                'setup_required': {
-                    'type': 'boolean',
-                    'description': 'True when the new bot must walk its owner through a guided '
-                    'setup in its chat first; the owner completes it with install_complete.',
-                },
             },
             'required': ['name'],
         },

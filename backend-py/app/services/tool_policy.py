@@ -250,8 +250,6 @@ _PLAN_BLOCKED_EXACT = frozenset({
     # (and its canonical chat) that outlives the turn, so plan mode must treat
     # them as mutations. list_bots is a read and stays readable.
     'create_bot', 'update_bot', 'retire_bot',
-    # Guided setup closes a bot's config state (create_agent precedent).
-    'install_complete',
     'update_alias', 'delete_alias', 'configure_fallback',
     # Bot Mode routines — create/delete persists a scheduled job that fires
     # later (create_agent precedent: persistent mutations are plan-blocked;

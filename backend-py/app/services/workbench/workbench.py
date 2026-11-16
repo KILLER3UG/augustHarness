@@ -1356,18 +1356,6 @@ def buildSystemPrompt(
                 "Bots' private skills and notes are not visible to you. Do not "
                 'write into another Bot\'s scope.'
             )
-            # Guided setup (rerun INSTALL pattern): a bot carrying a pending
-            # setup owes its owner the walkthrough; install_complete closes it.
-            try:
-                if _roster.bot_setup_pending(_agent_id):
-                    parts.append(
-                        '<guided_setup>This bot has a pending guided setup. Walk the owner '
-                        'through configuring you step by step, and when everything is set, '
-                        'call install_complete — this section and that tool disappear once '
-                        'setup closes.</guided_setup>'
-                    )
-            except Exception:
-                logger.debug('prompt: guided-setup section failed', exc_info=True)
     except Exception:
         logger.debug('prompt: bot-scope guard line failed', exc_info=True)
     # T15 versioned refine store: active prompt-note/memory entries ride along
@@ -1813,13 +1801,6 @@ def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, obje
         from app.services.bot_mode.dm import filter_dm_tools
 
         tools = filter_dm_tools(tools, session)
-    except Exception:
-        pass
-    # Guided setup: install_complete rides only with a pending setup.
-    try:
-        from app.services.bot_mode.setup import filter_setup_tools
-
-        tools = filter_setup_tools(tools, session)
     except Exception:
         pass
     tools = _finalize_session_tools(session, tools)
