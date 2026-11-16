@@ -1630,6 +1630,23 @@ def bodySubstance(name: str, description: str, body: str) -> str:
 # ── Authoring (create / patch / delete) — restored 0.17.0 ─────────────────
 
 
+def _yamlScalar(val: object) -> str:
+    """A YAML-safe plain scalar.
+
+    A value containing ``: `` (or ending in ``:``) parses as a mapping, not a
+    string — the patched programmer-pack override carried a description like
+    "Drive a coding job end to end: repo recon, …" and the unquoted render
+    made the whole frontmatter unparseable, so the skill silently vanished
+    from the catalogue (found live, 2026-11-17). Such values are double-quoted
+    (JSON escaping is valid YAML). Everything else renders verbatim so the
+    parse→render round-trip stays byte-identical for the values it worked on.
+    """
+    text = str(val)
+    if re.search(r':\s', text) or text.rstrip().endswith(':'):
+        return json.dumps(text)
+    return text
+
+
 def _renderSkillMd(frontmatter: dict[str, object], body: str) -> str:
     """Render SKILL.md. Known keys keep a stable canonical order; any other
     keys round-trip after them (M6 item 3 — unknown frontmatter survives).
@@ -1652,12 +1669,12 @@ def _renderSkillMd(frontmatter: dict[str, object], body: str) -> str:
             for sub_key, sub_val in val.items():
                 _emit(sub_key, sub_val, depth + 1)
         elif val:
-            lines.append(f'{pad}{key}: {val}')
+            lines.append(f'{pad}{key}: {_yamlScalar(val)}')
 
     for key in ('name', 'description', 'trigger', 'category', 'created_by', 'status', 'keywords', 'disabled'):
         val = frontmatter.get(key)
         if val:
-            lines.append(f'{key}: {val}')
+            lines.append(f'{key}: {_yamlScalar(val)}')
             written.add(key)
     for key, val in frontmatter.items():
         if key not in written:
