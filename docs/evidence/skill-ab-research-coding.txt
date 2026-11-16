@@ -1,0 +1,52 @@
+Skill validity A/B — LFM3-1.7B-Q8_0, fallback OFF, ctx 16384, Vulkan
+2026-11-17. Same prompt per pair, bundled skill toggled via
+PATCH /api/skills (copy-on-write override), fresh session per arm.
+Transcripts are the evidence (wb ids below); this file is the summary.
+
+RESEARCH PAIR — prompt: "Start a research paper project titled 'Sparse
+Attention at the Edge'. Create the paper workspace files and draft the
+first paragraph of Chapter 1."
+
+  WITH research-paper-studio  (wb_20261116_173822_e1fa84, 100 frames)
+    58 tool calls: run_command 25, list_directory 15, write_file 14,
+    tool_search 1, tool_describe 1, tool_call(load_skill) 1, read_file 1.
+    24 error frames; final answer: EMPTY.
+    The model DISCOVERED and LOADED the skill through the disclosure
+    bridge (tool_describe(research-paper-studio) → tool_call(load_skill))
+    — the skill machinery works on the bare surface.
+  WITHOUT (wb_20261116_174838_b2ebb8, 91 frames)
+    43 calls: run_command 14, list_directory 11, write_file 10,
+    read_file 7, tool_call 1. 10 error frames; final answer: EMPTY.
+  VERDICT: the skill did NOT change the outcome — both arms failed the
+  task. Binding constraints are model-side: a run_command habit (the tool
+  audit's selection finding), PowerShell quoting (the title's spaces),
+  and generations stopping on the output-token limit mid-tool-call
+  (stop_reason=length truncating JSON args — retried, burning rounds).
+
+CODING PAIR — prompt: write parse_range() to scratch-ab/range_parse.py.
+  First pair (wb_20261116_180100_6f27e4 / _180146_d1f09b): both died with
+  llama-server "Context size has been exceeded" on the FIRST request —
+  caused by the corrupt programmer-pack override the runner's PATCH
+  created (unquoted colon in frontmatter → the file existed but parsed as
+  garbage and the prompt assembly ballooned). FIXED: b6237d9f (frontmatter
+  quoting); the corrupt file's presence breaking turns was the discovery.
+  Second pair on the fixed backend (wb_20261116_182827_d277f1 /
+  _182912_f23957): turns ran (15 vs 9 calls; write_file attempted) but
+  both ended empty-final with error loops — the sessions have NO workspace
+  bound, so the sandbox correctly blocked every repo write
+  (allowedRoots = the user home) and the model retried. An API-session
+  coding A/B therefore cannot measure skill value; it needs a
+  workspace-bound session (the desktop app with a workspace open) — owed
+  for the desktop-shell pass.
+
+ALSO EXPOSED BY THE A/B (fixed or recorded):
+  - Tool-result cap scaled window//2 drowned a 16k turn in six rounds →
+    now window//4 (d0c64357).
+  - The frontmatter corruption chain (b6237d9f).
+  - The 16k bare-threshold tuning question (bare suggests at ≤8k) — open
+    for the owner; the 35% target was defined at 4k/8k only.
+
+Runner: scratch tool outside the repo (%TEMP%/august-ab/ab_runner.py),
+never committed. Sessions created by the A/B remain in the store (titles
+"Start a research paper project…"/"Write a Python function parse_range…")
+— they are test data; deleting them is safe but left for the owner.

@@ -94,6 +94,39 @@ Open items for Part A (ordered):
 
 ## Part A progress (all committed on fix/local-model-2026-11-16)
 
+- **A.2 user-configurable context length — DONE, live-verified** (018a9488
+  backend, 9fcca3ff frontend, 57d96aec evidence). The serve-time picker chose
+  the window once and nothing could change it afterwards, and the agent had no
+  door. Now:
+  - `change_server_context` (llama_runtime.py): stop → relaunch with the new
+    `--ctx-size`; refuses while a generation is in flight (same guard as the
+    release pass); records `previousCtxSize` on the row.
+  - OOM fallback: a load failure at the new size falls back ONCE to the
+    previous working length, visibly on the realtime bus
+    (`_ctx_fallback_reload`); an ordinary failed serve never auto-retries.
+  - Chat door `set_model_context` (self_config_tools.py): discovers via the
+    disclosure bridge, waits for the new server (ensure_local_ready) so the
+    same turn continues on the new port, returns a `model_context_changed`
+    receipt (from/to/effectiveCtx) → the chip renders with undo.
+  - UI: per-server context control in Local Models (presets + custom), a
+    Context row in the composer model menu (presets + custom, local models
+    only), a `16k` chip beside the model name per the visual spec, and the
+    realtime bridge now toasts local-model lifecycle events (loading, ready,
+    released, ctx-changing, ctx-fallback) — they were emitted but dropped.
+  - Wiring: `_getContextWindow` priority 1 reads the per-model
+    `contextWindow` that `_price_local_models` rewrites on every serve —
+    budgets, disclosure threshold, and the tool-result cap follow the new
+    window at the next turn. Verified live: `/api/models` showed
+    contextWindow 8192 after the change.
+  - Live evidence (docs/evidence/local-model-context-change.txt): serve 4096
+    → n_ctx 4096 (/props); API change → n_ctx 8192 + contextWindow 8192;
+    guards (1023/999999 → 400, 65536 → trained-window warning); warm.json
+    follows (per-model persistence); CHAT: the 1.7B changed its own context
+    to 16384 through the bridge, receipt in transcript
+    wb_20261116_160527_9749bd. Not yet verified live: the OOM fallback (no
+    model here fails to load at these windows on the 4050), the receipt card
+    + undo rendering in the desktop shell (Part C).
+
 - **A.1 tool surface** — b8a064f6. Measured after (app estimator, scratch dir,
   ctx 8192): full 39 tools / ~10.6k fixed total (was 139 tools / ~26.9k —
   disclosure never activated); bare 18 tools / ~2,655 fixed total = **32% of
@@ -148,6 +181,51 @@ rasterizer or the desktop viewer). First-launch picker on a genuinely clean
 profile: not yet run (needs the desktop shell — Part C).
 
 ## Spec-conformance changes (owner: "implement those", 2026-11-16)
+
+### Part A2 validity pass (2026-11-16/17) — audits + fixes
+
+Two static audits (subagent-delegated, read-only) plus fixes in three
+commits; the audit detail lives in this session's STOP 1 report. Findings
+that drove code:
+
+- **Memory audit** (memory_store/, workbench injection, fact_retrieval):
+  injection is metered (2400-char frozen boot index + 600-char profile
+  lane + 500-char delta ≈ 275 tokens/turn churn), cache-friendly
+  (tail-patched volatile lanes), fresh on next turn. Gaps found and FIXED:
+  - `remember` did not run the junk bar the import/distiller doors run —
+    an eager small model could file questions/incident-logs/runtime noise
+    (71b5256c).
+  - Delta-lane facts got no recall provenance and no usage credit — the
+    Recalled-memory pill under-reported and the ranking booster never saw
+    them (71b5256c, collected_keys through build_memory_delta_block).
+  - A near-duplicate write now carries `similarTo` (neighbour, ratio,
+    title) — a warning, never a veto; identity stays the only refused
+    rung (11b5650f).
+  Recorded, NOT changed (design decisions for the owner): contradiction
+  detection is same-title only at write time; `factBudget` auto-curation
+  ships off by default; paraphrase dedup waits for consolidation by design.
+  Live store sample confirms the paraphrase issue: dark-mode ×2,
+  daily-routine ×3 among 181 facts.
+- **Tool audit** (177 registered tools; dispatch/validator/bridges):
+  the finding that mattered most was a boundary gap — **bot ceilings were
+  advisory** (surface-only): a bot's canonical chat could dispatch any tool
+  by name or through the tool_call bridge. FIXED (b5a01e84): the surface
+  filters to the ceiling (own ∩ parent chain; bridges stay reachable — the
+  ceiling binds at the inner dispatch) and `_checkToolGuard` re-checks every
+  dispatch. Verified behaviorally: run_command refused, read_file allowed,
+  cleanup confirmed. Also: `toolSchemaCheck` now defaults to **warn** — the
+  validator/receipts were built but off, so a misshaping model got the raw
+  handler error instead of the fix.
+  Recorded, NOT changed (would churn A.2-verified surfaces): the audit's
+  mega-tool splits (`bulk`/`goal_output`/`board`), the search/agent/todos
+  cluster merges, stringified-JSON params (`goal_edit.bound_json`,
+  `brain_query.filters`), `read_file` default paging, and uncapped
+  `run_command` foreground output (the loop-level cap d72fb870 already
+  bounds the worst). These are the owner's Part D candidates.
+- **Skill freshness**: both packs reference only registered tools (all 10
+  names verified against the live registry); sizes ~7.8k/6.2k chars.
+  A/B measurement: runner prepared (scratch, uncommitted); owed before
+  STOP 1 closes.
 
 All six Step-0 discrepancies are now resolved in code (one commit each):
 - **Messaging direction** (4be18508): `message_agent` is offered ONLY in the
@@ -227,6 +305,73 @@ card and cannot proceed without it.
 
 ## Live audit (Parts B/C — in progress, dev server + real backend)
 
+### Browser UI-check pass (2026-11-17, 38 screenshots in docs/evidence/ui-checks/)
+
+Driven black-box (ARIA snapshots + repo-local Playwright, one action per
+observation cycle). Results:
+
+- **PASS — A** context chip: model picker → LocalModels → LFM3 renders the
+  `16k` chip beside the model name. **B** context row: presets 4k/8k/16k/32k
+  + custom input, current preset highlighted, 8k click → toast → reload →
+  chip reads 8k. **E** risky-action card: "Permission required / Awaiting
+  approval" card gated a file write with a diff preview and 5 numbered
+  choices — transcript shows zero tool calls and the file never existed,
+  i.e. genuinely gated (mode chip read "Full access" and the gate STILL
+  fired for the write — the sandbox classifier, not the label, decides).
+  **F** empty states: /automations has a real empty state with a create CTA;
+  /charts, /history, /learning render content, no blanks. **G** keyboard:
+  sane tab order (voice → send → mode chip → folder chip → ctx chip → model
+  chip), Escape closes the model menu. **H** resize 700px: bottom tab bar +
+  hamburger overlay sidebar, no overflow, composer intact.
+- **PARTIAL — D** subagent fanout: inline progress rendered live ("Working…
+  1 thought", worker rows in the sidebar strip); both workers then FAILED
+  with "[401] This API key has expired…" (the workers routed to the
+  OpenCode role model — env/config, not the fanout machinery); one run's
+  final assistant message persisted with empty content.
+- **BLOCKED — C** receipt card + undo: the re-run turn found the model
+  answering "already 16,384" from session/brief context without calling the
+  tool; a second attempt wedged when my 131072 OOM test restarted the
+  server under it (test-sequencing collision, my fault — the turn's
+  requests hit a dead port mid-turn). The receipt JSON itself is verified
+  in the transcript (wb_20261116_160527_9749bd); the CARD render +
+  undo-button click stay owed for the desktop-shell pass.
+- Also captured live: the **wake-up brief rendered on startup** ("Welcome
+  back… Would you like to continue setting the local model's context
+  length?") with a dismiss X; "Recalled memory 6 facts · 1 skill" pill;
+  release-deferred and ready toasts from the new bridge wiring; the grouped
+  "Task completed 1 step ⌄" tool accordion.
+
+### Bugs found by the pass (logged for Part C/D; fixes committed where mine)
+
+1. **Deep-link/sidebar opens of some sessions render a fresh draft** (high):
+   root cause traced — the affected sessions (e.g. the receipt session
+   wb_…_9749bd, and a post-restart API session) are NOT in
+   workbench-sessions.json; their transcript JSONL exists but the session
+   ROW was never persisted (turn died mid-flight / API-only draft). Old
+   sessions load fine. Pre-existing robustness gap: session rows persist at
+   turn END; a killed turn loses the row. Needs a design call (persist at
+   creation) — recorded, not silently changed.
+2. **Reported-vs-served context mismatch** (high): the model said "already
+   16,384" (session history + the wake-up brief's Recent line) while the
+   server ran 8,192 — the chip showed the truth. Contributing factor: the
+   brief narrates past ctx changes as recent fact. Recorded as a brief-
+   wording consideration, not a code defect.
+3. **Wedged turn, no cancel affordance** (high): triggered by my OOM test
+   colliding with a live turn (server restarted under it). The composer
+   showed no stop control in that state. Partly environmental; the
+   underlying mid-turn port-change gap is REAL and now covered by the tool
+   waiting for readiness + live base-URL re-resolution, but a turn that
+   survives a server swap may still strand. Logged for Part C.
+4. **Subagent workers on an expired cloud key** (env): fanout machinery
+   works (spawn, inline progress, results table, "0 of 2 succeeded"
+   summary); the role's model provider had a dead key. Also one empty
+   assistant message on failure — the thinking-only rescue does not cover
+   this path. Logged.
+5. **a11y on the new surfaces** — FIXED (d11d1c7e): aria-pressed on presets,
+   aria-label on the chip.
+6. **Duplicate lifecycle toasts** — FIXED (d11d1c7e): _emit_status dedupes
+   repeats within 90s.
+
 Verified live this session:
 - **All 8 routes render** (/, /automations, /runs, /charts, /artifacts,
   /history, /learning, /docs, /settings/general) — the first 2.5s reads that
@@ -255,6 +400,54 @@ resume + dismiss + quiet mode, risky-action confirmation cards, the ×3
 repetitions the brief asks for, themes/keyboard/resize/empty-error sweeps,
 and the bot detail edit at full window size.
 
+## Skill validity A/B (2026-11-17 — live on LFM3-1.7B, fallback OFF, ctx 16384)
+
+Same prompt both arms, bundled skill toggled via PATCH /api/skills
+(disabled flag), fresh session per arm, trajectories extracted from the
+transcripts. Runner: scratch tool outside the repo (never committed).
+
+**Research task** ("start a paper project + draft Chapter 1"):
+- WITH research-paper-studio (58 tool calls, 24 error frames): the model
+  FOUND the skill through the disclosure bridge — tool_describe
+  (research-paper-studio) → tool_call(load_skill) — so skill discovery
+  works on the bare surface. It then spent 25 run_command + 15
+  list_directory + 14 write_file rounds fighting PowerShell (paths with
+  spaces, Get-Content access denials) and the turn ended with an EMPTY
+  final message; generations repeatedly stopped on the output-token limit
+  mid-tool-call (stop_reason=length truncating JSON tool args).
+- WITHOUT the skill (43 calls, 10 error frames): same shape, slightly
+  fewer errors, also empty final.
+- **Verdict: the skill did NOT change the outcome on the 1.7B** — both arms
+  failed the task. The binding constraint is not the skill: it is the
+  model's run_command habit (the audit's tool-selection finding), PowerShell
+  quoting, and output-token truncation. The skill machinery itself verified
+  (discovery → describe → load_skill all worked).
+
+**Coding task + the A.1 gap it exposed:** the first coding pair DROWNED at
+16384 — "Context size has been exceeded" after six tool rounds. Root cause:
+the tool-result cap scaled window//2 → 8192 chars (~2k tokens) per result;
+six rounds ≈ the whole window. FIXED (d0c64357): the cap now scales
+window//4 (large windows floor at 64 KiB; explicit profile values win).
+
+The coding pair also exposed a second, nastier bug — the A/B's own PATCH
+toggle created a copy-on-write override whose unquoted-colon frontmatter
+made the file unparseable; the catalogue skipped it with a warning, but
+its presence ballooned the first request past n_ctx and both turns died
+("Context size has been exceeded", 0 input tokens). FIXED (b6237d9f):
+_renderSkillMd double-quotes scalars containing ': '. Re-run on the fixed
+backend: both arms executed (15 vs 9 calls) but ended empty-final with
+error loops — API sessions have no workspace bound, so the sandbox
+correctly blocked every repo write. Verdict: an API-session coding A/B
+cannot measure skill value; the workspace-bound run belongs to the
+desktop-shell pass. Evidence: docs/evidence/skill-ab-research-coding.txt.
+
+Also found while diagnosing: the surface at 16384 is the FULL core (the
+bare suggestion fires at ≤8k only) — the model entry's toolSurface='bare'
+config was honored (verified via getProvidersAsModels), so the drowning was
+the result cap, not the profile. The bare-at-≤8k threshold vs 16k windows
+is an A.1 tuning question left open for the owner (35% target was defined
+at 4k/8k only).
+
 ## STOP 1 status (interim — Part A complete, Parts B/C partially done)
 
 Done and verified this session:
@@ -273,4 +466,46 @@ Open / owed:
   spec-conformance section); the cerebellum cloud binding remains a config
   choice for the owner (labeled + titles-only available).
 
-Next: finish the live audit, then STOP 1.
+## STOP 1 status (2026-11-17 — final for this pass)
+
+**Part A — complete.** Items 1–9 implemented + live-verified (this pass
+added the user-configurable context length, A.2 in the owner brief, which
+the earlier plan had dropped). The release-policy rule "never release
+during an active generation OR chat turn" is now fully enforced
+(turn-presence registry, 11635a93) after live testing caught the gap.
+OOM-fallback verified by gates + code path (131072 loads fine on this
+machine — no live trigger exists here).
+
+**Part A2 (validity pass) — complete for this pass.** Both audits done
+(memory: metered injection, freshness chain, hygiene gaps; tools: 177
+registrations, overlap clusters, schema offenders, noise sources,
+boundary gaps). Five fixes committed (junk bar, delta provenance,
+similarTo, ceiling-at-dispatch + toolSchemaCheck warn, frontmatter
+quoting). Skill freshness verified (all referenced tools registered).
+A/B results below — honest: the skill did not change outcomes on the 1.7B
+for the research task; the binding constraints are model-side (see the
+A/B section).
+
+**Part B — static inventory complete; live checks: 6 of 7 pass.**
+Subagent fanout renders inline but the workers died on an expired cloud
+key (env). The receipt-card render + undo click remain owed (blocked by a
+test-sequencing collision; the receipt JSON is transcript-verified).
+Wake-up brief rendered on startup with dismiss visible; the true
+resume/unlock trigger needs the desktop shell.
+
+**Part C — served-app pass done (38 screenshots); desktop-shell pass owed.**
+Clean-profile first launch, mic button, receipt card click-through, and
+the true resume trigger need the Tauri shell (HARNESS_DESKTOP_APP_DATA
+seam ready; debug build exists).
+
+**Open for the owner:**
+- The tool-audit Part D candidates (mega-tool splits, search/agent/todos
+  merges, stringified-JSON params, read_file paging, run_command source
+  caps) — recorded in the audit summary, not changed.
+- factBudget default-on and boot-index "supersedes" cue — recorded as
+  design decisions.
+- Bare-profile threshold vs 16k windows (the 35% target was defined at
+  4k/8k only).
+- Deep-link/session-row persistence gap (killed turns lose the session
+  row; transcript survives).
+
