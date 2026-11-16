@@ -1323,8 +1323,9 @@ def buildSystemPrompt(
     except Exception:
         logger.debug('goal prompt block skipped', exc_info=True)
     # The Bot roster + messaging protocol, offered ONLY where the
-    # message_agent tool is (canonical Bot Chats — offeredTools already
-    # reflects the filter_dm_tools gate, so bytes stay stable elsewhere).
+    # message_agent tool is (the orchestrator's main chat — offeredTools
+    # already reflects the filter_dm_tools gate, so bytes stay stable
+    # elsewhere).
     if 'message_agent' in offeredTools:
         try:
             from app.services.bot_mode import dm as _dm
@@ -1805,7 +1806,8 @@ def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, obje
             tools = [t for t in tools if not _is_circuit_gate_tool(_toolDefName(t))]
     except Exception:
         pass
-    # Phase C gate: message_agent only in a Bot's canonical chat (the tool
+    # Messaging gate: message_agent only in the orchestrator's main chat
+    # (orchestrator-to-bot; bots cannot message anyone — the tool
     # executor re-checks, so a forged call from elsewhere fails closed).
     try:
         from app.services.bot_mode.dm import filter_dm_tools

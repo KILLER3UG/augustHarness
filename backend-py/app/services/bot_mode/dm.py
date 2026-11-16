@@ -2,19 +2,20 @@
 
 A DM is a durable inbox row in ``<dataDir>/state/bot-dm.json`` (the old
 ``bot_dm`` table, migration 034). ``message_agent`` is
-the ONLY way one Bot talks to another: the @ sign is addressing sugar handled
-by the composer middleware (annotation only — see ``protocol``), never a
-delivery pipe. The tool validates the target against the live roster, applies
-server-side attribution, runs ONE headless turn in the recipient's canonical
-Bot Chat, and acks immediately (fire-and-forget). When the recipient's reply
-lands, the SENDER is woken (OQ4): the reply is appended to the sender's chat
-as a ``Message from 🤖 …`` user-role turn and one turn runs there so the
-sender relays it — capped at one wake per DM, with an in-flight guard so two
-Bots can't ping-pong concurrent DMs.
+the ONLY way the orchestrator's main chat contacts a Bot (orchestrator-to-bot
+by owner decision; a Bot cannot message anyone): the @ sign is addressing
+sugar handled by the composer middleware (annotation only — see
+``protocol``), never a delivery pipe. The tool validates the target against
+the live roster, applies server-side attribution, runs ONE headless turn in
+the recipient's canonical Bot Chat, and acks immediately (fire-and-forget).
+When the recipient's reply lands, the SENDER is woken (OQ4): the reply is
+appended to the sender's chat as a ``Message from 🤖 …`` user-role turn and
+one turn runs there so the sender relays it — capped at one wake per DM, with
+an in-flight guard so two messages to the same Bot can't overlap.
 
-A third cap exists because those two do not cover a three-Bot cycle: an
-opt-in ceiling on how long a chat may keep taking turns with no human in it
-(see ``_unattendedRun``).
+A third cap exists because the per-turn guards do not cover a chain of Bot
+turns: an opt-in ceiling on how long a chat may keep taking turns with no
+human in it (see ``_unattendedRun``).
 
 The delivery runner is injectable (``runner=``) so the round-trip + wake
 ordering are unit-testable without a live model, mirroring the gateway
@@ -378,14 +379,35 @@ def is_dm_session(session: object) -> bool:
         return False
 
 
-def filter_dm_tools(tools: list[dict[str, object]], session: object) -> list[dict[str, object]]:
-    """Drop ``message_agent`` unless the session is a canonical Bot Chat.
+def is_orchestrator_chat(session: object) -> bool:
+    """True when ``session`` is the user's MAIN chat (the orchestrator).
 
-    Called from BOTH tool-definition paths (Anthropic + OpenAI) so the gate
-    can't drift. A regular chat or a subagent never sees the tool; the tool
-    executor re-checks so a forged call still fails closed.
+    The messaging direction is orchestrator-to-bot ONLY: the main chat may
+    message a Bot; a Bot's canonical chat may not message anyone (bot-to-bot
+    is off by owner decision), and neither may a subagent.
     """
-    if is_dm_session(session):
+    try:
+        if is_dm_session(session):
+            return False
+        if as_str(getattr(session, 'agentId', '') or ''):
+            return False  # a bot's own session (non-canonical)
+        if int(getattr(session, 'subagent_depth', 0) or 0) > 0:
+            return False  # subagents never delegate
+        return True
+    except Exception:
+        return False
+
+
+def filter_dm_tools(tools: list[dict[str, object]], session: object) -> list[dict[str, object]]:
+    """Offer ``message_agent`` ONLY in the orchestrator's main chat.
+
+    The messaging direction is orchestrator-to-bot (owner decision): the main
+    chat may message a Bot; a Bot's canonical chat and every subagent get the
+    tool dropped (bot-to-bot is off). Called from BOTH tool-definition paths
+    (Anthropic + OpenAI) so the gate can't drift; the tool executor re-checks
+    so a forged call still fails closed.
+    """
+    if is_orchestrator_chat(session):
         return tools
     def _name(t: dict[str, object]) -> str:
         fn = as_dict(t.get('function'), {})
@@ -395,22 +417,26 @@ def filter_dm_tools(tools: list[dict[str, object]], session: object) -> list[dic
 
 
 async def messageAgent(target: str = '', message: str = '') -> str:
-    """Send one DM to another Bot (the single send path).
+    """Send one DM from the orchestrator's main chat to a Bot (the single send path).
 
-    Gate re-check: only a canonical Bot Chat may send. Validates the target
-    against the live roster, applies the body cap + self/in-flight guards,
-    enqueues the inbox row, and spawns the delivery task — returning an ack
-    immediately (fire-and-forget). The recipient's reply wakes the sender.
+    Gate re-check: only the orchestrator's main chat may send (orchestrator-to-bot
+    by owner decision — a Bot cannot message anyone). Validates the target
+    against the live roster, applies the body cap + in-flight guards, enqueues
+    the inbox row, and spawns the delivery task — returning an ack immediately
+    (fire-and-forget). The recipient's reply wakes the sender.
     """
     from app.services.workbench.workbench import get_session
 
     session = get_session()
-    sender_agent = as_str(getattr(session, 'agentId', '')) if session else ''
-    if not is_dm_session(session) or not sender_agent:
+    if not is_orchestrator_chat(session):
         return _err(
-            'message_agent is only available in a Bot\'s own chat.',
+            'message_agent is only available in the main chat — the orchestrator '
+            'messages Bots; a Bot cannot message anyone.',
             reason_code=REASON_NO_CHAT,
         )
+    # The sender is the ORCHESTRATOR, not a roster bot: attributed as August,
+    # with no agentId on the wake turn (the main chat runs as the main agent).
+    sender_agent = 'August'
     sender_session = as_str(getattr(session, 'id', ''))
     body = (message or '').strip()
     if not body:
@@ -571,7 +597,12 @@ async def deliver(dm_id: int, *, runner: object = None) -> str:
                 f'(@{_handle_for(to_agent)}) in reply to your message:\n'
                 + (reply or '(the recipient Bot sent no text reply)')
             )
-            await _run_turn(from_session, wake, from_agent, runner)
+            # The wake runs as the SENDER's own agent: a Bot sender wakes in its
+            # bot chat under its agentId; the orchestrator's main chat wakes as
+            # the main agent (no agentId — 'August' is an attribution handle,
+            # not a roster id).
+            wake_agent = from_agent if roster.get_bot(from_agent) else ''
+            await _run_turn(from_session, wake, wake_agent, runner)
         return 'delivered'
     except Exception:
         logger.debug('dm deliver failed for %s', dm_id, exc_info=True)
@@ -583,18 +614,18 @@ async def deliver(dm_id: int, *, runner: object = None) -> str:
 
 
 def register() -> None:
-    """Register the message_agent tool (offered only in canonical Bot Chats —
-    see ``filter_dm_tools``, wired into both tool-definition paths)."""
+    """Register the message_agent tool (offered only in the orchestrator's main
+    chat — see ``filter_dm_tools``, wired into both tool-definition paths)."""
     from app.services import tool_registry
 
     tool_registry.register(
         _MESSAGE_AGENT,
-        'Send one direct message to another Bot (the ONLY way to contact a '
-        'teammate). Compose your OWN short paraphrase of the intent — never '
+        'Send one direct message to a Bot from this main chat (the ONLY way to '
+        'contact one). Compose your OWN short paraphrase of the intent — never '
         'forward the user\'s words verbatim. Runs one headless turn in the '
-        'recipient\'s chat; its reply wakes you and you relay it to the user. '
-        'Do not ping-pong; do not message a Bot that already has one of your '
-        'messages in flight.',
+        'recipient\'s chat; its reply wakes you here and you relay it to the '
+        'user. Do not ping-pong; do not message a Bot that already has one of '
+        'your messages in flight.',
         messageAgent,
         {
             'type': 'object',
@@ -614,12 +645,13 @@ def register() -> None:
 
 
 def messaging_hint(agent_id: str) -> str:
-    """The roster + protocol block for a canonical Bot Chat's system context.
+    """The roster + protocol block for the ORCHESTRATOR's main chat.
 
-    Empty for non-Bot sessions (the gate in ``filter_dm_tools`` keeps the tool
-    out of their surface, so the prompt must not advertise it either).
+    Inverted with the messaging direction (orchestrator-to-bot): the MAIN chat
+    (no agentId) carries the block; a Bot's canonical chat — which may no
+    longer message anyone — must not advertise the tool in its prompt either.
     """
-    if not agent_id:
+    if agent_id:
         return ''
     roster = protocol.roster_block()
     if not roster:

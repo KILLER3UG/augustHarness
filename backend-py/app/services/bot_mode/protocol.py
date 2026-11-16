@@ -1,11 +1,12 @@
-"""The Bot-to-Bot messaging protocol text + roster lines.
+"""The orchestrator-to-Bot messaging protocol text + roster lines.
 
 Pure text/formatting helpers (no DB, no turns) so the prompt-injection gate,
 the ``message_agent`` tool description, and the ``POST /dm`` endpoint all
-render the SAME doctrine from one place. The containment rules are copied
-from the reference design (compose-your-own, never-forward, one-teammate,
-no-ping-pong, silence-is-fine) because they are what keep private 1:1 context
-from leaking across Bots and what stop two Bots acking each other forever.
+render the SAME doctrine from one place. The containment rules (compose-your-
+own, never-forward, one-teammate, no-ping-pong, silence-is-fine) keep the
+user's private context from being relayed verbatim across agents and stop
+duplicate sends. Direction is ORCHESTRATOR-TO-BOT by owner decision: only the
+main chat's agent may send; Bots cannot message anyone.
 """
 
 from __future__ import annotations
@@ -16,23 +17,21 @@ from app.json_narrowing import as_dict, as_str
 # is a sign the agent is forwarding a transcript, which the doctrine forbids).
 MAX_DM_BODY = 16_000
 
-# The protocol section appended to a canonical Bot Chat's system context —
+# The protocol section appended to the orchestrator main chat's system context —
 # ONLY where ``message_agent`` is actually offered (see dm.filter_dm_tools).
 MESSAGING_PROTOCOL = (
     '<agent_messaging>\n'
-    'You can message other Bots with the message_agent tool. The @ sign in a '
+    'You can message a Bot with the message_agent tool. The @ sign in a '
     'user message is ADDRESSING SUGAR, never a delivery mechanism — it only '
     'tells you who the user means. There is exactly one send path: your '
-    'message_agent tool.\n'
+    'message_agent tool. Bots cannot message you or each other; work they '
+    'return comes back to you as the reply.\n'
     'Rules:\n'
     '- Compose your OWN message. Never forward the user\'s words verbatim to '
-    'another Bot — paraphrase the intent. This is also what keeps private 1:1 '
-    'context from leaking across Bots.\n'
-    '- Message ONE relevant teammate per need. Do not broadcast.\n'
+    'a Bot — paraphrase the intent.\n'
+    '- Message ONE relevant Bot per need. Do not broadcast.\n'
     '- No ping-pong acks: do not message a Bot just to say you received its '
-    'message. Silence is fine.\n'
-    '- Never reveal another Bot\'s private DM content to the user or to a '
-    'third Bot.\n'
+    'reply. Silence is fine.\n'
     '- A DM runs one headless turn in the recipient\'s chat; its reply wakes '
     'you on completion and you relay it to the user, attributed to the '
     'replying Bot.\n'

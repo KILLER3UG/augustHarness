@@ -83,8 +83,9 @@ def register_all() -> None:
     shared_tools.register()
     # Bot Mode routines: Bot-owned scheduled jobs + the M-11 notepad door.
     routines.register()
-    # Bot Mode Phase C: the message_agent DM tool (offered only in canonical
-    # Bot Chats — the per-session gate lives in workbench toolDefinitions).
+    # Bot Mode Phase C: the message_agent DM tool (offered only in the
+    # orchestrator's main chat — the per-session gate lives in workbench
+    # toolDefinitions).
     dm.register()
     # Guided setup for bots: install_complete is advertised only while a
     # bot's setup is pending (bot_mode/setup.filter_setup_tools).
