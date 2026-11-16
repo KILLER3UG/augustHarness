@@ -612,6 +612,9 @@ class DaemonManager:
             provider = providerResolver.resolve(provider_hint or model)
             if not provider:
                 return f'[daemon: no provider resolved for model {model!r}]'
+            # The fleet model id must ride on the client config: generate()
+            # reads config['model'], and a provider row alone carries no model.
+            provider = {**provider, 'model': model}
             client = getClient(provider)
             if client is None:
                 return f'[daemon: no client for provider of {model!r}]'

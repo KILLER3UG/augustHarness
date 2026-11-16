@@ -196,6 +196,9 @@ async def _compose(facts: dict[str, object]) -> str:
         provider = providerResolver.resolve(provider_hint or model)
         if not provider:
             return _fallback_brief(facts)
+        # The role's model id must ride on the client config: generate() reads
+        # config['model'], and a provider row alone carries no model.
+        provider = {**provider, 'model': model}
         client = getClient(provider)
         if client is None:
             return _fallback_brief(facts)
