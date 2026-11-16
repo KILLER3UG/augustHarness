@@ -104,6 +104,11 @@ def _startTurnTask(
             pass
 
     async def safeStream():
+        # The release pass consults this: a chat turn on the local model must
+        # never have its server released between requests (the 2026-11-16
+        # memory-pressure release killed the model in a tool-execution gap and
+        # the turn died on retries).
+        wb.noteTurnActive(sessionId)
         try:
             await wb.sendWorkbenchMessageStream(
                 sessionId=sessionId,
@@ -168,6 +173,7 @@ def _startTurnTask(
                 _cancelled.pop(sessionId, None)
             if _activeStreams.get(sessionId) is task:
                 _activeStreams.pop(sessionId, None)
+            wb.noteTurnIdle(sessionId)
             _notify_chat_idle()
             # Re-arm the auto-turn. A subagent/daemon completion that landed
             # after this turn's LAST queue drain finds no live turn to pick it

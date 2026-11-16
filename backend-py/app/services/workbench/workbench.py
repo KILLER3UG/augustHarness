@@ -6848,6 +6848,42 @@ _READ_ONLY_SHELL_PASSTHROUGH = frozenset({
 })
 
 
+# ── in-flight turn registry (router-maintained) ──────────────────────────────
+# The release pass must know a CHAT TURN is active, not just a request. The
+# per-request busy renewal (providers/clients/base.py) covers the seconds a
+# model call takes; the gaps BETWEEN calls inside one turn — tool execution,
+# retry backoff — were unguarded, and under memory pressure the release killed
+# a freshly loaded server in exactly such a gap (2026-11-16), after which the
+# turn died on its retries. The router marks turn start/end here; the release
+# pass asks before stopping a local server.
+_activeTurnSessionIds: set[str] = set()
+
+
+def noteTurnActive(sessionId: str) -> None:
+    if sessionId:
+        _activeTurnSessionIds.add(sessionId)
+
+
+def noteTurnIdle(sessionId: str) -> None:
+    _activeTurnSessionIds.discard(sessionId)
+
+
+def anyActiveTurnOnProvider(provider_names: set[str]) -> bool:
+    """True while any in-flight turn runs on one of the named providers."""
+    wanted = {p.strip().lower() for p in provider_names if p}
+    if not wanted or not _activeTurnSessionIds:
+        return False
+    for sid in list(_activeTurnSessionIds):
+        try:
+            sess = getWorkbenchSession(sid)
+            name = as_str(getattr(sess, 'provider', '') or '', '').strip().lower()
+            if name in wanted:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _checkToolGuard(session: WorkbenchSession, toolName: str, args: dict[str, object]) -> str | None:
     """Check if a tool execution is blocked by guard mode or permissions.
 

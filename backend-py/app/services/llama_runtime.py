@@ -1233,6 +1233,23 @@ async def release_warm(
                 'a generation is in flight — the release waits for it to finish',
             )
             continue
+        # A CHAT TURN active on the local provider also defers the release:
+        # the busy mark above only covers a request in flight, and the gaps
+        # between a turn's requests (tool execution, retry backoff) are where
+        # a memory-pressure release killed a fresh server mid-turn (found
+        # live, 2026-11-16 — the turn then died on its retries).
+        try:
+            from app.services.workbench.workbench import anyActiveTurnOnProvider
+
+            if anyActiveTurnOnProvider({'local-models', 'localmodels'}):
+                _emit_status(
+                    'release-deferred',
+                    str(row.get('name', '')),
+                    'a chat turn is active on this model — the release waits for it to finish',
+                )
+                continue
+        except (ImportError, AttributeError, RuntimeError):
+            pass
         reason = ''
         if release_on_battery and on_battery():
             reason = 'on battery'
