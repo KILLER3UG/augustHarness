@@ -65,6 +65,15 @@ def _sentences(text: str) -> list[str]:
     return out
 
 
+def _shorten(text: str, cap: int) -> str:
+    """Trim to a word boundary under cap, so slide text never cuts mid-word."""
+    text = text.strip()
+    if len(text) <= cap:
+        return text
+    cut = text[: cap - 1].rsplit(' ', 1)[0].rstrip(' ,;:.')
+    return cut + '…'
+
+
 def _bullets(text: str, cap: int = _MAX_BULLETS) -> list[str]:
     """Concise bullets from a chapter, cut at sentence boundaries.
 
@@ -73,7 +82,7 @@ def _bullets(text: str, cap: int = _MAX_BULLETS) -> list[str]:
     """
     out: list[str] = []
     for sentence in _sentences(text):
-        bullet = sentence if len(sentence) <= _MAX_BULLET_CHARS else sentence[:_MAX_BULLET_CHARS - 1].rstrip() + '…'
+        bullet = _shorten(sentence, _MAX_BULLET_CHARS)
         if bullet not in out:
             out.append(bullet)
         if len(out) >= cap:
@@ -121,11 +130,13 @@ def _buildSlides(root: Path, title: str) -> Path:
     contentSlide('Conclusions', _bullets(chapters['chapter5.md']))
 
     # Practice-oriented slides: the committee probes the chain, not just the prose.
+    # One question per traceability row, echoing the practice-Q&A phrasing; the
+    # objective is trimmed at a word boundary, never mid-word.
     rows = _matrixRows(root)
     qaBullets = []
     for row in rows:
         if len(row) >= 4 and row[0]:
-            qaBullets.append(f"How does '{row[0][:70]}' run from method to conclusion?")
+            qaBullets.append(f"{_shorten(row[0], 90)} — how? what did you find? so what?")
     qaBullets.append('What are the limitations of this work?')
     qaBullets.append('Why these sources, and how do you know they are real?')
     contentSlide('Questions to expect', qaBullets[:6])
