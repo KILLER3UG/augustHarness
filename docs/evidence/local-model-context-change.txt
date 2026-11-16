@@ -38,6 +38,15 @@ Vulkan llama.cpp. Commits 018a9488 (backend) + 9fcca3ff (frontend).
    The tool waited for the new server (ensure_local_ready) before
    returning, so the same turn continued on the new port.
 
-Not verified live yet: the OOM fallback (no model here fails to load at
-8k/16k — the 4050 has the memory for this 1.7B at these windows); the
-receipt card + undo button rendering in the desktop shell (Part C).
+Not verified live yet: the receipt card + undo button rendering in the
+desktop shell (Part C).
+
+6. OOM fallback attempt (2026-11-17)
+   Requested ctx 131072 on the 1.7B (RTX 4050 Laptop) expecting a load
+   failure — the model LOADED and served at 131072 (no OOM: the 4050
+   offloads this 1.7B comfortably even at the cap). The fallback path
+   (previousCtxSize → one retry → visible ctx-fallback event) therefore
+   remains verified by the gate suite + code path only; no model on this
+   machine fails to load at these windows. Restored to 8192 afterwards.
+   The guards around the request were confirmed live: the response carried
+   the trained-window warning for 131072.
