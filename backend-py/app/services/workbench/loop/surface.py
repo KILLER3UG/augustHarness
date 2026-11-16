@@ -406,10 +406,22 @@ def _finalize_session_tools(
 
 
 def _toolResultCap(session: WorkbenchSession) -> int:
-    """Per-model tool-result truncation cap (falls back to the harness default)."""
+    """Per-model tool-result truncation cap.
+
+    Falls back to the harness default — SCALED TO THE MODEL'S WINDOW when the
+    profile carries one: a 64 KiB result inside an 8k window is the overflow
+    the A.2 reliability run hit (three tool rounds exceeded the whole context).
+    A small window gets a proportionally small cap; an explicit profile value
+    still wins.
+    """
     profile = _modelCapabilityProfile(session)
     cap = as_int(profile.get('max_tool_result_chars'), 0)
-    return cap if cap > 0 else MAX_TOOL_RESULT_CHARS
+    if cap > 0:
+        return cap
+    window = as_int(profile.get('context_window'), 0)
+    if window > 0:
+        return max(2048, min(MAX_TOOL_RESULT_CHARS, window // 2))
+    return MAX_TOOL_RESULT_CHARS
 
 
 def _mcpToolDefinitionsAnthropic(seen: set[str]) -> list[dict[str, object]]:
