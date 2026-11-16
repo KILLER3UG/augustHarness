@@ -516,6 +516,7 @@ export function ModelEffortMenu({
             variant="bare"
             onClick={openModels}
             title={`Context length ${selected.contextWindow.toLocaleString()} tokens — click to change`}
+            aria-label={`Context length ${Math.round(selected.contextWindow / 1024)}k tokens — open the model menu to change it`}
             data-testid="model-context-chip"
             className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[0.75rem] text-muted-foreground/85 transition-colors duration-200 hover:bg-muted/50 hover:text-foreground"
           >
@@ -730,6 +731,7 @@ export function ModelEffortMenu({
                             variant="bare"
                             onClick={() => applyCtx(c)}
                             title={`Set context to ${Math.round(c / 1024)}k tokens`}
+                            aria-pressed={readyLocalServer.ctxSize === c}
                             className={cn(
                               'rounded-[4px] border px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 transition-colors',
                               readyLocalServer.ctxSize === c

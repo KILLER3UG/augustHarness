@@ -1074,8 +1074,25 @@ _BUSY_UNTIL: dict[int, float] = {}
 _BUSY_DEFAULT_TTL_S = 180.0
 
 
+_LAST_STATUS_EMITTED: dict[tuple[str, str, str], float] = {}
+_LAST_STATUS_TTL_S = 90.0
+
+
 def _emit_status(status: str, name: str, detail: str) -> None:
-    """A user-visible local-model lifecycle event on the realtime bus."""
+    """A user-visible local-model lifecycle event on the realtime bus.
+
+    The release pass runs on a schedule, so an unchanged condition re-emits the
+    same event every tick — six identical "release waits" toasts stacked during
+    one wedged turn (found live, 2026-11-17). A repeat of the SAME
+    (status, name, detail) within the TTL is dropped; a real state change
+    always emits.
+    """
+    key = (status, name, detail)
+    now = time.monotonic()
+    last = _LAST_STATUS_EMITTED.get(key, 0.0)
+    if now - last < _LAST_STATUS_TTL_S:
+        return
+    _LAST_STATUS_EMITTED[key] = now
     from app.services.realtime_bus import emit_realtime
 
     emit_realtime('local-model-status', status=status, name=name, detail=detail)
