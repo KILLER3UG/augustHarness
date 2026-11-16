@@ -657,6 +657,12 @@ async def call_anthropic_workbench(
         )
     else:
         thinking_budget, max_tokens = 0, model_out
+    # Output floor for LOCAL models — same rule as the OpenAI path: a local
+    # reasoning model that starves the reply ends thinking-only.
+    from app.providers.api_format import is_loopback_base_url as _isLoopback
+
+    if _isLoopback(provider.get('baseUrl') if provider else None):
+        max_tokens = max(1024, int(max_tokens or 0))
     req = AnthropicRequest(model=model, max_tokens=max_tokens)
     body = buildAnthropicUpstreamRequest(req, model, [{'type': 'text', 'text': system_text}])
     body['messages'] = anthropicMessages
@@ -879,6 +885,14 @@ async def call_openai_workbench(
         _budget, max_tokens = resolve_completion_limits(effort, max_output_tokens=model_out)
     else:
         max_tokens = model_out
+    # Output floor for LOCAL models: a small local reasoning model spends the
+    # reply budget ON the reasoning and ends the turn with empty content — the
+    # honest answer needs headroom. A configured ceiling below 1024 on a
+    # loopback model is a starvation knob, so the floor wins in code.
+    from app.providers.api_format import is_loopback_base_url as _isLoopback
+
+    if _isLoopback(provider.get('baseUrl') if provider else None):
+        max_tokens = max(1024, int(max_tokens or 0))
     body['max_tokens'] = max_tokens
     if tools:
         body['tools'] = tools
@@ -1253,6 +1267,11 @@ async def call_responses_workbench(
         _budget, max_tokens = resolve_completion_limits(effort, max_output_tokens=model_out)
     else:
         max_tokens = model_out
+    # Output floor for LOCAL models — same rule as the chat paths.
+    from app.providers.api_format import is_loopback_base_url as _isLoopback
+
+    if _isLoopback(provider.get('baseUrl') if provider else None):
+        max_tokens = max(1024, int(max_tokens or 0))
     body['max_output_tokens'] = max_tokens
     respTools = _responses_tools(tools)
     if respTools:
