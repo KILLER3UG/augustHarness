@@ -539,6 +539,31 @@ class HTTPishError(RuntimeError):
     """A user-facing failure (becomes a 400 in the router)."""
 
 
+async def _ctx_fallback_reload(row: dict[str, Any]) -> bool:
+    """A context change that failed to load falls back, ONCE, to the previous
+    working context length — visibly, with the reason on the realtime bus.
+
+    The fallback is recorded by the row that carries ``previousCtxSize`` (set
+    only by :func:`change_server_context`), so an ordinary serve that fails
+    keeps its honest ``failed`` row instead of silently retrying.
+    """
+    prev = int(row.get('previousCtxSize') or 0)
+    current = int(row.get('ctxSize') or 0)
+    if not prev or prev == current:
+        return False
+    name = str(row.get('name', ''))
+    logger.warning(
+        'ctx %s failed to load for %s — falling back to the previous %s', current, name, prev
+    )
+    _emit_status(
+        'ctx-fallback',
+        name,
+        f'context {current} exceeded what this machine could load — reloading with the previous {prev}',
+    )
+    await start_gguf_server(str(row.get('ggufPath', '')), ctx_size=prev)
+    return True
+
+
 async def _await_server_ready(
     row: dict[str, Any],
     proc: asyncio.subprocess.Process,
@@ -560,6 +585,8 @@ async def _await_server_ready(
         if proc.returncode is not None:
             row['status'] = 'failed'
             row['detail'] = f'llama-server exited with code {proc.returncode} while loading'
+            if await _ctx_fallback_reload(row):
+                return
             _persist_row(row)
             return
         try:
@@ -593,6 +620,8 @@ async def _await_server_ready(
     if not ready:
         row['status'] = 'failed'
         row['detail'] = 'model did not finish loading in time — try again or pick a smaller context'
+        if await _ctx_fallback_reload(row):
+            return
         _persist_row(row)
         return
 
@@ -735,6 +764,75 @@ async def stop_gguf_server(server_id: str) -> dict[str, Any]:
 
     emit_invalidate('llama-servers', 'aggregated-models', 'ws-providers', 'provider-availability')
     return {'stopped': server_id}
+
+
+# ── context length: the user-set window of a served model ──────────────────
+
+_CTX_MIN_TOKENS = 1024
+_CTX_MAX_TOKENS = 131072
+_CTX_WARN_ABOVE = 32768
+
+
+async def change_server_context(server_id: str, ctx_size: int) -> dict[str, Any]:
+    """Change a served local model's context length: stop it, relaunch
+    llama-server with the new ``--ctx-size``, and let the ordinary serve path
+    repoint the provider, re-price ``contextWindow``, and refresh the warm
+    record (so wake/login preload and crash restarts keep the new length).
+
+    A generation in flight is never interrupted — the change refuses while the
+    server is busy and the caller retries after the turn. If the model cannot
+    load at the new size (typically out of memory), the ready-watcher falls
+    back once to the previous working length and says so on the realtime bus.
+    """
+    try:
+        ctx = int(ctx_size)
+    except (TypeError, ValueError) as exc:
+        raise HTTPishError('context size must be a number of tokens') from exc
+    if ctx < _CTX_MIN_TOKENS or ctx > _CTX_MAX_TOKENS:
+        raise HTTPishError(
+            f'context size must be between {_CTX_MIN_TOKENS} and {_CTX_MAX_TOKENS} tokens'
+        )
+
+    rows = _load_servers()
+    row = next((r for r in rows if r.get('id') == server_id), None)
+    if not row:
+        raise HTTPishError(f'No such local server: {server_id}')
+    if str(row.get('status', '')) != 'ready':
+        raise HTTPishError(
+            f'{row.get("name", server_id)} is {row.get("status", "unknown")} — '
+            'wait for it to finish loading, then change the context'
+        )
+    if server_busy(int(row.get('port', 0))):
+        raise HTTPishError(
+            'a generation is in flight on this model — wait for the current '
+            'reply to finish, then change the context'
+        )
+
+    previous = int(row.get('ctxSize', 8192) or 8192)
+    if ctx == previous:
+        return {'row': row, 'changed': False, 'previousCtxSize': previous}
+
+    await stop_gguf_server(server_id)
+    new_row = await start_gguf_server(str(row.get('ggufPath', '')), ctx_size=ctx)
+    new_row['previousCtxSize'] = previous
+    _persist_row(new_row)
+    _emit_status(
+        'ctx-changing',
+        str(new_row.get('name', '')),
+        f'context {previous} → {ctx} — loading model…',
+    )
+    return {'row': new_row, 'changed': True, 'previousCtxSize': previous}
+
+
+def context_warning_for(ctx_size: int) -> str:
+    """The trained-window caveat, kept in one place for the API and the tool."""
+    if ctx_size > _CTX_WARN_ABOVE:
+        return (
+            f'{ctx_size} tokens is above most small models\' trained context '
+            'window — quality may degrade past it, and memory use grows with '
+            'the window'
+        )
+    return ''
 
 
 async def shutdown_all() -> None:

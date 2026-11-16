@@ -3021,6 +3021,25 @@
         "title": "SecurityBody",
         "type": "object"
       },
+      "ServerContextBody": {
+        "description": "One served model's new context length, in tokens.",
+        "properties": {
+          "ctxSize": {
+            "title": "Ctxsize",
+            "type": "integer"
+          },
+          "serverId": {
+            "title": "Serverid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverId",
+          "ctxSize"
+        ],
+        "title": "ServerContextBody",
+        "type": "object"
+      },
       "ServerStopBody": {
         "properties": {
           "serverId": {
@@ -11990,6 +12009,43 @@
           }
         },
         "summary": "Servers"
+      }
+    },
+    "/api/local-models/servers/context": {
+      "post": {
+        "description": "Change a served local model's context length (stop → relaunch with the\nnew ``--ctx-size``). Refuses while a generation is in flight; the row\nreturns as ``starting`` — poll GET /servers. If the model cannot load at\nthe new size, the runtime falls back once to the previous working length\nand says so on the realtime bus.",
+        "operationId": "server_context_api_local_models_servers_context_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerContextBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Server Context"
       }
     },
     "/api/local-models/servers/stop": {

@@ -47,6 +47,13 @@ class ServerStopBody(CamelModel):
     server_id: str
 
 
+class ServerContextBody(CamelModel):
+    """One served model's new context length, in tokens."""
+
+    server_id: str
+    ctx_size: int
+
+
 class RuntimeInstallBody(CamelModel):
     """Empty body = auto-detect the variant; ``variant`` overrides it."""
 
@@ -259,6 +266,23 @@ async def server_stop(body: ServerStopBody):
         return await llama_runtime.stop_gguf_server(body.server_id)
     except llama_runtime.HTTPishError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post('/servers/context')
+async def server_context(body: ServerContextBody):
+    """Change a served local model's context length (stop → relaunch with the
+    new ``--ctx-size``). Refuses while a generation is in flight; the row
+    returns as ``starting`` — poll GET /servers. If the model cannot load at
+    the new size, the runtime falls back once to the previous working length
+    and says so on the realtime bus."""
+    from app.services import llama_runtime
+
+    try:
+        result = await llama_runtime.change_server_context(body.server_id, body.ctx_size)
+    except llama_runtime.HTTPishError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result['warning'] = llama_runtime.context_warning_for(body.ctx_size)
+    return result
 
 
 # ── Hugging Face (Phase 2) ─────────────────────────────────────────────────

@@ -3898,6 +3898,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/local-models/servers/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Server Context
+         * @description Change a served local model's context length (stop → relaunch with the
+         *     new ``--ctx-size``). Refuses while a generation is in flight; the row
+         *     returns as ``starting`` — poll GET /servers. If the model cannot load at
+         *     the new size, the runtime falls back once to the previous working length
+         *     and says so on the realtime bus.
+         */
+        post: operations["server_context_api_local_models_servers_context_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/local-models/servers/stop": {
         parameters: {
             query?: never;
@@ -9947,6 +9971,16 @@ export interface components {
             filesystemScope?: string | null;
             /** Postobservationscreenshot */
             postObservationScreenshot?: boolean | null;
+        };
+        /**
+         * ServerContextBody
+         * @description One served model's new context length, in tokens.
+         */
+        ServerContextBody: {
+            /** Ctxsize */
+            ctxSize: number;
+            /** Serverid */
+            serverId: string;
         };
         /** ServerStopBody */
         ServerStopBody: {
@@ -16605,6 +16639,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    server_context_api_local_models_servers_context_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerContextBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
