@@ -625,6 +625,9 @@ async def _writeFile(path: str, content: str, **_extra: object) -> str:
             )
             if _journal_err:
                 return _journal_err
+            from app.services import paper_provenance
+
+            paper_provenance.record_draft_write(filePath, content, tool='write_file')
             return f'Successfully wrote {len(content.encode("utf-8"))} bytes to {path}'
         import aiofiles
 
@@ -636,6 +639,12 @@ async def _writeFile(path: str, content: str, **_extra: object) -> str:
         # difference is visible to the model on the next read.
         async with aiofiles.open(str(filePath), 'w', encoding='utf-8', newline='') as f:
             await f.write(content)
+        # Provenance sidecar: a paper-chapter draft records its own
+        # attribution (agent-drafted) automatically — the skill teaches the
+        # habit, the tool enforces it.
+        from app.services import paper_provenance
+
+        paper_provenance.record_draft_write(filePath, content, tool='write_file')
         try:
             from app.services.workbench.context import currentSessionId as _csid_w
 
