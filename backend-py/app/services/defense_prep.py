@@ -23,6 +23,10 @@ from pptx import Presentation
 
 logger = logging.getLogger(__name__)
 
+_MAX_BULLETS = 6
+_MAX_BULLET_CHARS = 150
+
+
 def _read(root: Path, rel: str) -> str:
     p = root / rel
     if p.is_file():
@@ -42,17 +46,36 @@ def _title(root: Path) -> str:
             return line[2:].strip()
     return root.name
 
-def _bullets(text: str, cap: int = 5) -> list[str]:
-    """Concise bullets from a chapter: its non-heading lines, trimmed."""
+def _clean(line: str) -> str:
+    """Strip markdown emphasis and hard wraps from a line of a draft."""
+    line = re.sub(r'\*\*(.+?)\*\*', r'\1', line)
+    line = re.sub(r'\*(.+?)\*', r'\1', line)
+    return line.strip()
+
+
+def _sentences(text: str) -> list[str]:
+    """Sentences of a block of text, blank lines and headings removed."""
+    body = '\n'.join(line for line in text.splitlines() if not line.strip().startswith('#'))
+    body = re.sub(r'\s*\n\s*', ' ', body)
+    out = []
+    for sentence in re.split(r'(?<=[.!?])\s+', body):
+        sentence = _clean(sentence)
+        if len(sentence) > 25:
+            out.append(sentence)
+    return out
+
+
+def _bullets(text: str, cap: int = _MAX_BULLETS) -> list[str]:
+    """Concise bullets from a chapter, cut at sentence boundaries.
+
+    Cutting on the draft's hard-wrapped lines produces mid-sentence fragments,
+    so the text is joined, re-split on sentences and trimmed to a usable length.
+    """
     out: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        line = re.sub(r'\*\*(.+?)\*\*', r'\1', line)
-        if len(line) > 160:
-            line = line[:157].rstrip() + '…'
-        out.append(line)
+    for sentence in _sentences(text):
+        bullet = sentence if len(sentence) <= _MAX_BULLET_CHARS else sentence[:_MAX_BULLET_CHARS - 1].rstrip() + '…'
+        if bullet not in out:
+            out.append(bullet)
         if len(out) >= cap:
             break
     return out or ['(no content drafted)']
