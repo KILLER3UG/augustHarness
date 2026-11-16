@@ -147,16 +147,36 @@ LibreOffice. Page screenshots of the PDF are still owed (needs a PDF
 rasterizer or the desktop viewer). First-launch picker on a genuinely clean
 profile: not yet run (needs the desktop shell — Part C).
 
+## Spec-conformance changes (owner: "implement those", 2026-11-16)
+
+All six Step-0 discrepancies are now resolved in code (one commit each):
+- **Messaging direction** (4be18508): `message_agent` is offered ONLY in the
+  orchestrator's main chat; bot chats and subagents get it dropped; the
+  protocol text, tool description and prompt block rewritten; the reply wake
+  in the main chat runs as the main agent. Verified: gate offers/drops per
+  session kind, handler fails closed from a bot chat.
+- **Guided setup deleted** (a4880936): setup.py, install_complete, the
+  pending prompt section, the roster accessors, create_agent's
+  setup_required field (OpenAPI + client regenerated). create_bot is the
+  replacement — bots are born fully configured.
+- **Rooms deleted** (0b9bd351): bot_mode/rooms.py (−673 lines incl. the dead
+  frontend API client calling routes that no longer existed).
+- **Board folded into Runs** (172c82ee): the kanban + team launcher + live
+  run-sync render as a section of Runs; /board redirects to /runs; the
+  separate page and its nav item are gone. Nav items: 9 → **8**.
+- **Live deleted** (172c82ee): the hidden route, all seven surface files and
+  the lazy import; /live redirects to chat.
+- **Cerebellum cloud default**: left as configured — the brief now labels it
+  in Settings + the receipt and offers titles-only; switching the install's
+  fleet binding is the owner's config choice, not a code change.
+
 ## Part B inventory (static pass — live click-through is Part C, not yet run)
 
 Screens (SECTION_ROUTES, `frontend/desktop/src/routes.ts`): Chat `/`+`/c/:id`,
-Automations, Runs, Board, Charts, Artifacts, History, Learning, Docs — **9 nav
-items**. Settings renders as a DIALOG over the live chat (not a route swap).
-Live (`/live`) still exists as a hidden route (nav:false, deletion deferred to
-"Phase 3" per its comment) — the brief says Live/voice is deleted; the CODE is
-still there (LiveSurface, LiveControls, useLiveSession…). Board is still a
-SEPARATE nav page — the brief says Board folded into Runs. Both are
-discrepancies to raise at the stop; removal waits for approval either way.
+Automations, Runs (with the folded Board section), Charts, Artifacts,
+History, Learning, Docs — **8 nav items**. Settings renders as a DIALOG over
+the live chat (not a route swap). The Live surface is deleted (its deep link
+redirects to chat), and the Board page is folded into Runs.
 
 Settings: 51 registry ids across ~30 section files — far more than the
 minimal surface the brief wants; defaults review belongs to Part C/D.
@@ -216,17 +236,11 @@ Done and verified this session:
 Open / owed:
 - A.8: PDF page screenshots; first-launch picker on a genuinely clean profile
   (desktop shell needed).
-- Part B: live agent-driven checks (the GAP list above) — not yet run.
+- Part B: live agent-driven checks (the GAP list above) — in progress.
 - Part C: live click-through of every inventory item, states, themes,
-  keyboard, resize — not yet run.
-- Discrepancies needing owner rulings (flagged, not chosen): (1) bot-to-bot
-  messaging is ON in code (message_agent in bot chats) vs the decision
-  "orchestrator-to-bot only"; the orchestrator chat has NO DM tool. (2)
-  bot_mode/setup.py still exists (gated install_complete) vs "setup.py
-  deleted". (3) rooms.py store survives (purge-only) vs "rooms deleted". (4)
-  Board is still a separate page vs "folded into Runs". (5) Live route code
-  remains (hidden) vs "Live/voice deleted". (6) The cerebellum role points at
-  a CLOUD model (kilo-auto/free) on this install — the brief now labels it
-  and offers titles-only, but the default itself is the owner's call.
+  keyboard, resize — in progress.
+- The six spec-vs-code discrepancies are IMPLEMENTED (see the
+  spec-conformance section); the cerebellum cloud binding remains a config
+  choice for the owner (labeled + titles-only available).
 
-Next session: Part C live audit in the Tauri shell, then STOP 1 for real.
+Next: finish the live audit, then STOP 1.
