@@ -6,6 +6,7 @@ import { SavePointChip } from '@/components/chat/SavePointChip';
 import { SkillReceiptChip } from '@/components/chat/SkillReceiptChip';
 import { MemorySaveChip } from '@/components/chat/MemorySaveChip';
 import { BotReceiptChip } from '@/components/chat/BotReceiptChip';
+import { ModelContextChip } from '@/components/chat/ModelContextChip';
 import type { WorkbenchCheckpoint } from '@/api/workbench';
 import type { ChatMessage, MessageBlock } from '@/types/chat';
 import type { GitDiffResult } from '@/api/git';
@@ -342,6 +343,10 @@ export function AssistantMessageContent({
             and an undo. Agent-driven creation still gets a view/edit/undo
             surface — the card is that surface, not a creation form. */}
         {!(isLast && streaming) && <BotReceiptChip tools={message.tools} />}
+        {/* A context-length change the orchestrator made via set_model_context,
+            with the same view/undo grammar: the card reports what the model
+            now runs and offers the previous length back. */}
+        {!(isLast && streaming) && <ModelContextChip tools={message.tools} />}
       </div>
       <AssistantMessageActions
         showActions={showActions}

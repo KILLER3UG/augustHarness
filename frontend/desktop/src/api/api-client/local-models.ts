@@ -87,6 +87,9 @@ export interface LlamaServerRow {
   status: 'starting' | 'ready' | 'failed';
   detail?: string;
   startedAt?: string;
+  /** Set only by a context change: the length the model ran before it. A
+   * failed load at the new size falls back to this, visibly. */
+  previousCtxSize?: number;
 }
 
 export function getLlamaRuntime(): Promise<LlamaRuntimeStatus> {
@@ -104,6 +107,23 @@ export function listLlamaServers(): Promise<{ servers: LlamaServerRow[] }> {
 export function serveGguf(path: string, ctxSize: number): Promise<LlamaServerRow> {
   return api.post('/api/local-models/gguf/serve', { path, ctxSize });
 }
+
+export interface ServerContextChange {
+  row: LlamaServerRow;
+  changed: boolean;
+  previousCtxSize: number;
+  /** The trained-window caveat, when the requested length is above it. */
+  warning?: string;
+}
+
+export function setLlamaServerContext(serverId: string, ctxSize: number): Promise<ServerContextChange> {
+  return api.post('/api/local-models/servers/context', { serverId, ctxSize });
+}
+
+/** The preset windows offered wherever a local model's context is set
+ * (serve-time picker, per-server control, composer menu). Custom values are
+ * any multiple of 1024 the backend accepts. */
+export const LOCAL_CTX_CHOICES = [4096, 8192, 16384, 32768] as const;
 
 export function stopLlamaServer(serverId: string): Promise<{ stopped: string }> {
   return api.post('/api/local-models/servers/stop', { serverId });

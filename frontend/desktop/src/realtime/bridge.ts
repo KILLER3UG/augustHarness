@@ -51,6 +51,26 @@ let es: EventSource | null = null;
 let started = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Local-model lifecycle events, toasted wherever the user happens to be.
+ * Only the states that change what the user can do right now — a model going
+ * down to reload, or coming back — not every poll tick. */
+function announceLocalModelStatus(ev: RealtimeEvent): void {
+  const status = String(ev.status || '');
+  const name = String(ev.name || 'local model');
+  const detail = String(ev.detail || '');
+  void import('sonner').then(({ toast }) => {
+    if (status === 'ctx-changing' || status === 'ctx-fallback') {
+      toast.warning(`${name}: ${detail}`);
+    } else if (status === 'loading') {
+      toast.info(`${name}: loading model…`);
+    } else if (status === 'ready') {
+      toast.success(`${name}: ${detail || 'ready'}`);
+    } else if (status === 'released' || status === 'release-deferred') {
+      toast.info(`${name}: ${detail}`);
+    }
+  });
+}
+
 function upsertSessionFromEvent(ev: RealtimeEvent): void {
   const sid = String(ev.sessionId || '');
   if (!sid) return;
@@ -232,6 +252,12 @@ function handleEvent(ev: RealtimeEvent): void {
       // Model (customize_ui tool) or another client changed UI colors —
       // repaint immediately so the whole app recolors live.
       applyExternalCustomization(ev.customization);
+      break;
+    case 'local-model-status':
+      // The local-model lifecycle (context change, load, release, fallback) is
+      // emitted on the bus for the user to SEE — a reload the user did not ask
+      // about must never be silent just because they are not on the tab.
+      announceLocalModelStatus(ev);
       break;
     case 'keepalive':
       break;

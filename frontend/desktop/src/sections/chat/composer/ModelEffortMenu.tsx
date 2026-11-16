@@ -25,13 +25,20 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, ChevronRight, Download, Search, X } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Check, ChevronDown, ChevronRight, Download, Loader2, Search, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { chipTrigger, menuFlyout, menuPanel } from '@/lib/motion';
 import { groupModelsByProvider, modelMatchesQuery } from '@/components/model/modelList';
+import {
+  listLlamaServers,
+  setLlamaServerContext,
+  LOCAL_CTX_CHOICES,
+} from '@/api/api-client/local-models';
 import type { ModelItem } from '../model-display';
 import { modelDisplayParts } from '../model-display';
 import type { EffortLevel } from '../hooks/useChatSend';
@@ -198,6 +205,42 @@ export function ModelEffortMenu({
   const modelChipRef = useRef<HTMLButtonElement>(null);
   const modelsPanelRef = useRef<HTMLDivElement>(null);
   const providerPanelRef = useRef<HTMLDivElement>(null);
+
+  // Local-model context control: the served model's window is a user setting
+  // (owner decision), so the picker offers it where the model is chosen — and
+  // only there, since a cloud provider has no window to set.
+  const qc = useQueryClient();
+  const serversQ = useQuery({
+    queryKey: ['llama-servers'],
+    queryFn: listLlamaServers,
+    enabled: pane === 'models',
+    refetchInterval: (q) =>
+      (q.state.data?.servers ?? []).some((s) => s.status === 'starting') ? 2000 : 15_000,
+  });
+  const readyLocalServer = useMemo(() => {
+    const servers = serversQ.data?.servers ?? [];
+    const active = activeProvider || selected?.provider || '';
+    if (active !== 'LocalModels') return null;
+    return servers.find((s) => s.status === 'ready') ?? null;
+  }, [serversQ.data, activeProvider, selected?.provider]);
+  const [customCtx, setCustomCtx] = useState('');
+
+  const applyCtx = useCallback(
+    (ctx: number) => {
+      const row = readyLocalServer;
+      if (!row || row.ctxSize === ctx) return;
+      setLlamaServerContext(row.id, ctx)
+        .then((res) => {
+          if (res.warning) toast.warning(res.warning);
+          else toast.success(`${row.name} → ${Math.round(ctx / 1024)}k context — loading…`);
+          void qc.invalidateQueries({ queryKey: ['llama-servers'] });
+        })
+        .catch((err: unknown) =>
+          toast.error(err instanceof Error ? err.message : 'Context change failed'),
+        );
+    },
+    [readyLocalServer, qc],
+  );
 
   const groups = useMemo(() => groupModelsByProvider(visibleModels), [visibleModels]);
   const activeGroup =
@@ -464,6 +507,21 @@ export function ModelEffortMenu({
   return (
     <>
       <div className="inline-flex min-w-0 shrink-0 items-center gap-1" data-testid="model-effort-control">
+        {/* The context chip of the visual spec: a local model's window sits
+            beside the model name — clickable, and it opens the same menu where
+            the presets live. A cloud model has no window, so no chip. */}
+        {selected?.provider === 'LocalModels' && selected.contextWindow > 0 && (
+          <Button
+            type="button"
+            variant="bare"
+            onClick={openModels}
+            title={`Context length ${selected.contextWindow.toLocaleString()} tokens — click to change`}
+            data-testid="model-context-chip"
+            className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[0.75rem] text-muted-foreground/85 transition-colors duration-200 hover:bg-muted/50 hover:text-foreground"
+          >
+            {Math.round(selected.contextWindow / 1024)}k
+          </Button>
+        )}
         <motion.button
           ref={modelChipRef}
           type="button"
@@ -655,6 +713,59 @@ export function ModelEffortMenu({
                     <span className="text-2xs text-muted-foreground">Extended thinking</span>
                     <ThinkingSwitch checked={thinkingEnabled} onChange={onThinkingChange} />
                   </div>
+                  {/* A served local model's window is a user setting: presets
+                      plus a custom value, applied by a clean reload. Cloud
+                      providers render nothing here — there is no window to set. */}
+                  {readyLocalServer && (
+                    <div
+                      className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
+                      data-testid="model-context-row"
+                    >
+                      <span className="text-2xs text-muted-foreground">Context</span>
+                      <div className="flex items-center gap-1">
+                        {LOCAL_CTX_CHOICES.map((c) => (
+                          <Button
+                            key={c}
+                            type="button"
+                            variant="bare"
+                            onClick={() => applyCtx(c)}
+                            title={`Set context to ${Math.round(c / 1024)}k tokens`}
+                            className={cn(
+                              'rounded-[4px] border px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 transition-colors',
+                              readyLocalServer.ctxSize === c
+                                ? 'border-primary/50 bg-primary/10 text-primary'
+                                : 'border-border/60 text-muted-foreground/70 hover:text-foreground',
+                            )}
+                          >
+                            {Math.round(c / 1024)}k
+                          </Button>
+                        ))}
+                        <input
+                          type="number"
+                          min={1024}
+                          step={1024}
+                          value={customCtx}
+                          onChange={(e) => setCustomCtx(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              const n = Number(customCtx);
+                              if (Number.isFinite(n) && n >= 1024) {
+                                applyCtx(n);
+                                setCustomCtx('');
+                              }
+                            }
+                          }}
+                          placeholder={String(readyLocalServer.ctxSize)}
+                          aria-label="Custom context size in tokens"
+                          className="h-5 w-14 rounded-[4px] border border-border/60 bg-transparent px-1 text-[0.5625rem] leading-3 text-foreground/85 outline-none placeholder:text-muted-foreground/50"
+                        />
+                        {readyLocalServer.status === 'starting' && (
+                          <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}

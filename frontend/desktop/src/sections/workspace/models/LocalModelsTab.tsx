@@ -40,7 +40,9 @@ import {
   scanGgufFolder,
   scanLocalServers,
   serveGguf,
+  setLlamaServerContext,
   stopLlamaServer,
+  LOCAL_CTX_CHOICES,
   type GgufEntry,
   type HfDownload,
   type HfFile,
@@ -54,7 +56,6 @@ import { refreshProviderCatalog } from '@/lib/provider-catalog';
 import { cn } from '@/lib/utils';
 
 const MODEL_CHIPS_SHOWN = 6;
-const CTX_CHOICES = [4096, 8192, 16384, 32768];
 
 function formatBytes(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—';
@@ -399,6 +400,21 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
     }
   }
 
+  // A context change is a clean stop → relaunch: the row flips back to
+  // "loading model…" until the ready poll flips it. A load failure at the new
+  // size falls back to the previous length server-side and says so in detail.
+  async function changeCtx(row: LlamaServerRow, ctx: number) {
+    if (ctx === row.ctxSize) return;
+    try {
+      const res = await setLlamaServerContext(row.id, ctx);
+      if (res.warning) toast.warning(res.warning);
+      else toast.success(`${row.name} → ${Math.round(ctx / 1024)}k context — loading…`);
+      await qc.invalidateQueries({ queryKey: ['llama-servers'] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Context change failed');
+    }
+  }
+
   return (
     <Card
       title="GGUF files on this machine"
@@ -418,7 +434,7 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
           className="h-7 rounded-md border border-border/60 bg-card/60 px-2 text-2xs"
           aria-label="Context size"
         >
-          {CTX_CHOICES.map((c) => (
+          {LOCAL_CTX_CHOICES.map((c) => (
             <option key={c} value={c}>
               {c / 1024}k
             </option>
@@ -442,6 +458,42 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {s.status === 'starting' && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
+                {s.status === 'ready' && (
+                  <>
+                    <label className="flex items-center gap-1 text-2xs text-muted-foreground">
+                      Context
+                      <select
+                        value={s.ctxSize}
+                        onChange={(e) => void changeCtx(s, Number(e.target.value))}
+                        className="h-7 rounded-md border border-border/60 bg-card/60 px-2 text-2xs"
+                        aria-label={`${s.name} context size`}
+                        data-testid={`server-ctx-${s.name}`}
+                      >
+                        {(Array.from(LOCAL_CTX_CHOICES as readonly number[]).includes(s.ctxSize)
+                          ? Array.from(LOCAL_CTX_CHOICES as readonly number[])
+                          : [...Array.from(LOCAL_CTX_CHOICES as readonly number[]), s.ctxSize]
+                        ).map((c) => (
+                          <option key={c} value={c}>
+                            {c / 1024}k
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <input
+                      type="number"
+                      min={1024}
+                      step={1024}
+                      placeholder="custom"
+                      aria-label={`${s.name} custom context size in tokens`}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter') return;
+                        const n = Number((e.target as HTMLInputElement).value);
+                        if (Number.isFinite(n) && n >= 1024) void changeCtx(s, n);
+                      }}
+                      className="h-7 w-16 rounded-md border border-border/60 bg-card/60 px-2 text-2xs"
+                    />
+                  </>
+                )}
                 <Button size="sm" variant="outline" onClick={() => void stop(s)}>
                   <Square className="size-3" /> Stop
                 </Button>
