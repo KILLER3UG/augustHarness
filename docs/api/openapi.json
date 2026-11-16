@@ -8784,6 +8784,60 @@
         "summary": "Putuicustomization"
       }
     },
+    "/api/config/wake-up": {
+      "get": {
+        "description": "Wake-up brief switches: enabled, quiet (queue instead of show),\nand the one cooldown (minutes) gating every trigger.",
+        "operationId": "getWakeUpConfig_api_config_wake_up_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Getwakeupconfig"
+      },
+      "put": {
+        "description": "Update the wake-up brief config (partial; unknown keys → 400).",
+        "operationId": "putWakeUpConfig_api_config_wake_up_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Putwakeupconfig"
+      }
+    },
     "/api/config/web": {
       "get": {
         "description": "Return web search/extract config (backends + compress thresholds).",
@@ -18546,6 +18600,69 @@
         "summary": "Get Usage Stats",
         "tags": [
           "usage"
+        ]
+      }
+    },
+    "/api/wake-up/brief": {
+      "get": {
+        "description": "Ask whether a wake-up brief is due, and get it when it is.\n\nReturns ``{shouldBrief: false, reason}`` when the switch is off, the\ncooldown has not elapsed, or a brief already ran this start; otherwise\nthe composed brief with ``quiet`` mirroring the config so the shell can\nqueue it instead of showing it.",
+        "operationId": "getWakeUpBrief_api_wake_up_brief_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "default": "focus",
+              "maxLength": 40,
+              "title": "Reason",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Getwakeupbrief",
+        "tags": [
+          "wake-up"
+        ]
+      }
+    },
+    "/api/wake-up/dismiss": {
+      "post": {
+        "description": "Record that the user dismissed the queued (quiet-mode) brief.",
+        "operationId": "postWakeUpDismiss_api_wake_up_dismiss_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Postwakeupdismiss",
+        "tags": [
+          "wake-up"
         ]
       }
     },

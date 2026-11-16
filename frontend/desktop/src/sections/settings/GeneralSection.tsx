@@ -25,6 +25,7 @@ import { SectionHeader } from '@/components/SectionHeader';
 import { SettingsToggle } from '@/components/settings/SettingsToggle';
 import { SettingsSelect } from '@/components/settings/SettingsSelect';
 import { OsNotifyService } from '@/lib/os-notify';
+import { api } from '@/api/client';
 
 const IS_MAC =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -135,6 +136,46 @@ export function GeneralSection() {
   useEffect(() => {
     setOsNotify(OsNotifyService.isEnabled());
   }, []);
+
+  /* Wake-up brief — backend-backed (config.json → wakeUp). The backend owns
+   * the validation (cooldown 5–1440 min); a rejected save surfaces here as a
+   * one-line error instead of a silent no-op. */
+  const [wakeCfg, setWakeCfg] = useState<{
+    enabled: boolean;
+    quiet: boolean;
+    cooldownMinutes: number;
+  } | null>(null);
+  const [wakeError, setWakeError] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .get<{ enabled: boolean; quiet: boolean; cooldownMinutes: number }>('/api/config/wake-up')
+      .then((c) => {
+        if (alive) setWakeCfg(c);
+      })
+      .catch(() => {
+        if (alive) setWakeError('Wake-up brief settings are unavailable right now.');
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const saveWake = (
+    patch: Partial<{ enabled: boolean; quiet: boolean; cooldownMinutes: number }>,
+  ) => {
+    api
+      .put<{ enabled: boolean; quiet: boolean; cooldownMinutes: number }>(
+        '/api/config/wake-up',
+        patch,
+      )
+      .then((c) => {
+        setWakeCfg(c);
+        setWakeError('');
+      })
+      .catch(() => setWakeError('That value was rejected — the cooldown must be 5–1440 minutes.'));
+  };
 
   const toggleTour = (next: boolean) => {
     setTour(next);
@@ -260,6 +301,50 @@ export function GeneralSection() {
                 description="Also available from the Jobs panel in the right drawer."
                 tooltip="Requires notification permission from the browser or desktop shell."
               />
+            </div>
+          </Section>
+
+          {/* Wake-up brief — Phase 4: the "pick up where you left off" note.
+              One switch, one quiet mode, one cooldown for every trigger
+              (app open after idle, unlock, resume from sleep). */}
+          <Section title="Wake-up brief">
+            <div className="space-y-1">
+              <SettingsToggle
+                checked={wakeCfg?.enabled ?? true}
+                onCheckedChange={(on) => saveWake({ enabled: on })}
+                label="Send a wake-up brief"
+                description="When you come back — after sleep, unlock, or time away — August sends one short 'pick up where you left off' note."
+                disabled={!wakeCfg}
+              />
+              <SettingsToggle
+                checked={wakeCfg?.quiet ?? false}
+                onCheckedChange={(on) => saveWake({ quiet: on })}
+                label="Quiet mode"
+                description="Queue the brief as a small chip instead of showing it over the chat."
+                disabled={!wakeCfg || !(wakeCfg?.enabled ?? true)}
+              />
+              <label className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5">
+                <span className="min-w-0">
+                  <span className="block text-sm text-foreground">Minimum time between briefs</span>
+                  <span className="block text-xs text-muted-foreground">
+                    One cooldown gates every trigger. 5–1440 minutes.
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  min={5}
+                  max={1440}
+                  value={wakeCfg?.cooldownMinutes ?? 30}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v)) saveWake({ cooldownMinutes: v });
+                  }}
+                  aria-label="Wake-up brief cooldown in minutes"
+                  disabled={!wakeCfg}
+                  className="w-16 shrink-0 rounded border border-border/60 bg-transparent px-1.5 py-0.5 text-xs text-foreground tabular-nums"
+                />
+              </label>
+              {wakeError && <p className="px-2 text-xs text-danger-fg">{wakeError}</p>}
             </div>
           </Section>
 

@@ -639,10 +639,12 @@ from app.routers import skills as skillsRoutes  # noqa: E402
 from app.routers import subagent as subagentRoutes  # noqa: E402
 from app.routers import terminal_routes as terminalWsRoutes  # noqa: E402
 from app.routers import usage as usageRoutes  # noqa: E402
+from app.routers import wake_up as wakeUpRoutes  # noqa: E402
 from app.routers import whats_new as whatsNewRoutes  # noqa: E402
 from app.routers import workbench as workbenchRoutes  # noqa: E402
 
 app.include_router(configRoutes.router)
+app.include_router(wakeUpRoutes.router)
 app.include_router(docsStateRoutes.router)
 app.include_router(hooksRoutes.router)
 # BEFORE skillsRoutes: /api/skills/packs must not be captured by

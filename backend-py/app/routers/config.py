@@ -442,6 +442,26 @@ async def putCognitiveConfig(body: dict[str, object]):
     return update_cognitive(body)
 
 
+@router.get('/wake-up')
+async def getWakeUpConfig():
+    """Wake-up brief switches: enabled, quiet (queue instead of show),
+    and the one cooldown (minutes) gating every trigger."""
+    from app.services.wake_up import get_wake_up_config
+
+    return get_wake_up_config()
+
+
+@router.put('/wake-up')
+async def putWakeUpConfig(body: dict[str, object]):
+    """Update the wake-up brief config (partial; unknown keys → 400)."""
+    from app.services.wake_up import set_wake_up_config
+
+    ok, err, cfg = set_wake_up_config(body or {})
+    if not ok:
+        raise HTTPException(status_code=400, detail={'code': 'validation', 'message': err})
+    return cfg
+
+
 @router.get('/session-export')
 async def getSessionExportConfig():
     """Admin: whether continuous JSON session backup export is enabled.

@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-447 routes across 375 paths,
+451 routes across 378 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -278,7 +278,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/providers/refresh-all` | Refresh stored model lists from every enabled provider's /models endpoint. |
 | `POST` | `/api/providers/simulate` | Provider health simulator: connectivity + tool support + fallback. |
 
-## Configuration (31)
+## Configuration (33)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -311,6 +311,8 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/config/subagent-fallback/test` | Probe resolution of a model id without saving. |
 | `GET` | `/api/config/ui-customization` | Current UI color-token overrides (token id → hex). |
 | `PUT` | `/api/config/ui-customization` | Merge UI color-token overrides; null/empty value removes a token. |
+| `GET` | `/api/config/wake-up` | Wake-up brief switches: enabled, quiet (queue instead of show), and the one cooldown (minutes) gating every t… |
+| `PUT` | `/api/config/wake-up` | Update the wake-up brief config (partial; unknown keys → 400). |
 | `GET` | `/api/config/web` | Return web search/extract config (backends + compress thresholds). |
 | `PUT` | `/api/config/web` | Partial update of ``auxiliary.web`` (backend, keys, compress knobs). |
 
@@ -498,7 +500,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (58)
+## Other (60)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -560,10 +562,12 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/simulide/simulate` | Run the digital simulation; logic-only (no SVG). |
 | `GET` | `/api/stats` | Return aggregate usage statistics in the Node.js StatsResponse shape. |
 | `POST` | `/api/system/restart` | Signal a soft restart intent — process managers (or the desktop shell) act on it. |
+| `GET` | `/api/wake-up/brief` | Ask whether a wake-up brief is due, and get it when it is. |
+| `POST` | `/api/wake-up/dismiss` | Record that the user dismissed the queued (quiet-mode) brief. |
 | `GET` | `/api/whats-new` | Return commits + releases from the last ``hours`` (default 48). |
 | `GET` | `/api/workspace/files` | List files under a workspace path (desktop file tree). |
 | `POST` | `/mcp/harness` | Harness Mcp |
 
 ---
 
-Generated from `docs/api/openapi.json` (447 operations).
+Generated from `docs/api/openapi.json` (451 operations).

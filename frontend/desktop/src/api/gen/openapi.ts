@@ -2201,6 +2201,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/wake-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Getwakeupconfig
+         * @description Wake-up brief switches: enabled, quiet (queue instead of show),
+         *     and the one cooldown (minutes) gating every trigger.
+         */
+        get: operations["getWakeUpConfig_api_config_wake_up_get"];
+        /**
+         * Putwakeupconfig
+         * @description Update the wake-up brief config (partial; unknown keys → 400).
+         */
+        put: operations["putWakeUpConfig_api_config_wake_up_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/web": {
         parameters: {
             query?: never;
@@ -6701,6 +6726,51 @@ export interface paths {
         get: operations["get_usage_stats_api_usage_stats_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wake-up/brief": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Getwakeupbrief
+         * @description Ask whether a wake-up brief is due, and get it when it is.
+         *
+         *     Returns ``{shouldBrief: false, reason}`` when the switch is off, the
+         *     cooldown has not elapsed, or a brief already ran this start; otherwise
+         *     the composed brief with ``quiet`` mirroring the config so the shell can
+         *     queue it instead of showing it.
+         */
+        get: operations["getWakeUpBrief_api_wake_up_brief_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wake-up/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Postwakeupdismiss
+         * @description Record that the user dismissed the queued (quiet-mode) brief.
+         */
+        post: operations["postWakeUpDismiss_api_wake_up_dismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -13973,6 +14043,61 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["UiCustomizationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getWakeUpConfig_api_config_wake_up_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    putWakeUpConfig_api_config_wake_up_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -21419,6 +21544,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getWakeUpBrief_api_wake_up_brief_get: {
+        parameters: {
+            query?: {
+                reason?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    postWakeUpDismiss_api_wake_up_dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
