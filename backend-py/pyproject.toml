@@ -24,6 +24,9 @@ dependencies = [
     "python-pptx>=1.0.0",
     # Research Paper Studio: export a paper workspace to a formatted .docx.
     "python-docx>=1.1.0",
+    # Research Paper Studio: safe XML parsing for citation-registry responses
+    # (Crossref/OpenAlex/arXiv) and for Word comments.xml (adviser import).
+    "defusedxml>=0.7.0",
     "Pillow>=11.0.0",
     # Artifact judge: PDF page rasterization (pypdfium2 ships its own
     # libpdfium — no system poppler/ghostscript needed).
