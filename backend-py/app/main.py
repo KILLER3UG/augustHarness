@@ -387,9 +387,14 @@ async def lifespan(app: FastAPI):
 
         t = asyncio.create_task(scheduler_loop(), name='learning_scheduler')
         # Keep a reference so the task is never GC'd mid-loop (asyncio docs
-        # require holding created tasks); shutdown cancels it below.
+        # recommend holding created tasks); shutdown cancels it below.
         app.state.learning_scheduler = t
         logger.info('Learning scheduler started')
+
+        from app.services.wake_up import start_warm_loop
+
+        app.state.llama_warm_loop = start_warm_loop()
+        logger.info('Warm-model maintenance loop started')
     except Exception:
         logger.exception('Learning scheduler failed to start (continuing)')
     yield

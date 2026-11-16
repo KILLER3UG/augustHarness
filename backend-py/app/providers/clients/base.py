@@ -564,6 +564,19 @@ class BaseProviderClient:
         """
         return as_str(self.config.get('name'), '') or as_str(self.config.get('id'), '')
 
+    def _touchLocalRuntime(self, url: str) -> None:
+        """A request to a loopback llama-server is a USE of the kept-warm
+        local model — the idle release measures from the last real use, so
+        an actively-chatted local model is never released mid-conversation."""
+        try:
+            if '127.0.0.1:' not in url and 'localhost:' not in url:
+                return
+            from app.services import llama_runtime
+
+            llama_runtime.touch_loopback_base_url(url)
+        except Exception:  # noqa: BLE001 — telemetry must never break a call
+            pass
+
     async def requestJson(
         self, method: str, url: str, headers: dict[str, str], body: dict[str, object] | None = None
     ) -> ProviderResponse:
@@ -585,6 +598,7 @@ class BaseProviderClient:
 
         from app.providers.clients.rate_gate import hostOfUrl, rateGate
 
+        self._touchLocalRuntime(url)
         host = hostOfUrl(url)
         for attempt in range(self.maxRetries + 1):
             try:
@@ -678,6 +692,7 @@ class BaseProviderClient:
 
         from app.providers.clients.rate_gate import hostOfUrl, rateGate
 
+        self._touchLocalRuntime(url)
         host = hostOfUrl(url)
         lastExc: Exception | None = None
         emittedAny = False

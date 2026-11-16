@@ -506,9 +506,14 @@ async def start_gguf_server(
         'providerId': None,
         'status': 'starting',
         'startedAt': _now(),
+        'lastUsedAt': _now(),
     }
     rows.append(row)
     _save_servers(rows)
+    # Remember the last-served model so wake/login preload can bring it back
+    # without asking again — the boot sweep clears the server rows, so this
+    # warm record is the only survivor of a restart.
+    _save_warm({'ggufPath': str(path), 'ctxSize': int(ctx_size), 'savedAt': _now()})
 
     asyncio.create_task(_await_server_ready(row, proc))
 
@@ -722,6 +727,176 @@ async def sweep_orphans() -> None:
             logger.info('swept orphan llama-server pid %s (port %s)', pid, row.get('port'))
         # Rows are dropped either way: a live pid is killed, a dead one is stale.
     _save_servers(kept)
+
+
+# ── keep-warm: preload at wake/login, release on idle/battery/load ──────────
+
+def _warm_file() -> Path:
+    return runtime_root() / 'warm.json'
+
+
+def _load_warm() -> dict[str, Any]:
+    p = _warm_file()
+    if not p.exists():
+        return {}
+    try:
+        rec = json.loads(p.read_text('utf-8'))
+        return rec if isinstance(rec, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_warm(rec: dict[str, Any]) -> None:
+    runtime_root().mkdir(parents=True, exist_ok=True)
+    _warm_file().write_text(json.dumps(rec, indent=2), encoding='utf-8')
+
+
+def _ts_age_seconds(raw: object) -> float | None:
+    """Age of an ISO timestamp in seconds; None when unparsable."""
+    import datetime
+
+    try:
+        stamp = datetime.datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    now = datetime.datetime.now(datetime.UTC)
+    return max(0.0, (now - stamp).total_seconds())
+
+
+def touch_server(port: int) -> None:
+    """Mark a local server as used now — the idle release measures from the
+    last real use, not from when the process happened to start."""
+    rows = _load_servers()
+    changed = False
+    for row in rows:
+        if int(row.get('port', 0)) == port and row.get('lastUsedAt') != _now():
+            row['lastUsedAt'] = _now()
+            changed = True
+    if changed:
+        _save_servers(rows)
+
+
+def touch_loopback_base_url(base_url: object) -> None:
+    """Touch from a provider ``baseUrl`` like ``http://127.0.0.1:<port>/v1``."""
+    try:
+        port = int(str(base_url).rstrip('/').rsplit(':', 1)[-1].split('/')[0])
+    except (ValueError, IndexError):
+        return
+    touch_server(port)
+
+
+def on_battery() -> bool:
+    """True when the machine runs on battery (Windows GetSystemPowerStatus).
+    Unknown states (desktops, non-Windows) count as NOT on battery — the
+    release must never fire on a machine that cannot report power."""
+    if not _is_windows():
+        return False
+    import ctypes
+
+    class _POWER_STATUS(ctypes.Structure):
+        _fields_ = [
+            ('ACLineStatus', ctypes.c_byte),
+            ('BatteryFlag', ctypes.c_byte),
+            ('BatteryLifePercent', ctypes.c_byte),
+            ('Reserved0', ctypes.c_byte),
+            ('BatteryLifeTime', ctypes.c_ulong),
+            ('BatteryFullLifeTime', ctypes.c_ulong),
+        ]
+
+    status = _POWER_STATUS()
+    try:
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    return status.ACLineStatus == 0  # 0 = on battery, 1 = AC, 255 = unknown
+
+
+def memory_pressure() -> int:
+    """Windows memory load percent (0-100); -1 when it cannot be read."""
+    if not _is_windows():
+        return -1
+    import ctypes
+
+    class _MEM_STATUS(ctypes.Structure):
+        _fields_ = [
+            ('dwLength', ctypes.c_ulong),
+            ('dwMemoryLoad', ctypes.c_ulong),
+            ('ullTotalPhys', ctypes.c_ulonglong),
+            ('ullAvailPhys', ctypes.c_ulonglong),
+            ('ullTotalPageFile', ctypes.c_ulonglong),
+            ('ullAvailPageFile', ctypes.c_ulonglong),
+            ('ullTotalVirtual', ctypes.c_ulonglong),
+            ('ullAvailVirtual', ctypes.c_ulonglong),
+            ('ullAvailExtendedVirtual', ctypes.c_ulonglong),
+        ]
+
+    status = _MEM_STATUS()
+    status.dwLength = ctypes.sizeof(_MEM_STATUS)
+    try:
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return -1
+    except Exception:  # noqa: BLE001
+        return -1
+    return int(status.dwMemoryLoad)
+
+
+async def preload_warm() -> dict[str, Any]:
+    """Wake/login preload: bring back the last-served local model so the
+    selected model answers warm instead of cold. Best-effort — a failure
+    never blocks the wake path."""
+    rec = _load_warm()
+    path = str(rec.get('ggufPath', ''))
+    if not path or not Path(path).is_file():
+        return {'preloaded': False, 'reason': 'no remembered local model'}
+    for existing in _load_servers():
+        if str(existing.get('ggufPath', '')).lower() == path.lower() and await _pid_alive(
+            int(existing.get('pid', 0))
+        ):
+            touch_server(int(existing.get('port', 0)))
+            return {'preloaded': False, 'reason': 'already warm'}
+    try:
+        row = await start_gguf_server(path, ctx_size=int(rec.get('ctxSize', 8192)))
+        logger.info('warm preload started local model %s (port %s)', row.get('name'), row.get('port'))
+        return {'preloaded': True, 'server': row.get('id'), 'port': row.get('port')}
+    except Exception as exc:  # noqa: BLE001 — preload is best-effort
+        logger.warning('warm preload failed for %s: %s', path, exc)
+        return {'preloaded': False, 'reason': str(exc)[:200]}
+
+
+async def release_warm(
+    *,
+    idle_minutes: int,
+    release_on_battery: bool = True,
+    memory_load_percent: int = 90,
+) -> list[str]:
+    """The release half of keep-warm: stop served local models that are idle
+    past the TTL, when the machine runs on battery, or under memory pressure.
+    Returns the human-readable names of what was released."""
+    stopped: list[str] = []
+    for row in _load_servers():
+        if str(row.get('status', '')) != 'ready':
+            continue
+        reason = ''
+        if release_on_battery and on_battery():
+            reason = 'on battery'
+        else:
+            load = memory_pressure()
+            if load >= memory_load_percent:
+                reason = f'memory load {load}%'
+            else:
+                age = _ts_age_seconds(row.get('lastUsedAt') or row.get('startedAt'))
+                if age is not None and age >= idle_minutes * 60:
+                    reason = f'idle {int(age / 60)} min'
+        if not reason:
+            continue
+        try:
+            await stop_gguf_server(str(row.get('id', '')))
+            stopped.append(f"{row.get('name')} ({reason})")
+            logger.info('released warm local model %s: %s', row.get('name'), reason)
+        except Exception:  # noqa: BLE001
+            logger.debug('warm release failed for %s', row.get('id'), exc_info=True)
+    return stopped
 
 
 async def _pid_alive(pid: int) -> bool:

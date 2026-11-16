@@ -150,13 +150,21 @@ export function GeneralSection() {
     enabled: boolean;
     quiet: boolean;
     cooldownMinutes: number;
+    warmModel: boolean;
+    warmIdleMinutes: number;
   } | null>(null);
   const [wakeError, setWakeError] = useState('');
 
   useEffect(() => {
     let alive = true;
     api
-      .get<{ enabled: boolean; quiet: boolean; cooldownMinutes: number }>('/api/config/wake-up')
+      .get<{
+        enabled: boolean;
+        quiet: boolean;
+        cooldownMinutes: number;
+        warmModel: boolean;
+        warmIdleMinutes: number;
+      }>('/api/config/wake-up')
       .then((c) => {
         if (alive) setWakeCfg(c);
       })
@@ -169,10 +177,22 @@ export function GeneralSection() {
   }, []);
 
   const saveWake = (
-    patch: Partial<{ enabled: boolean; quiet: boolean; cooldownMinutes: number }>,
+    patch: Partial<{
+      enabled: boolean;
+      quiet: boolean;
+      cooldownMinutes: number;
+      warmModel: boolean;
+      warmIdleMinutes: number;
+    }>,
   ) => {
     api
-      .put<{ enabled: boolean; quiet: boolean; cooldownMinutes: number }>(
+      .put<{
+        enabled: boolean;
+        quiet: boolean;
+        cooldownMinutes: number;
+        warmModel: boolean;
+        warmIdleMinutes: number;
+      }>(
         '/api/config/wake-up',
         patch,
       )
@@ -180,7 +200,7 @@ export function GeneralSection() {
         setWakeCfg(c);
         setWakeError('');
       })
-      .catch(() => setWakeError('That value was rejected — the cooldown must be 5–1440 minutes.'));
+      .catch(() => setWakeError('That value was rejected — check the allowed ranges.' + ' Cooldown 5–1440 min, idle release 5–10080 min.'));
   };
 
   /* Autostart — Phase 4: the app already lives in the tray; this opts the
@@ -366,6 +386,34 @@ export function GeneralSection() {
                   }}
                   aria-label="Wake-up brief cooldown in minutes"
                   disabled={!wakeCfg}
+                  className="w-16 shrink-0 rounded border border-border/60 bg-transparent px-1.5 py-0.5 text-xs text-foreground tabular-nums"
+                />
+              </label>
+              <SettingsToggle
+                checked={wakeCfg?.warmModel ?? true}
+                onCheckedChange={(on) => saveWake({ warmModel: on })}
+                label="Keep the local model warm"
+                description="Preload your local model at wake/login so it answers immediately, and release it when idle, on battery, or under memory pressure."
+                disabled={!wakeCfg}
+              />
+              <label className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5">
+                <span className="min-w-0">
+                  <span className="block text-sm text-foreground">Release the local model after</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Idle time before the local model frees its memory. 5–10080 minutes.
+                  </span>
+                </span>
+                <input
+                  type="number"
+                  min={5}
+                  max={10080}
+                  value={wakeCfg?.warmIdleMinutes ?? 30}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v)) saveWake({ warmIdleMinutes: v });
+                  }}
+                  aria-label="Local model idle release in minutes"
+                  disabled={!wakeCfg || !(wakeCfg?.warmModel ?? true)}
                   className="w-16 shrink-0 rounded border border-border/60 bg-transparent px-1.5 py-0.5 text-xs text-foreground tabular-nums"
                 />
               </label>

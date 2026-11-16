@@ -38,6 +38,12 @@ _STATE_FILE = 'wake-up.json'
 _DEFAULT_COOLDOWN_MINUTES = 30
 _MIN_COOLDOWN_MINUTES = 5
 _MAX_COOLDOWN_MINUTES = 1440
+_DEFAULT_WARM_IDLE_MINUTES = 30
+_MIN_WARM_IDLE_MINUTES = 5
+_MAX_WARM_IDLE_MINUTES = 7 * 24 * 60
+# How long the brief waits for a cold local model to finish loading before
+# composing anyway (the digest is the honest brief when the model is late).
+_WARM_PRELOAD_TIMEOUT_S = 25.0
 
 MAX_SESSIONS_IN_BRIEF = 4
 MAX_JOBS_IN_BRIEF = 5
@@ -68,6 +74,11 @@ def get_wake_up_config() -> dict[str, object]:
             _MIN_COOLDOWN_MINUTES,
             min(_MAX_COOLDOWN_MINUTES, as_int(user.get('cooldownMinutes'), _DEFAULT_COOLDOWN_MINUTES)),
         ),
+        'warmModel': as_bool(user.get('warmModel'), True),
+        'warmIdleMinutes': max(
+            _MIN_WARM_IDLE_MINUTES,
+            min(_MAX_WARM_IDLE_MINUTES, as_int(user.get('warmIdleMinutes'), _DEFAULT_WARM_IDLE_MINUTES)),
+        ),
     }
 
 
@@ -75,7 +86,7 @@ def set_wake_up_config(patch: dict[str, object]) -> tuple[bool, str, dict[str, o
     """Validate and apply a partial wake-up config patch."""
     current = get_wake_up_config()
     for field, value in patch.items():
-        if field not in ('enabled', 'quiet', 'cooldownMinutes'):
+        if field not in ('enabled', 'quiet', 'cooldownMinutes', 'warmModel', 'warmIdleMinutes'):
             return (False, f'unknown field: {field!r}', current)
         if field == 'cooldownMinutes':
             if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -85,6 +96,16 @@ def set_wake_up_config(patch: dict[str, object]) -> tuple[bool, str, dict[str, o
                     False,
                     f"'cooldownMinutes' must be between {_MIN_COOLDOWN_MINUTES} "
                     f'and {_MAX_COOLDOWN_MINUTES}',
+                    current,
+                )
+        elif field == 'warmIdleMinutes':
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return (False, "'warmIdleMinutes' must be a number", current)
+            if not (_MIN_WARM_IDLE_MINUTES <= value <= _MAX_WARM_IDLE_MINUTES):
+                return (
+                    False,
+                    f"'warmIdleMinutes' must be between {_MIN_WARM_IDLE_MINUTES} "
+                    f'and {_MAX_WARM_IDLE_MINUTES}',
                     current,
                 )
         elif not isinstance(value, bool):
@@ -242,6 +263,24 @@ async def brief(reason: str) -> dict[str, Any]:
     if _briefed_this_boot:
         return {'shouldBrief': False, 'reason': 'already-briefed-this-start'}
 
+    # Keep-warm: the remembered local model loads NOW, overlapping the fact
+    # gather, so a local cerebellum answers warm instead of cold. Remote
+    # roles have nothing to preload and this returns immediately; if the
+    # load outlives the wait the brief composes anyway (honestly, from the
+    # facts) rather than blocking the wake path.
+    if cfg.get('warmModel'):
+        try:
+            import asyncio
+
+            from app.services.llama_runtime import preload_warm
+
+            preload = asyncio.create_task(preload_warm(), name='warm_preload')
+            done, _pending = await asyncio.wait({preload}, timeout=_WARM_PRELOAD_TIMEOUT_S)
+            if not done:
+                logger.info('warm preload still loading after %.0fs — the brief proceeds', _WARM_PRELOAD_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — the wake path must never block on preload
+            logger.debug('warm preload could not start', exc_info=True)
+
     facts = _gather_facts()
     text = await _compose(facts)
 
@@ -276,3 +315,36 @@ def dismiss() -> dict[str, object]:
     state['lastDismissAt'] = time.time()
     _save_state(state)
     return {'ok': True}
+
+
+# ── keep-warm maintenance ───────────────────────────────────────────────────
+
+async def warm_loop() -> None:
+    """Periodic release pass for kept-warm local models: release on battery,
+    under memory pressure, or idle past the configured TTL. The loop reads
+    the wake-up config each pass so Settings changes apply without a
+    restart."""
+    import asyncio
+
+    while True:
+        try:
+            cfg = get_wake_up_config()
+            if cfg.get('warmModel'):
+                from app.services.llama_runtime import release_warm
+
+                stopped = await release_warm(
+                    idle_minutes=as_int(cfg.get('warmIdleMinutes'), _DEFAULT_WARM_IDLE_MINUTES)
+                )
+                for name in stopped:
+                    logger.info('released warm local model: %s', name)
+        except Exception:  # noqa: BLE001 — a maintenance pass must never kill the loop
+            logger.debug('warm maintenance pass failed', exc_info=True)
+        await asyncio.sleep(60)
+
+
+def start_warm_loop() -> Any:
+    """Start the maintenance loop from the lifespan. Returns the task so the
+    caller keeps a reference (a GC'd task dies silently)."""
+    import asyncio
+
+    return asyncio.create_task(warm_loop(), name='llama_warm')
