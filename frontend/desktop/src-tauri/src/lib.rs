@@ -90,6 +90,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        // Phase 4: the app runs in the background — the user can opt into
+        // launching it at login (Settings → General → Startup). The macOS
+        // launcher kind is irrelevant on Windows; the empty arg list means
+        // the app relaunches exactly as a normal start.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             // Single-instance guard: a second launch must not attach to the
             // first instance's backend (quitting either would kill the shared

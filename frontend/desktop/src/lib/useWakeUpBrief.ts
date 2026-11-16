@@ -40,13 +40,36 @@ export function useWakeUpBrief() {
   }, []);
 
   useEffect(() => {
-    void check('startup');
+    let cancelled = false;
+    // The startup check races the backend's boot (the shell mounts the chat
+    // surface before the supervisor reports ready), so a failed first call
+    // retries with backoff instead of waiting for a focus event that may be
+    // minutes away — "first app open" is the trigger the brief exists for.
+    const startupWithRetry = async () => {
+      for (let attempt = 0; attempt < 5 && !cancelled; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 3000 * attempt));
+        if (cancelled) return;
+        try {
+          const r = await api.get<WakeUpBrief>('/api/wake-up/brief?reason=startup');
+          if (r?.shouldBrief) {
+            if (!cancelled) setBrief(r);
+            return;
+          }
+          if (r && !r.shouldBrief && r.reason !== 'disabled') return; // answered: cooldown / already briefed
+          return; // disabled — stop asking
+        } catch {
+          /* backend not reachable yet — retry */
+        }
+      }
+    };
+    void startupWithRetry();
     const onReturn = () => {
       if (document.visibilityState === 'visible') void check('focus');
     };
     window.addEventListener('focus', onReturn);
     document.addEventListener('visibilitychange', onReturn);
     return () => {
+      cancelled = true;
       window.removeEventListener('focus', onReturn);
       document.removeEventListener('visibilitychange', onReturn);
     };

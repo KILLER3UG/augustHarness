@@ -25,6 +25,12 @@ import { SectionHeader } from '@/components/SectionHeader';
 import { SettingsToggle } from '@/components/settings/SettingsToggle';
 import { SettingsSelect } from '@/components/settings/SettingsSelect';
 import { OsNotifyService } from '@/lib/os-notify';
+import { isTauri } from '@/lib/tauri-detect';
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as isAutostartEnabled,
+} from '@tauri-apps/plugin-autostart';
 import { api } from '@/api/client';
 
 const IS_MAC =
@@ -175,6 +181,25 @@ export function GeneralSection() {
         setWakeError('');
       })
       .catch(() => setWakeError('That value was rejected — the cooldown must be 5–1440 minutes.'));
+  };
+
+  /* Autostart — Phase 4: the app already lives in the tray; this opts the
+   * user into launching it at login. Desktop-only: the plugin does not exist
+   * outside the Tauri shell, so the row renders only there and a failed
+   * plugin call leaves the switch off rather than lying. */
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    isAutostartEnabled()
+      .then((on) => setAutostart(on))
+      .catch(() => setAutostart(null));
+  }, []);
+
+  const toggleAutostart = (on: boolean) => {
+    (on ? enableAutostart() : disableAutostart())
+      .then(() => setAutostart(on))
+      .catch(() => setAutostart(null));
   };
 
   const toggleTour = (next: boolean) => {
@@ -347,6 +372,19 @@ export function GeneralSection() {
               {wakeError && <p className="px-2 text-xs text-danger-fg">{wakeError}</p>}
             </div>
           </Section>
+
+          {/* Startup — launch at login (Phase 4 background assistant). */}
+          {isTauri && (
+            <Section title="Startup">
+              <SettingsToggle
+                checked={autostart ?? false}
+                onCheckedChange={toggleAutostart}
+                label="Start August when you log in"
+                description="August then lives in the tray and can send the wake-up brief when you return."
+                disabled={autostart === null}
+              />
+            </Section>
+          )}
 
           {/* The global 4-step "Text size" picker used to live here and is
               gone. It had been marked `inert` — a visible control that could
