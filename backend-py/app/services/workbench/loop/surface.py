@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-from app.json_narrowing import as_dict, as_int, as_str
+from app.json_narrowing import as_dict, as_int, as_list, as_str
 from app.services.workbench.sessions import WorkbenchSession
 
 logger = logging.getLogger('workbench')
@@ -95,8 +95,123 @@ _BARE_TOOL_ALLOW = frozenset(
         'remember',
         'list_facts',
         'forget',
+        # The disclosure bridges ARE the small model's way to reach everything
+        # else — citation tools, web search, skills, exports — without paying
+        # for their schemas on every turn. A bare surface without them is a
+        # dead end: 16 tools and no way to discover the research workflow.
+        'tool_search',
+        'tool_describe',
+        'tool_call',
     }
 )
+
+# Description budget for the small-model (bare) surface: schemas are billed on
+# every turn, and a 1.7B model at 8k cannot spend ~270 tokens per tool. The
+# trim keeps the FIRST sentence (the operative instruction) and drops property
+# descriptions — types, enums and required stay intact, so the wire contract
+# is unchanged; only the prose shrinks.
+_BARE_DESCRIPTION_CAP = 140
+
+
+def _trimDescription(text: object, cap: int = _BARE_DESCRIPTION_CAP) -> str:
+    """First sentence of a tool/property description, hard-capped."""
+    raw = as_str(text, '').strip()
+    if not raw:
+        return ''
+    for cut in ('. ', '.\n'):
+        pos = raw.find(cut)
+        if 0 < pos < cap:
+            return raw[: pos + 1]
+    if len(raw) <= cap:
+        return raw
+    return raw[:cap].rsplit(' ', 1)[0] + '…'
+
+
+def _trim_tool_def(t: dict[str, object], cap: int = _BARE_DESCRIPTION_CAP) -> dict[str, object]:
+    """A copy of one tool definition with prose trimmed for a small surface."""
+    fn = as_dict(t.get('function'), {})
+    if not fn:
+        # Anthropic shape: {'name', 'description', 'input_schema'}
+        trimmed = dict(t)
+        trimmed['description'] = _trimDescription(t.get('description'), cap)
+        schema = as_dict(t.get('input_schema'), {})
+        if schema:
+            trimmed['input_schema'] = _trim_schema(schema)
+        return trimmed
+    fn = dict(fn)
+    fn['description'] = _trimDescription(fn.get('description'), cap)
+    schema = as_dict(fn.get('parameters'), {})
+    if schema:
+        fn['parameters'] = _trim_schema(schema)
+    out = dict(t)
+    out['function'] = fn
+    return out
+
+
+def _trim_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Schema copy with property DESCRIPTIONS dropped (structure kept)."""
+    out = dict(schema)
+    props = as_dict(out.get('properties'), {})
+    if props:
+        slim: dict[str, object] = {}
+        for key, spec in props.items():
+            if isinstance(spec, dict):
+                item = dict(spec)
+                item.pop('description', None)
+                slim[key] = item
+            else:
+                slim[key] = spec
+        out['properties'] = slim
+    return out
+
+
+def _trim_tools_for_small_surface(
+    tools: list[dict[str, object]], cap: int = _BARE_DESCRIPTION_CAP
+) -> list[dict[str, object]]:
+    """Prose-trimmed copies of ``tools`` for a bare (small local) surface."""
+    return [_trim_tool_def(t, cap) for t in tools]
+
+
+# At a 4k window even the bare allowlist is too much prose and a few
+# conveniences: the bulk read, the todo pair, the scratchpad and the proxy
+# diagnostic are all reachable through the bridges or covered by siblings
+# (read_file, update_state, remember). The research workflow still works —
+# the bridges stay, so citation/web/export tools load on demand.
+_BARE_MICRO_DROP = frozenset(
+    {'read_files', 'submit_todos', 'update_todos', 'write_scratchpad', 'diagnose_proxy'}
+)
+
+
+def _bare_allowlist(context_window: int) -> frozenset[str]:
+    """The bare allowlist for a model window; a 4k model gets the micro set."""
+    if 0 < context_window <= 4096:
+        return frozenset(_BARE_TOOL_ALLOW - _BARE_MICRO_DROP)
+    return _BARE_TOOL_ALLOW
+
+
+def provider_row_by_name(name: str) -> dict[str, object]:
+    """The raw provider row for a provider NAME or id, or {} when unknown.
+
+    Sessions carry ``provider`` as a NAME string (``sessions.py``), so code
+    that needs the provider's OWN config — the model's context window, its
+    tool surface — must resolve the row from the store. Best-effort: an
+    unknown name or a failed read returns {} and the caller keeps its
+    fallback.
+    """
+    cleaned = as_str(name, '').strip()
+    if not cleaned:
+        return {}
+    try:
+        from app.services import config_service
+
+        store = config_service.getProvidersStore()
+        for entry in as_list(store.get('providers'), []):
+            row = as_dict(entry, {})
+            if str(row.get('name', '')) == cleaned or str(row.get('id', '')) == cleaned:
+                return row
+    except Exception:
+        logger.debug('provider row lookup failed for %s', cleaned, exc_info=True)
+    return {}
 
 
 def _toolDefName(t: dict[str, object]) -> str:
@@ -186,6 +301,7 @@ def _modelCapabilityProfile(session: WorkbenchSession) -> dict[str, object]:
                         'tool_surface': m.tool_surface or 'full',
                         'max_tools': int(m.max_tools or 0),
                         'max_tool_result_chars': int(m.max_tool_result_chars or 0),
+                        'context_window': int(getattr(m, 'context_window', 0) or 0),
                     }
                     break
             if profile:
@@ -213,7 +329,11 @@ def _applyModelCapabilityProfile(
         setattr(session, '_text_tool_protocol', True)
         return []
     if surface == 'bare':
-        tools = [t for t in tools if _toolDefName(t) in _BARE_TOOL_ALLOW]
+        window = as_int(profile.get('context_window'), 0)
+        tools = [t for t in tools if _toolDefName(t) in _bare_allowlist(window)]
+        # Small models pay for prose on every turn: first-sentence
+        # descriptions, no per-property descriptions — tighter on a 4k window.
+        tools = _trim_tools_for_small_surface(tools, 90 if 0 < window <= 4096 else _BARE_DESCRIPTION_CAP)
     elif surface == 'reduced':
         tools = [t for t in tools if not _toolDefName(t).startswith(_HEAVY_TOOL_PREFIXES)]
     maxTools = as_int(profile.get('max_tools'), 0)

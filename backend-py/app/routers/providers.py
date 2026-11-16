@@ -917,14 +917,38 @@ async def probeModelCapabilities(providerId: str, modelId: str):
             tools = await _probe_tool_support(p, modelId)
             toolOk = as_bool(tools.get('success'), False)
             # Suggested surface from evidence: no tool support → text protocol;
-            # tool support confirmed → full (the user decides).
-            suggestedSurface = 'full' if toolOk else 'text'
+            # tool support on a small window (≤8k — the local small-model case)
+            # → bare (lean schemas + the disclosure bridges; the model reaches
+            # everything else through tool_search/tool_call); otherwise full.
+            modelRow = next(
+                (
+                    m
+                    for m in as_list(p.get('models'), [])
+                    if isinstance(m, dict) and as_str(m.get('id', '')) == modelId
+                ),
+                {},
+            )
+            ctxWindow = as_int(
+                modelRow.get('contextWindow') or modelRow.get('context_window'), 0
+            )
+            if not toolOk:
+                suggestedSurface = 'text'
+            elif 0 < ctxWindow <= 8192:
+                suggestedSurface = 'bare'
+            else:
+                suggestedSurface = 'full'
             suggestions: dict[str, object] = {}
             if not toolOk:
                 suggestions['toolSurface'] = suggestedSurface
                 suggestions['reason'] = (
                     as_str(tools.get('detail'), 'tool calling not confirmed')
                     or 'tool calling not confirmed'
+                )[:200]
+            elif suggestedSurface == 'bare':
+                suggestions['toolSurface'] = suggestedSurface
+                suggestions['reason'] = (
+                    f'context window {ctxWindow or "small"} — the lean surface with '
+                    'tool_search/tool_call keeps the fixed overhead inside the window'
                 )[:200]
             return {
                 'model': modelId,

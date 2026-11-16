@@ -832,6 +832,13 @@ def buildSystemPrompt(
                 tool_names.append(n)
     offeredTools = set(tool_names)
 
+    # Small-model (bare) surface: the prompt shrinks with it. A 1.7B model at
+    # 8k cannot carry the full doctrine on every turn, so the catalogue-style
+    # blocks below have lean variants (same rules, fraction of the bytes).
+    leanSurface = (
+        as_str(_modelCapabilityProfile(session).get('tool_surface'), 'full') == 'bare'
+    )
+
     workspacePath = (
         str(session.workspacePath)
         if hasattr(session, 'workspacePath') and session.workspacePath
@@ -914,17 +921,26 @@ def buildSystemPrompt(
     # against the original instruction, never a critic gate (verifier gate
     # removed 2026-08-24; nothing withholds the answer).
     if offeredTools:
-        parts.append(
-            '<completion_checklist>\n'
-            'Before declaring work complete, check it yourself:\n'
-            '1. Re-read the original instruction — every asked item is done, or you say what is not.\n'
-            '2. Verification actually ran (tests/build/lint for the change) and you report its real result — failures included.\n'
-            '3. No placeholders, stubs, or leftover TODOs in the files you changed.\n'
-            '4. Error paths and edge cases of the change are considered.\n'
-            '5. Your final message states the outcome with evidence (commands, exit codes, test counts).\n'
-            'This is your own checklist — no other gate stands between you and your answer.\n'
-            '</completion_checklist>'
-        )
+        if leanSurface:
+            parts.append(
+                '<completion_checklist>\n'
+                'Before declaring work complete, check it yourself: every asked item is done, '
+                'verification actually ran and you report its real result, no placeholders remain. '
+                'State the outcome with evidence.\n'
+                '</completion_checklist>'
+            )
+        else:
+            parts.append(
+                '<completion_checklist>\n'
+                'Before declaring work complete, check it yourself:\n'
+                '1. Re-read the original instruction — every asked item is done, or you say what is not.\n'
+                '2. Verification actually ran (tests/build/lint for the change) and you report its real result — failures included.\n'
+                '3. No placeholders, stubs, or leftover TODOs in the files you changed.\n'
+                '4. Error paths and edge cases of the change are considered.\n'
+                '5. Your final message states the outcome with evidence (commands, exit codes, test counts).\n'
+                'This is your own checklist — no other gate stands between you and your answer.\n'
+                '</completion_checklist>'
+            )
     # Per-model-family prompt variant (short framing block keyed by
     # the model id family; unknown families get nothing).
     try:
@@ -1174,7 +1190,24 @@ def buildSystemPrompt(
         except Exception:
             logger.debug('prompt: agent context failed', exc_info=True)
     _skillsIndexText = ''
-    if tool_names:
+    if tool_names and leanSurface:
+        # Lean capabilities: the small-model surface gets the two rules it can
+        # act on (tools are the array; skills load on demand) without the
+        # name-only skills catalogue and the agents doctrine, which name tools
+        # the bare surface does not even offer.
+        parts.append(
+            '<capabilities>\n'
+            '<tools>\n'
+            'Tools are callable actions; the tools array is authoritative. Prefer read tools '
+            'for investigation; destructive tools only when the user intent requires it.\n'
+            '</tools>\n'
+            '<skill_policy>\n'
+            'Before acting on a task a skill describes, call load_skill and follow it first. '
+            'list_skills enumerates everything; tool_search finds a tool you cannot see.\n'
+            '</skill_policy>\n'
+            '</capabilities>'
+        )
+    elif tool_names:
         # The capabilities memo is keyed by workspace path
         # TOO — per-workspace catalogues (project skills shadowing) must not
         # cross-contaminate sessions; a mutation still busts every key via
@@ -1248,7 +1281,7 @@ def buildSystemPrompt(
         'kill_daemons',
         'web_fetch_many',
         'load_skills',
-    }:
+    } and not leanSurface:
         parts.append(_seg_cache.BULK_BLOCK)
     if offeredTools & {'web_search', 'web_fetch'}:
         parts.append(_seg_cache.WEB_BLOCK)
@@ -1265,7 +1298,18 @@ def buildSystemPrompt(
         except Exception:
             memWritesOn = True
         if memWritesOn:
-            parts.append(_seg_cache.MEMORY_BLOCK)
+            if leanSurface:
+                parts.append(
+                    '<memory_policy>\n'
+                    'Long-term memory (`remember`): save only what outlives this chat — user-stated '
+                    'preferences, decisions, constraints, corrections, durable lessons. Write '
+                    'immediately when the user states such a fact; revise the SAME key instead of '
+                    'duplicating (list_facts shows keys); forget what is wrong. Never save task '
+                    'steps, fetched content, or your own unconfirmed conclusions.\n'
+                    '</memory_policy>'
+                )
+            else:
+                parts.append(_seg_cache.MEMORY_BLOCK)
     # The goal environment this session works inside: where it is, what that goal permits, and
     # what it still owes. Composed per assembly rather than cached with the constant segments — a
     # goal edit mid-session must reach the NEXT turn's prompt. A layer that has never been seeded
@@ -1487,6 +1531,7 @@ from app.services.workbench.loop.surface import (  # noqa: E402
     _toolDefName,
     _toolResultCap,
     normalizeGuardMode,
+    provider_row_by_name,
 )
 
 
@@ -1684,6 +1729,14 @@ def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, obje
     try:
         modelId = as_str(getattr(session, 'model', ''), '')
         providerCfg = as_dict(getattr(session, 'provider', None), {})
+        if not providerCfg and modelId:
+            # `session.provider` is a NAME string (sessions.py), so as_dict()
+            # of it is always {} — and the window below then fell back to the
+            # 1M default, which made progressive disclosure's 10% threshold
+            # unreachable and offered every model (an 8k local one included)
+            # the full ~140-tool surface. Resolve the real provider row from
+            # the store so the model's own contextWindow sizes the threshold.
+            providerCfg = provider_row_by_name(as_str(getattr(session, 'provider', ''), ''))
         if modelId:
             contextWindow = _resolveModelContextWindow(modelId, providerCfg or None)
     except Exception:
