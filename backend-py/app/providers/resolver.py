@@ -187,7 +187,6 @@ def resolve(name: str) -> Optional[dict[str, object]]:
         return keyed[0]
     if any_match:
         return any_match[0]
-    from app.providers.api_format import normalize_api_format
 
     return {
         'name': name_str,
@@ -196,7 +195,10 @@ def resolve(name: str) -> Optional[dict[str, object]]:
         'description': '',
         'aliases': [],
         'baseUrl': '',
-        'apiMode': normalize_api_format(name_str, default='openaiChat'),
+        # The fallback name is a NAME — often a model id when a caller resolves
+        # a fleet role's model directly — never an API format. Normalizing it
+        # only logged a warning and returned the same 'openaiChat' default.
+        'apiMode': 'openaiChat',
         'api_key': '',
         'is_custom': False,
         'envVars': [],
