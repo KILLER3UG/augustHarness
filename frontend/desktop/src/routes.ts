@@ -1,16 +1,14 @@
 /// <reference types="vite/client" />
 import * as React from 'react';
 import { type ReactNode, lazy, Suspense } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router-dom';
+import { Navigate, useParams } from 'react-router-dom';
 import {
   LayoutDashboard,
   LineChart,
   MessageSquare,
-  Mic,
   Bot,
   BookOpen,
   History,
-  Kanban,
   GraduationCap,
   PackageOpen,
   type LucideIcon,
@@ -35,14 +33,8 @@ const SettingsPage = lazy(() =>
 const AutomationsPage = lazy(() =>
   import('@/sections/automations/AutomationsPage').then((m) => ({ default: m.AutomationsPage })),
 );
-const LiveSurface = lazy(() =>
-  import('@/sections/live/LiveSurface').then((m) => ({ default: m.LiveSurface })),
-);
 const RunsPage = lazy(() =>
   import('@/sections/runs/RunsPage').then((m) => ({ default: m.RunsPage })),
-);
-const BoardPage = lazy(() =>
-  import('@/sections/board/BoardPage').then((m) => ({ default: m.BoardPage })),
 );
 const ArtifactsPage = lazy(() =>
   import('@/sections/artifacts/ArtifactsPage').then((m) => ({ default: m.ArtifactsPage })),
@@ -127,11 +119,12 @@ export const SECTION_ROUTES: readonly SectionRoute[] = [
     nav: true,
   },
   {
+    /* The Board page is FOLDED INTO Runs (the board is a section there);
+     * this entry only redirects old /board deep links. */
     path: '/board',
-    label: 'Board',
-    Icon: Kanban,
-    element: React.createElement(LazySection, { name: 'Board' }, React.createElement(BoardPage)),
-    nav: true,
+    label: 'Runs',
+    Icon: History,
+    element: React.createElement(Navigate, { to: '/runs', replace: true }),
   },
   {
     path: '/charts',
@@ -148,24 +141,12 @@ export const SECTION_ROUTES: readonly SectionRoute[] = [
     nav: true,
   },
   {
+    /* Live/voice is DELETED (out of scope for v1 — docs/agent/product.md).
+     * The old /live deep link redirects to chat; the surface code is gone. */
     path: '/live',
-    label: 'Live',
-    Icon: Mic,
-    element: React.createElement(
-      LazySection,
-      { name: 'Live' },
-      React.createElement(() => {
-        const navigate = useNavigate();
-        return React.createElement(LiveSurface, { onSwitchToChat: () => navigate('/') });
-      }),
-    ),
-    // Hidden from the rail and the command palette: voice/live is out of scope
-    // for v1 (docs/agent/product.md — the redesign's "out of scope" list). The
-    // ROUTE stays so an existing deep link or a stale bookmark resolves to the
-    // surface instead of the catch-all; the CODE is deleted in Phase 3, once no
-    // importer remains. Removing it from `nav` is the whole change — the
-    // palette and the rail both read SECTION_NAV_ITEMS.
-    nav: false,
+    label: 'Chat',
+    Icon: MessageSquare,
+    element: React.createElement(Navigate, { to: '/', replace: true }),
   },
   {
     path: '/history',

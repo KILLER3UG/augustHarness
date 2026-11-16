@@ -1,19 +1,19 @@
-/* ── Agent Board — multi-agent work surface (/board) ─────────────────── */
+/* ── Board — the agent board, folded into Runs (the /board page is gone;
+ * deep links redirect there) ─────────────────────────────────────────── */
 /* The roadmap's "board is a work surface, not a setting": the durable
- * kanban board now lives at /board, with a team launcher that spawns one
+ * kanban board lives here, with a team launcher that spawns one
  * sub-agent per goal, auto-creates a card per goal, and live-syncs card
  * columns to run status (running → doing, completed → done, failed →
  * backlog). The board itself stays in localStorage (KanbanSection).
  *
- * Density note: the board page used to stack its own "Agent Board" header
- * on top of the board component's own "Agent board" header, and the team
- * launcher sat open on every visit. There is now ONE header (the board
- * component's is switched off here) and the launcher is a disclosure. */
+ * Folded into Runs: this is a SECTION now, not a page — no page chrome
+ * (padding/max-width/title); RunsPage owns the header and renders this
+ * below its run list. */
 
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Bot, Kanban, Loader2, Rocket, Square, X } from 'lucide-react';
+import { Bot, Loader2, Rocket, Square, X } from 'lucide-react';
 import { KanbanSection } from '@/sections/settings/KanbanSection';
 import { useKanbanStore, type KanbanCard } from '@/store/kanban-board';
 import { useSessionsStore } from '@/store/sessions';
@@ -47,7 +47,7 @@ const RUN_TONES: Record<string, string> = {
   cancelled: 'bg-muted text-muted-foreground',
 };
 
-export function BoardPage() {
+export function BoardSection() {
   const qc = useQueryClient();
   const [goals, setGoals] = useState('');
   const [agentId, setAgentId] = useState('general');
@@ -165,14 +165,11 @@ export function BoardPage() {
   );
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden p-6 max-w-6xl mx-auto space-y-5" data-testid="board-page">
+    <div className="min-w-0 space-y-5" data-testid="board-section">
       <div className="flex flex-wrap items-center gap-3">
-        <Kanban className="size-5 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          {/* h2, not h1: the titlebar already renders this route's single h1.
-              This is the page's ONLY header — the board component's own
-              header is switched off below. */}
-          <h2 className="text-2xl font-semibold">Agent board</h2>
+          {/* h3: this is a SECTION of Runs now — RunsPage owns the page h2. */}
+          <h3 className="text-lg font-semibold">Agent board</h3>
           <p className="text-sm text-muted-foreground">
             Launch a team and track every agent on one board
           </p>

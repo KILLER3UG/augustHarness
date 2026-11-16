@@ -64,7 +64,7 @@ const HUB_MEMORY_ID = 'learning-hub-memory';
  *     already carries it) and a smaller title.
  *   • A RAIL keeps its own rail header. A rail is navigation, not content,
  *     so it does not take SectionHeader.
- *   • A full-screen MODE surface keeps its own top bar (see LiveSurface).
+ *   • A full-screen MODE surface keeps its own top bar (see the chat thread).
  *     It is not a page — the chat stays visible behind it, and a page
  *     header would claim the whole window for a mode.
  *
