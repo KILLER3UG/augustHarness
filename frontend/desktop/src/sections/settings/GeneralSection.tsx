@@ -152,8 +152,17 @@ export function GeneralSection() {
     cooldownMinutes: number;
     warmModel: boolean;
     warmIdleMinutes: number;
+    titlesOnly: boolean;
   } | null>(null);
   const [wakeError, setWakeError] = useState('');
+  /* Which model phrases the brief, and whether it stays on this machine —
+   * the backend labels it so a cloud cerebellum is a choice, not a surprise. */
+  const [wakeModelInfo, setWakeModelInfo] = useState<{
+    model: string;
+    provider: string;
+    local: boolean;
+    configured: boolean;
+  } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -164,12 +173,23 @@ export function GeneralSection() {
         cooldownMinutes: number;
         warmModel: boolean;
         warmIdleMinutes: number;
+        titlesOnly: boolean;
       }>('/api/config/wake-up')
       .then((c) => {
         if (alive) setWakeCfg(c);
       })
       .catch(() => {
         if (alive) setWakeError('Wake-up brief settings are unavailable right now.');
+      });
+    api
+      .get<{ model: string; provider: string; local: boolean; configured: boolean }>(
+        '/api/wake-up/model-info',
+      )
+      .then((m) => {
+        if (alive) setWakeModelInfo(m);
+      })
+      .catch(() => {
+        /* the caption simply stays hidden when the endpoint is unreachable */
       });
     return () => {
       alive = false;
@@ -183,6 +203,7 @@ export function GeneralSection() {
       cooldownMinutes: number;
       warmModel: boolean;
       warmIdleMinutes: number;
+      titlesOnly: boolean;
     }>,
   ) => {
     api
@@ -192,6 +213,7 @@ export function GeneralSection() {
         cooldownMinutes: number;
         warmModel: boolean;
         warmIdleMinutes: number;
+        titlesOnly: boolean;
       }>(
         '/api/config/wake-up',
         patch,
@@ -366,6 +388,29 @@ export function GeneralSection() {
                 onCheckedChange={(on) => saveWake({ quiet: on })}
                 label="Quiet mode"
                 description="Queue the brief as a small chip instead of showing it over the chat."
+                disabled={!wakeCfg || !(wakeCfg?.enabled ?? true)}
+              />
+              {wakeModelInfo?.configured && (
+                <p className="px-2 text-xs text-muted-foreground" data-testid="wake-up-model-info">
+                  Brief written by{' '}
+                  <span className="text-foreground">{wakeModelInfo.model || 'the fallback digest'}</span>
+                  {' · '}
+                  {wakeModelInfo.local ? (
+                    'runs locally — your text stays on this machine'
+                  ) : (
+                    <span className="text-warning-fg">
+                      a cloud model ({wakeModelInfo.provider || 'remote'}) — the digest leaves this
+                      machine
+                    </span>
+                  )}
+                  .
+                </p>
+              )}
+              <SettingsToggle
+                checked={wakeCfg?.titlesOnly ?? false}
+                onCheckedChange={(on) => saveWake({ titlesOnly: on })}
+                label="Titles only"
+                description="Skip the model: the brief is just your recent session titles and running automations, composed on this machine."
                 disabled={!wakeCfg || !(wakeCfg?.enabled ?? true)}
               />
               <label className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5">

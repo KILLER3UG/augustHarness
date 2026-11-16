@@ -18666,6 +18666,26 @@
         ]
       }
     },
+    "/api/wake-up/model-info": {
+      "get": {
+        "description": "Which model phrases the brief, and whether it stays on this machine.\n\nSettings renders this next to the wake-up switches: a cerebellum role\npointing at a cloud gateway is labelled, and the titles-only option is\nthe escape hatch.",
+        "operationId": "getWakeUpModelInfo_api_wake_up_model_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Getwakeupmodelinfo",
+        "tags": [
+          "wake-up"
+        ]
+      }
+    },
     "/api/whats-new": {
       "get": {
         "description": "Return commits + releases from the last ``hours`` (default 48).",

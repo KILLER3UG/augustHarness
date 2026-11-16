@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-451 routes across 378 paths,
+452 routes across 379 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -500,7 +500,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (60)
+## Other (61)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -564,10 +564,11 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/system/restart` | Signal a soft restart intent — process managers (or the desktop shell) act on it. |
 | `GET` | `/api/wake-up/brief` | Ask whether a wake-up brief is due, and get it when it is. |
 | `POST` | `/api/wake-up/dismiss` | Record that the user dismissed the queued (quiet-mode) brief. |
+| `GET` | `/api/wake-up/model-info` | Which model phrases the brief, and whether it stays on this machine. |
 | `GET` | `/api/whats-new` | Return commits + releases from the last ``hours`` (default 48). |
 | `GET` | `/api/workspace/files` | List files under a workspace path (desktop file tree). |
 | `POST` | `/mcp/harness` | Harness Mcp |
 
 ---
 
-Generated from `docs/api/openapi.json` (451 operations).
+Generated from `docs/api/openapi.json` (452 operations).

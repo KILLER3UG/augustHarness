@@ -79,6 +79,11 @@ def get_wake_up_config() -> dict[str, object]:
             _MIN_WARM_IDLE_MINUTES,
             min(_MAX_WARM_IDLE_MINUTES, as_int(user.get('warmIdleMinutes'), _DEFAULT_WARM_IDLE_MINUTES)),
         ),
+        # Titles only: skip the model entirely — the digest (session titles +
+        # automation names) IS the brief. The honest zero-cost option, and the
+        # one a cloud-averse user wants when the cerebellum role points away
+        # from a local model.
+        'titlesOnly': as_bool(user.get('titlesOnly'), False),
     }
 
 
@@ -86,7 +91,14 @@ def set_wake_up_config(patch: dict[str, object]) -> tuple[bool, str, dict[str, o
     """Validate and apply a partial wake-up config patch."""
     current = get_wake_up_config()
     for field, value in patch.items():
-        if field not in ('enabled', 'quiet', 'cooldownMinutes', 'warmModel', 'warmIdleMinutes'):
+        if field not in (
+            'enabled',
+            'quiet',
+            'cooldownMinutes',
+            'warmModel',
+            'warmIdleMinutes',
+            'titlesOnly',
+        ):
             return (False, f'unknown field: {field!r}', current)
         if field == 'cooldownMinutes':
             if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -195,8 +207,40 @@ def as_list_of_dicts(value: object) -> list[dict[str, object]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def brief_model_info() -> dict[str, object]:
+    """Which model phrases the brief, and whether it stays on this machine.
+
+    The Settings surface and the brief receipt both render this, so a user
+    whose cerebellum role points at a cloud gateway is TOLD, not surprised.
+    """
+    with best_effort('wake-up.model-info'):
+        from app.services.workbench.model_fleet import resolveRoleModel
+
+        model, provider_hint = resolveRoleModel('cerebellum')
+        if not model:
+            return {'model': '', 'provider': '', 'local': True, 'configured': False}
+        from app.services.workbench.loop.surface import provider_row_by_name
+
+        row = provider_row_by_name(provider_hint or model)
+        base = as_str(row.get('baseUrl'), '').lower()
+        local = (
+            as_str(row.get('id'), '') == 'local-models'
+            or '127.0.0.1' in base
+            or 'localhost' in base
+        )
+        return {
+            'model': model,
+            'provider': provider_hint,
+            'local': local,
+            'configured': True,
+        }
+    return {'model': '', 'provider': '', 'local': True, 'configured': False}
+
+
 async def _compose(facts: dict[str, object]) -> str:
     """Model-phrased brief from the fact digest; falls back to the digest."""
+    if get_wake_up_config().get('titlesOnly'):
+        return ''
     prompt = (
         'The user just returned to their desk. Write their wake-up brief: '
         '2-4 short lines covering where things left off (recent sessions) and '
@@ -267,8 +311,8 @@ async def brief(reason: str) -> dict[str, Any]:
     # gather, so a local cerebellum answers warm instead of cold. Remote
     # roles have nothing to preload and this returns immediately; if the
     # load outlives the wait the brief composes anyway (honestly, from the
-    # facts) rather than blocking the wake path.
-    if cfg.get('warmModel'):
+    # facts) rather than blocking the wake path. Titles-only needs no model.
+    if cfg.get('warmModel') and not cfg.get('titlesOnly'):
         try:
             import asyncio
 
@@ -282,7 +326,7 @@ async def brief(reason: str) -> dict[str, Any]:
             logger.debug('warm preload could not start', exc_info=True)
 
     facts = _gather_facts()
-    text = await _compose(facts)
+    text = (await _compose(facts)) or _fallback_brief(facts)
 
     state['lastBriefAt'] = now
     state['lastBriefReason'] = as_str(reason, 'unknown')[:40]
@@ -295,9 +339,13 @@ async def brief(reason: str) -> dict[str, Any]:
         'shouldBrief': True,
         'reason': as_str(reason, 'unknown'),
         'quiet': cfg['quiet'],
+        'titlesOnly': bool(cfg.get('titlesOnly')),
         'text': text,
         'recentSessions': sessions[:3],
         'automations': as_list_of_dicts(facts.get('automations')),
+        # Where the brief was phrased — the receipt says so the user never has
+        # to wonder whether their return moment left the machine.
+        'modelInfo': brief_model_info(),
     }
 
 

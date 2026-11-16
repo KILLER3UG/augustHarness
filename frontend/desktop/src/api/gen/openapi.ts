@@ -6777,6 +6777,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wake-up/model-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Getwakeupmodelinfo
+         * @description Which model phrases the brief, and whether it stays on this machine.
+         *
+         *     Settings renders this next to the wake-up switches: a cerebellum role
+         *     pointing at a cloud gateway is labelled, and the titles-only option is
+         *     the escape hatch.
+         */
+        get: operations["getWakeUpModelInfo_api_wake_up_model_info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/whats-new": {
         parameters: {
             query?: never;
@@ -21580,6 +21604,26 @@ export interface operations {
         };
     };
     postWakeUpDismiss_api_wake_up_dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    getWakeUpModelInfo_api_wake_up_model_info_get: {
         parameters: {
             query?: never;
             header?: never;
