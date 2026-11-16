@@ -3490,11 +3490,17 @@ async def _sendWorkbenchMessageStreamImpl(
             # store. Keys the profile lane already rendered are skipped, so one
             # write is never shown twice.
             try:
+                # Delta facts join the same provenance list: they were shown to
+                # the model, so the Recalled-memory pill and the turn-end
+                # usage feedback must see them too, exactly like the profile
+                # lane's rows.
+                _deltaKeys: list[tuple[str, str]] = []
                 _deltaBlock = (
                     build_memory_delta_block(
                         session_started_at=as_str(getattr(session, 'createdAt', ''), ''),
                         scope=_turnScope,
                         exclude_keys={str(k) for k, _ in (_injectedFacts or [])},
+                        collected_keys=_deltaKeys,
                     )
                     if _memEnabled
                     else ''
@@ -3503,6 +3509,8 @@ async def _sendWorkbenchMessageStreamImpl(
                     _memoryBlock = (
                         f'{_memoryBlock}\n\n{_deltaBlock}' if _memoryBlock else _deltaBlock
                     )
+                    if _deltaKeys:
+                        _injectedFacts = [*(_injectedFacts or []), *_deltaKeys]
             except Exception:
                 logger.debug('memory delta block failed', exc_info=True)
             try:

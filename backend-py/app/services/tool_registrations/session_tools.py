@@ -11,6 +11,7 @@ from pathlib import Path
 from app.json_narrowing import as_int, as_str
 from app.services import tool_registry
 from app.services.memory_quality import coercivePreferenceReason as _coercivePreferenceReason
+from app.services.memory_quality import memoryIsJunk as _memoryIsJunk
 from app.services.sensitive_topics import sensitiveMemoryReason as _sensitiveMemoryReason
 
 
@@ -597,6 +598,20 @@ async def _remember(
                 'ok': False,
                 'policy': f'refused: details exceed {_REMEMBER_MAX_DETAILS_CHARS} characters. '
                 'Trim to the essentials.',
+            }
+        )
+    # The junk bar the import and distiller doors already run (memoryIsJunk):
+    # questions, quoted speech, incident/ticket logs, runtime state, and
+    # repo-derivable statements are not memories no matter who writes them.
+    # The model's own door skipping this was the gap — a small model that
+    # writes eagerly could file one-line noise the other doors would refuse.
+    _junkReason = _memoryIsJunk(text)
+    if _junkReason:
+        return _json.dumps(
+            {
+                'ok': False,
+                'policy': f'refused: {_junkReason}. Save durable, self-contained facts — '
+                'a rule or preference that stays true, not what was just said or done.',
             }
         )
     try:

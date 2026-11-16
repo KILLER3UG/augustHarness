@@ -816,6 +816,7 @@ def build_memory_delta_block(
     scope: str = 'global',
     budget_chars: int = _DELTA_CHAR_CAP,
     exclude_keys: frozenset[str] | set[str] | None = None,
+    collected_keys: list[tuple[str, str]] | None = None,
 ) -> str:
     """Facts written after this session opened, as a plain tail section.
 
@@ -894,6 +895,11 @@ def build_memory_delta_block(
             break
         cost += len(line) + 1
         lines.append(line)
+        # Recorded for the caller: delta facts ride the same provenance and
+        # usage-credit path as profile-lane facts (they were injected too —
+        # the Recalled-memory pill and use_count boosting should see them).
+        if collected_keys is not None:
+            collected_keys.append((str(row['key']), str(row['title'])))
     if not lines:
         return ''
     return '\n'.join([f'{_DELTA_HEADER}:', *lines])
