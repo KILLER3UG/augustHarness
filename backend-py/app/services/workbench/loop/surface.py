@@ -411,8 +411,11 @@ def _toolResultCap(session: WorkbenchSession) -> int:
     Falls back to the harness default — SCALED TO THE MODEL'S WINDOW when the
     profile carries one: a 64 KiB result inside an 8k window is the overflow
     the A.2 reliability run hit (three tool rounds exceeded the whole context).
+    The scale is window//4, not //2: the coding A/B on the 1.7B hit "context
+    size exceeded" at 16k with six tool rounds of //2-sized results (~2k
+    tokens each ≈ 12.5% of the window per round — six rounds alone are 75%).
     A small window gets a proportionally small cap; an explicit profile value
-    still wins.
+    still wins; large windows floor at the 64 KiB harness default.
     """
     profile = _modelCapabilityProfile(session)
     cap = as_int(profile.get('max_tool_result_chars'), 0)
@@ -420,7 +423,7 @@ def _toolResultCap(session: WorkbenchSession) -> int:
         return cap
     window = as_int(profile.get('context_window'), 0)
     if window > 0:
-        return max(2048, min(MAX_TOOL_RESULT_CHARS, window // 2))
+        return max(2048, min(MAX_TOOL_RESULT_CHARS, window // 4))
     return MAX_TOOL_RESULT_CHARS
 
 
