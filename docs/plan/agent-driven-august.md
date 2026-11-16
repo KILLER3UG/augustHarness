@@ -225,6 +225,36 @@ card and cannot proceed without it.
   served by the repo's Vulkan llama.cpp (`data/runtimes/llama.cpp/vulkan/llama-server.exe`).
 - Every commit: small, reversible, gates green, staged by path.
 
+## Live audit (Parts B/C — in progress, dev server + real backend)
+
+Verified live this session:
+- **All 8 routes render** (/, /automations, /runs, /charts, /artifacts,
+  /history, /learning, /docs, /settings/general) — the first 2.5s reads that
+  looked empty were lazy-chunk latency; at 5s every surface renders.
+- **Redirects**: /board → /runs ✓; /live → chat ✓.
+- **Board fold**: /runs shows `board-section` with the team-launcher toggle ✓.
+- **Settings**: the wake-up caption renders verbatim — "Brief written by
+  kilo-auto/free · a cloud model (KiloCode) — the digest leaves this machine." ✓
+- **Bot lifecycle BY CHAT on the local 1.7B**: "Create a bot named Auditor…"
+  → turn ran (the released local model auto-reloaded first — A.4's reload
+  path worked in production) → receipt card "Bot ready — Auditor · audit
+  checker — Retire this bot" ✓; "Retire the bot named Auditor…" →
+  bot_retired receipt + list_bots confirmation (backend transcript verified;
+  roster shows Auditor gone) ✓.
+- **Memory by chat** → the memory card chip renders ✓.
+
+Audit findings:
+- The composer still has a mic button (`composer-voice-button`, "Voice
+  input") — that is dictation input, not the deleted Live mode; verify it
+  works in the desktop shell (owed).
+- At a 762px-wide window the sidebar's bot rows were not reachable for the
+  detail-edit check — small-window behavior needs a full-size pass (owed).
+
+Still owed for STOP 1: subagent fanout inline progress, wake-up brief on
+resume + dismiss + quiet mode, risky-action confirmation cards, the ×3
+repetitions the brief asks for, themes/keyboard/resize/empty-error sweeps,
+and the bot detail edit at full window size.
+
 ## STOP 1 status (interim — Part A complete, Parts B/C partially done)
 
 Done and verified this session:
