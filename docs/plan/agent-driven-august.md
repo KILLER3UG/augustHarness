@@ -122,16 +122,30 @@ Open items for Part A (ordered):
 - **d72fb870** — tool-result cap scales with the model window (the A.2 run
   caught a 12.6k-token request on the 8k model from one 64 KiB tool result).
 
-### A.2 reliability run (fallback OFF, LFM3-1.7B-Q8_0, bare profile, Vulkan)
+### A.2 reliability run — FINAL (fallback OFF, LFM3-1.7B-Q8_0, bare profile, Vulkan)
 
-Batch 1 (6 tasks): **35 tool calls / 35 results — 34 ok, 1 malformed, 0
-unrepaired failures; 6/6 tasks completed except one context-overflow turn
-(fixed by d72fb870)**. Bridge overhead is the dominant pattern: tool_search
-10 + tool_describe 6 + tool_call 8 of 35 calls (69%) — the bare surface pays
-a discovery round-trip for every deferred tool. Bridged targets all worked:
-create_bot, list_bots ×3, verify_citation, search_files, retire_bot (the full
-bot lifecycle ran through the bridges, receipt included). Batch 2 (9 more
-tasks) is running to cross the 100-call target; final numbers at the stop.
+**107 tool calls across 20 tasks (3 batches) — 105 ok (98.1%), 4 malformed, 0
+unrepaired failures; 20/20 turns completed** (one early context-overflow turn
+in batch 1 was the defect d72fb870 fixed; batches 2-3 ran clean). Evidence:
+docs/evidence/a2-tool-reliability-tally.json. Malformed were arg-shape errors
+on write_file/list_directory/read_file/retire_bot — each followed by a
+successful retry (the schema-aware receipts doing their job). Bridge overhead
+is the dominant pattern: tool_search 16 + tool_describe 15 + tool_call 17 of
+107 calls (45%) — the bare surface pays a discovery round-trip for every
+deferred tool. Bridged targets all worked, including the full bot lifecycle
+(create_bot → list_bots → update_bot → retire_bot, receipts included) and
+verify_citation/locate_claim/search_files.
+
+### A.8 evidence (docs/evidence/)
+
+The sample-paper flow ran on the 1.7B: paper-state + sources seeded → the
+agent drafted Chapter 1 (paper-chapter1-draft.md) → the write_file hook wrote
+the provenance sidecar automatically (paper-chapter1-provenance.md) → paper
+state updated → the agent exported exports/a8-paper-20261116.docx via
+export_paper_docx (paper-chapter1.docx) → rendered to paper-chapter1.pdf with
+LibreOffice. Page screenshots of the PDF are still owed (needs a PDF
+rasterizer or the desktop viewer). First-launch picker on a genuinely clean
+profile: not yet run (needs the desktop shell — Part C).
 
 ## Part B inventory (static pass — live click-through is Part C, not yet run)
 
@@ -190,3 +204,29 @@ card and cannot proceed without it.
   `C:/Users/rober/.lmstudio/models/LiquidAI/LFM3-1.7B-GGUF/LFM3-1.7B-Q8_0.gguf`,
   served by the repo's Vulkan llama.cpp (`data/runtimes/llama.cpp/vulkan/llama-server.exe`).
 - Every commit: small, reversible, gates green, staged by path.
+
+## STOP 1 status (interim — Part A complete, Parts B/C partially done)
+
+Done and verified this session:
+- Part A items 1, 3, 4, 5, 6, 7, 9 implemented + verified (commits b8a064f6,
+  d5c039c0, 69695e95, a2cc7108, 11b1be1e, d72fb870); A.2 reliability run
+  completed (107 calls, 98.1% ok); A.8 paper-flow evidence captured.
+- Gates green after every commit (full ladder re-run at the final state).
+
+Open / owed:
+- A.8: PDF page screenshots; first-launch picker on a genuinely clean profile
+  (desktop shell needed).
+- Part B: live agent-driven checks (the GAP list above) — not yet run.
+- Part C: live click-through of every inventory item, states, themes,
+  keyboard, resize — not yet run.
+- Discrepancies needing owner rulings (flagged, not chosen): (1) bot-to-bot
+  messaging is ON in code (message_agent in bot chats) vs the decision
+  "orchestrator-to-bot only"; the orchestrator chat has NO DM tool. (2)
+  bot_mode/setup.py still exists (gated install_complete) vs "setup.py
+  deleted". (3) rooms.py store survives (purge-only) vs "rooms deleted". (4)
+  Board is still a separate page vs "folded into Runs". (5) Live route code
+  remains (hidden) vs "Live/voice deleted". (6) The cerebellum role points at
+  a CLOUD model (kilo-auto/free) on this install — the brief now labels it
+  and offers titles-only, but the default itself is the owner's call.
+
+Next session: Part C live audit in the Tauri shell, then STOP 1 for real.
