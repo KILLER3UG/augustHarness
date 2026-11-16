@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-452 routes across 379 paths,
+453 routes across 380 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -500,7 +500,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (61)
+## Other (62)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -552,6 +552,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/local-models/runtime/install` | Kick off the runtime install in the background; poll GET /runtime. |
 | `POST` | `/api/local-models/scan` | Probe loopback ports for local model servers; read-only. |
 | `GET` | `/api/local-models/servers` | Running llama-server instances and their status. |
+| `POST` | `/api/local-models/servers/context` | Change a served local model's context length (stop → relaunch with the new ``--ctx-size``). Refuses while a g… |
 | `POST` | `/api/local-models/servers/stop` | Server Stop |
 | `GET` | `/api/overview` | Dashboard overview cards (requests / activity / errors / cost). |
 | `GET` | `/api/realtime/recent` | Recent realtime events (debug / reconnect catch-up). |
@@ -571,4 +572,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (452 operations).
+Generated from `docs/api/openapi.json` (453 operations).
