@@ -2886,6 +2886,27 @@ async def _sendWorkbenchMessageStreamImpl(
         session_provider=session.provider or provider or '',
         session_model=session.model or '',
     )
+    # A released local model reloads HERE, with a visible 'loading model'
+    # state on the realtime bus — never a connection error on the next message.
+    try:
+        _provId = as_str((resolvedProvider or {}).get('id') or (resolvedProvider or {}).get('name'), '')
+        if _provId in ('local-models', 'LocalModels'):
+            from app.services.llama_runtime import ensure_local_ready as _ensureLocalReady
+
+            if await _ensureLocalReady():
+                # A reload repoints the provider's port — re-resolve once so
+                # this turn runs on the LIVE base URL, not the released one.
+                _reProvider, _reModel = _resolveChatLlm(
+                    model=model or '',
+                    model_provider=modelProvider or '',
+                    session_provider=session.provider or provider or '',
+                    session_model=session.model or '',
+                )
+                if _reProvider:
+                    resolvedProvider = _reProvider
+                    resolvedModel = _reModel or resolvedModel
+    except Exception:
+        logger.debug('local-model readiness wait skipped', exc_info=True)
     # Remember model/provider on the session so BTW and Live use the same ones —
     # never a role model. A role belongs to the turn that earned it; parking it
     # on the session would make it the next turn's default (and media_tools

@@ -376,6 +376,15 @@ async def warm_loop() -> None:
 
     while True:
         try:
+            # Crash pass first: a mid-run crash must be marked failed (never a
+            # stale 'ready' row) and restarted once before the release pass
+            # decides what to free.
+            from app.services.llama_runtime import reconcile_servers
+
+            await reconcile_servers()
+        except Exception:  # noqa: BLE001 — a maintenance pass must never kill the loop
+            logger.debug('warm reconcile pass failed', exc_info=True)
+        try:
             cfg = get_wake_up_config()
             if cfg.get('warmModel'):
                 from app.services.llama_runtime import release_warm

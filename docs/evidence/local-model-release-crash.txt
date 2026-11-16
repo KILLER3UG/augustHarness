@@ -1,0 +1,16 @@
+local server gguf-49670 crashed: llama-server crashed mid-run (variant vulkan) — process gone
+== 0. kill orphans + sweep stale rows ==
+rows after sweep: []
+== 1. serve the GGUF ==
+started: gguf-59094 port 59094
+disk row ready: gguf-59094 ready
+== 2. injected battery state -> release ==
+released: ['LFM3-1.7B-Q8_0 (on battery)'] | rows now: []
+== 3. busy guard: in-flight generation is deferred ==
+released while busy: [] | rows: [('gguf-49670', 'ready')]
+== 4. mid-run crash: no stale ready row, one restart, gpu/driver recorded ==
+reconcile: {'checked': 1, 'failed': 1, 'restarted': 1}
+  row: gguf-49670 failed | gpu: NVIDIA GeForce RTX 4050 Laptop GPU | driver: 616.64 | attempts: 1
+  row: gguf-60679 starting | gpu: None | driver: None | attempts: 0
+== 5. cleanup ==
+all llama-servers killed
