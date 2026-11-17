@@ -122,8 +122,10 @@ export function setLlamaServerContext(serverId: string, ctxSize: number): Promis
 
 /** The preset windows offered wherever a local model's context is set
  * (serve-time picker, per-server control, composer menu). Custom values are
- * any multiple of 1024 the backend accepts. */
-export const LOCAL_CTX_CHOICES = [4096, 8192, 16384, 32768] as const;
+ * any multiple of 1024 the backend accepts. 65536 loads only with the
+ * trained-window caveat and may OOM small GPUs — the runtime falls back
+ * once to the previous working length when that happens. */
+export const LOCAL_CTX_CHOICES = [4096, 8192, 16384, 32768, 65536] as const;
 
 export function stopLlamaServer(serverId: string): Promise<{ stopped: string }> {
   return api.post('/api/local-models/servers/stop', { serverId });

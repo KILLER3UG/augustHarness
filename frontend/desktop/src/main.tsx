@@ -67,7 +67,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <ErrorBoundary>
             <App />
           </ErrorBoundary>
-          <Toaster position="bottom-right" theme="system" richColors />
+          {/* Top-center: bottom-right toasts render over the composer's model
+              menu and swallow the clicks right after a context apply — the
+              toast viewport paints above everything at that corner. */}
+          <Toaster position="top-center" theme="system" richColors />
         </BrowserRouter>
       </QueryClientProvider>
     </MotionConfig>

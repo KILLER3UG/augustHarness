@@ -23,7 +23,7 @@
  * the same effort state.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronDown, ChevronRight, Download, Loader2, Search, X } from 'lucide-react';
@@ -183,6 +183,8 @@ export function ModelEffortMenu({
   onEffortChange,
   thinkingEnabled,
   onThinkingChange,
+  workspaceControl,
+  modeControl,
 }: {
   visibleModels: ModelItem[];
   loading?: boolean;
@@ -193,6 +195,10 @@ export function ModelEffortMenu({
   onEffortChange: (v: EffortLevel) => void;
   thinkingEnabled: boolean;
   onThinkingChange: (v: boolean) => void;
+  /** Part D diet — the workspace and mode chips render as ROWS inside this
+   *  menu instead of as separate always-visible composer controls. */
+  workspaceControl?: ReactNode;
+  modeControl?: ReactNode;
 }) {
   // One pane now: the effort chip was removed, so the picker is open or closed.
   const [pane, setPane] = useState<'models' | null>(null);
@@ -217,29 +223,54 @@ export function ModelEffortMenu({
     refetchInterval: (q) =>
       (q.state.data?.servers ?? []).some((s) => s.status === 'starting') ? 2000 : 15_000,
   });
-  const readyLocalServer = useMemo(() => {
+  // The row stays mounted whatever the server is doing: after an apply the
+  // server flips to `starting` for the whole reload, and a ready-only lookup
+  // unmounted the presets mid-interaction — the control vanished under the
+  // cursor and nothing could be clicked until the model finished loading.
+  // One local model is served at a time, so the single row (ready preferred)
+  // IS the selected model's server.
+  const localServerRow = useMemo(() => {
     const servers = serversQ.data?.servers ?? [];
     const active = activeProvider || selected?.provider || '';
     if (active !== 'LocalModels') return null;
-    return servers.find((s) => s.status === 'ready') ?? null;
+    return (
+      servers.find((s) => s.status === 'ready') ??
+      servers.find((s) => s.status === 'starting') ??
+      servers[0] ??
+      null
+    );
   }, [serversQ.data, activeProvider, selected?.provider]);
+  const readyLocalServer =
+    localServerRow && localServerRow.status === 'ready' ? localServerRow : null;
   const [customCtx, setCustomCtx] = useState('');
 
   const applyCtx = useCallback(
     (ctx: number) => {
-      const row = readyLocalServer;
-      if (!row || row.ctxSize === ctx) return;
+      const row = localServerRow;
+      if (!row) {
+        toast.error('No local model is served — start one in Settings → Local Models first.');
+        return;
+      }
+      if (row.status !== 'ready') {
+        toast.info(`${row.name} is still ${row.status} — the context control unlocks when it is ready.`);
+        return;
+      }
+      if (row.ctxSize === ctx) {
+        toast.info(`${row.name} is already at ${Math.round(ctx / 1024)}k context.`);
+        return;
+      }
       setLlamaServerContext(row.id, ctx)
         .then((res) => {
           if (res.warning) toast.warning(res.warning);
           else toast.success(`${row.name} → ${Math.round(ctx / 1024)}k context — loading…`);
           void qc.invalidateQueries({ queryKey: ['llama-servers'] });
+          void qc.invalidateQueries({ queryKey: ['models'] });
         })
         .catch((err: unknown) =>
           toast.error(err instanceof Error ? err.message : 'Context change failed'),
         );
     },
-    [readyLocalServer, qc],
+    [localServerRow, qc],
   );
 
   const groups = useMemo(() => groupModelsByProvider(visibleModels), [visibleModels]);
@@ -714,10 +745,33 @@ export function ModelEffortMenu({
                     <span className="text-2xs text-muted-foreground">Extended thinking</span>
                     <ThinkingSwitch checked={thinkingEnabled} onChange={onThinkingChange} />
                   </div>
+                  {/* Part D diet — the workspace and permission-mode chips are
+                      rows of this menu, not separate composer controls. Their
+                      own popovers portal above this panel, so a click inside
+                      them closes this menu with the change applied. */}
+                  {workspaceControl && (
+                    <div
+                      className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
+                      data-testid="model-workspace-row"
+                    >
+                      {workspaceControl}
+                    </div>
+                  )}
+                  {modeControl && (
+                    <div
+                      className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
+                      data-testid="model-mode-row"
+                    >
+                      {modeControl}
+                    </div>
+                  )}
                   {/* A served local model's window is a user setting: presets
-                      plus a custom value, applied by a clean reload. Cloud
-                      providers render nothing here — there is no window to set. */}
-                  {readyLocalServer && (
+                      plus a custom value, applied by a clean reload. The row
+                      survives the reload (disabled + spinner while the server
+                      is not ready) — a ready-only render unmounted it
+                      mid-interaction. Cloud providers render nothing here —
+                      there is no window to set. */}
+                  {localServerRow && (
                     <div
                       className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
                       data-testid="model-context-row"
@@ -730,11 +784,16 @@ export function ModelEffortMenu({
                             type="button"
                             variant="bare"
                             onClick={() => applyCtx(c)}
-                            title={`Set context to ${Math.round(c / 1024)}k tokens`}
-                            aria-pressed={readyLocalServer.ctxSize === c}
+                            disabled={!readyLocalServer}
+                            title={
+                              readyLocalServer
+                                ? `Set context to ${Math.round(c / 1024)}k tokens`
+                                : `${localServerRow.name} is ${localServerRow.status}`
+                            }
+                            aria-pressed={readyLocalServer?.ctxSize === c}
                             className={cn(
-                              'rounded-[4px] border px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 transition-colors',
-                              readyLocalServer.ctxSize === c
+                              'rounded-[4px] border px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 transition-colors disabled:opacity-50',
+                              readyLocalServer?.ctxSize === c
                                 ? 'border-primary/50 bg-primary/10 text-primary'
                                 : 'border-border/60 text-muted-foreground/70 hover:text-foreground',
                             )}
@@ -746,6 +805,7 @@ export function ModelEffortMenu({
                           type="number"
                           min={1024}
                           step={1024}
+                          disabled={!readyLocalServer}
                           value={customCtx}
                           onChange={(e) => setCustomCtx(e.target.value)}
                           onKeyDown={(e) => {
@@ -758,11 +818,31 @@ export function ModelEffortMenu({
                               }
                             }
                           }}
-                          placeholder={String(readyLocalServer.ctxSize)}
+                          placeholder={String(localServerRow.ctxSize)}
                           aria-label="Custom context size in tokens"
-                          className="h-5 w-14 rounded-[4px] border border-border/60 bg-transparent px-1 text-[0.5625rem] leading-3 text-foreground/85 outline-none placeholder:text-muted-foreground/50"
+                          className="h-5 w-14 rounded-[4px] border border-border/60 bg-transparent px-1 text-[0.5625rem] leading-3 text-foreground/85 outline-none placeholder:text-muted-foreground/50 disabled:opacity-50"
                         />
-                        {readyLocalServer.status === 'starting' && (
+                        <Button
+                          type="button"
+                          variant="bare"
+                          onClick={() => {
+                            const n = Number(customCtx);
+                            if (Number.isFinite(n) && n >= 1024) {
+                              applyCtx(n);
+                              setCustomCtx('');
+                            } else {
+                              toast.error('Enter a context size of 1024 or more.');
+                            }
+                          }}
+                          disabled={!readyLocalServer || !customCtx}
+                          title="Apply the custom context size"
+                          aria-label="Apply custom context size"
+                          data-testid="model-context-apply"
+                          className="rounded-[4px] border border-border/60 px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 text-muted-foreground/80 transition-colors hover:text-foreground disabled:opacity-50"
+                        >
+                          Apply
+                        </Button>
+                        {localServerRow.status === 'starting' && (
                           <Loader2 className="size-3 animate-spin text-muted-foreground" />
                         )}
                       </div>

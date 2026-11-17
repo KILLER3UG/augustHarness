@@ -339,6 +339,9 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
   const [root, setRoot] = useState<string>('');
   const [ctx, setCtx] = useState(8192);
   const [servingPath, setServingPath] = useState<string | null>(null);
+  // Per-server custom context inputs stay controlled so the Apply button
+  // reads the same value the user typed, not a DOM guess.
+  const [customCtx, setCustomCtx] = useState<Record<string, string>>({});
 
   const serversQ = useQuery({
     queryKey: ['llama-servers'],
@@ -404,7 +407,10 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
   // "loading model…" until the ready poll flips it. A load failure at the new
   // size falls back to the previous length server-side and says so in detail.
   async function changeCtx(row: LlamaServerRow, ctx: number) {
-    if (ctx === row.ctxSize) return;
+    if (ctx === row.ctxSize) {
+      toast.info(`${row.name} is already at ${Math.round(ctx / 1024)}k context.`);
+      return;
+    }
     try {
       const res = await setLlamaServerContext(row.id, ctx);
       if (res.warning) toast.warning(res.warning);
@@ -484,6 +490,8 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
                       min={1024}
                       step={1024}
                       placeholder="custom"
+                      value={customCtx[s.id] ?? ''}
+                      onChange={(e) => setCustomCtx((m) => ({ ...m, [s.id]: e.target.value }))}
                       aria-label={`${s.name} custom context size in tokens`}
                       onKeyDown={(e) => {
                         if (e.key !== 'Enter') return;
@@ -492,6 +500,23 @@ function OnDiskCard({ runtimeInstalled }: { runtimeInstalled: boolean }) {
                       }}
                       className="h-7 w-16 rounded-md border border-border/60 bg-card/60 px-2 text-2xs"
                     />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-label={`${s.name} apply custom context size`}
+                      data-testid={`server-ctx-apply-${s.name}`}
+                      onClick={() => {
+                        const n = Number(customCtx[s.id] ?? '');
+                        if (Number.isFinite(n) && n >= 1024) {
+                          void changeCtx(s, n);
+                          setCustomCtx((m) => ({ ...m, [s.id]: '' }));
+                        } else {
+                          toast.error('Enter a context size of 1024 or more.');
+                        }
+                      }}
+                    >
+                      Apply
+                    </Button>
                   </>
                 )}
                 <Button size="sm" variant="outline" onClick={() => void stop(s)}>
