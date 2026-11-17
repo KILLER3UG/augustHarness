@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-from app.json_narrowing import as_dict, as_int, as_list, as_str
+from app.json_narrowing import as_bool, as_dict, as_int, as_list, as_str
 from app.services.workbench.sessions import WorkbenchSession
 
 logger = logging.getLogger('workbench')
@@ -79,11 +79,13 @@ _BARE_TOOL_ALLOW = frozenset(
         'list_directory',
         'write_file',
         'edit_lines',
-        'run_command',
+        # run_command is DEMOTED on the bare surface (owner ruling, STOP 1B):
+        # the A/B watched a 1.7B spend its rounds fighting PowerShell while
+        # the dedicated workspace tools sat unused. It stays reachable through
+        # the tool_call bridge for the models that truly need it.
         'read_background_task',
         'kill_background_task',
         'update_state',
-        'submit_todos',
         'update_todos',
         'write_scratchpad',
         'diagnose_proxy',
@@ -290,6 +292,7 @@ def _modelCapabilityProfile(session: WorkbenchSession) -> dict[str, object]:
         return dict(cached[1])
     profile: dict[str, object] = {}
     try:
+        from app.providers.api_format import is_loopback_base_url as _isLoopback
         from app.services import config_service
 
         for p in config_service.getProvidersAsModels():
@@ -299,9 +302,14 @@ def _modelCapabilityProfile(session: WorkbenchSession) -> dict[str, object]:
                 if m.id == modelId:
                     profile = {
                         'tool_surface': m.tool_surface or 'full',
+                        # Whether the user actually set a surface (vs the
+                        # 'full' default) — the ≤16k local rule below must
+                        # not override an explicit choice.
+                        'tool_surface_explicit': bool(m.tool_surface),
                         'max_tools': int(m.max_tools or 0),
                         'max_tool_result_chars': int(m.max_tool_result_chars or 0),
                         'context_window': int(getattr(m, 'context_window', 0) or 0),
+                        'loopback': _isLoopback(getattr(p, 'base_url', '')),
                     }
                     break
             if profile:
@@ -322,6 +330,19 @@ def _applyModelCapabilityProfile(
     """Filter the tool surface by the session model's capability profile."""
     profile = _modelCapabilityProfile(session)
     surface = as_str(profile.get('tool_surface'), 'full')
+    window = as_int(profile.get('context_window'), 0)
+    # A small window never carries the full catalog: the full surface is
+    # ~48k tokens of definitions alone (A.1 measurement), so a LOCAL model at
+    # ≤16k runs the compact lazy-discovery profile (bare core + discovery
+    # bridge + skill-pack tools) unless the user set a surface explicitly.
+    # Owner ruling, STOP 1B: never promote a 16k window to the full catalog.
+    if (
+        surface == 'full'
+        and not as_bool(profile.get('tool_surface_explicit'), False)
+        and as_bool(profile.get('loopback'), False)
+        and 0 < window <= 16384
+    ):
+        surface = 'bare'
     if surface == 'text':
         # Text tool protocol: no native tools are offered (models that
         # ignore `tools` must not be tempted); the model calls tools via
@@ -329,7 +350,6 @@ def _applyModelCapabilityProfile(
         setattr(session, '_text_tool_protocol', True)
         return []
     if surface == 'bare':
-        window = as_int(profile.get('context_window'), 0)
         tools = [t for t in tools if _toolDefName(t) in _bare_allowlist(window)]
         # Small models pay for prose on every turn: first-sentence
         # descriptions, no per-property descriptions — tighter on a 4k window.
