@@ -64,10 +64,12 @@ an apology. The rung (trigger: `stop_reason` is `max_tokens`/`length`, or more
 than 2000 thinking chars) appends the assistant row, adds a
 `[Proxy Self-Heal]` nudge to reply in text from what it already has, emits
 `recovery {kind: 'thinking-only', outcome: 'retrying'}` and continues. It fires
-once per turn (`_thinkingOnlyRescueFired`), consumes a normal round, and does not
-strip tools — a model that answers with a new tool call is still working. When
-the second round also ends thinking-only, the old notice is emitted, because
-only then is "it stopped" the truth. The reason vocabulary is unchanged: a turn
+once per turn on a cloud model, twice on a loopback one
+(`_thinkingOnlyRescueFired` against `_thinkingOnlyRescueBudget` — a local
+reasoning model re-thinks cheaply between rounds), consumes a normal round, and
+does not strip tools — a model that answers with a new tool call is still
+working. When the budget is spent and the round still ends thinking-only, the
+old notice is emitted, because only then is "it stopped" the truth. The reason vocabulary is unchanged: a turn
 the rescue completes ends `finished`.
 
 ## Two bounds are armed by default

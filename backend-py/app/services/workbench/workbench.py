@@ -3795,8 +3795,19 @@ async def _sendWorkbenchMessageStreamImpl(
     # A round that ends holding only reasoning and no answer gets ONE "say the
     # answer now" round rather than the turn closing on an apology. Same failure
     # shape as a truncated sentence: the output budget went into thinking. The
-    # flag is turn-scoped so a rescue cannot repeat itself every round.
-    _thinkingOnlyRescueFired = False
+    # flag is turn-scoped so a rescue cannot repeat itself every round. A
+    # loopback model gets two: local reasoning models re-think cheaply between
+    # rounds, and one spent rescue followed by "Stopped after tools with
+    # reasoning but no final answer" was the standard small-model death.
+    try:
+        from app.providers.api_format import is_loopback_base_url as _turnIsLoopback
+
+        _thinkingOnlyRescueBudget = (
+            2 if _turnIsLoopback(resolvedProvider.get('baseUrl')) else 1
+        )
+    except Exception:
+        _thinkingOnlyRescueBudget = 1
+    _thinkingOnlyRescueFired = 0
     _thinkingOnlyRescue = False
     # Why the tool loop ended, reported on the turn_end event so a user report
     # of "it stopped after N commands" is one query instead of a code audit
@@ -5110,11 +5121,11 @@ async def _sendWorkbenchMessageStreamImpl(
                 )
                 _thinkingOnlyRescue = (
                     stop_reason in ('max_tokens', 'length') or len(thinkingContent) > 2000
-                ) and not _thinkingOnlyRescueFired
+                ) and _thinkingOnlyRescueFired < _thinkingOnlyRescueBudget
                 if not _thinkingOnlyRescue and emit and (
                     stop_reason in ('max_tokens', 'length') or len(thinkingContent) > 2000
                 ):
-                    # The rescue already spent its one round and the model still
+                    # The rescue already spent its round(s) and the model still
                     # sent no answer. Only now is "it stopped" the truth.
                     emit(
                         {
@@ -5128,12 +5139,12 @@ async def _sendWorkbenchMessageStreamImpl(
                     )
             currentMessages.append(assistantMsg)
             if _thinkingOnlyRescue:
-                # Ask for the answer once, with the reasoning already in the
+                # Ask for the answer again, with the reasoning already in the
                 # history it can see. This advances the transcript rather than
                 # replaying a round, so no work is re-run: the tool results are
                 # still there and the model is only told to spend its remaining
                 # budget on the reply.
-                _thinkingOnlyRescueFired = True
+                _thinkingOnlyRescueFired += 1
                 _thinkingOnlyRescue = False
                 currentMessages.append(
                     {
@@ -5156,7 +5167,7 @@ async def _sendWorkbenchMessageStreamImpl(
                             ),
                         }
                     )
-                _emitRecovery(emit, 'thinking-only', 1, 'retrying', False)
+                _emitRecovery(emit, 'thinking-only', _thinkingOnlyRescueFired, 'retrying', False)
                 continue
             # Refusal detection: a model claiming it cannot use tools (or
             # hosted on a gateway that silently drops `tools`) would end the
