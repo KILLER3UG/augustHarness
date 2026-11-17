@@ -2772,6 +2772,11 @@ async def _sendWorkbenchMessageStreamImpl(
         session.guardMode = normalizeGuardMode(guardMode)
     session.status = 'streaming'
     session.updatedAt = _now()
+    # Persist the row AT TURN START (owner ruling, STOP 1B): a turn that is
+    # killed, crashes or is cancelled must leave its session in the
+    # sidebar/rail with the surviving transcript — end-of-turn saves alone
+    # lost the row entirely, and a deep link then opened a blank draft.
+    saveSessions()
     # 1.1: the text-tool-protocol flag was set-true-only, so a session
     # that once ran a text-surface model (or hit the 2-refusal downgrade) kept
     # emitting the <tool_protocol> block + [TOOLCALL] parsing on later turns
@@ -4777,6 +4782,28 @@ async def _sendWorkbenchMessageStreamImpl(
                         emit({'type': 'warning', 'message': msg})
                     break
                 delayMs = _modelRetryDelayMs(retryAttempt + 1, response, retryPolicy)
+                # A LOCAL server that died mid-turn (crash, release in a tool
+                # gap, context change) must not wedge the turn through ten
+                # slow retries: the reload machinery brings it back on the
+                # NEXT message, so say what happened and stop — resending the
+                # message is the one-click retry. (Owner ruling, STOP 1B.)
+                _respErr = as_str(response.get('error'), '').lower()
+                if (
+                    'connection' in _respErr
+                    and as_str(getattr(session, 'provider', '') or '', '').strip().lower()
+                    in ('localmodels', 'local-models')
+                    and _localServerDown()
+                ):
+                    _downMsg = (
+                        'The local model server went down mid-turn (crash, release or context '
+                        'change). It reloads automatically on your next message — send it again '
+                        'to retry.'
+                    )
+                    logger.warning('workbench aborting a wedged turn: %s', _downMsg)
+                    response['error'] = _downMsg
+                    if emit:
+                        emit({'type': 'warning', 'message': _downMsg})
+                    break
                 logger.warning(
                     'workbench model call failed (retry %d/%d in %dms): %s',
                     retryAttempt + 1,
@@ -6882,6 +6909,22 @@ def anyActiveTurnOnProvider(provider_names: set[str]) -> bool:
         except Exception:
             continue
     return False
+
+
+def _localServerDown() -> bool:
+    """True when NO local llama-server is ready.
+
+    A mid-turn connection failure against the Local Models provider with no
+    ready row means the server crashed, was released, or is being changed —
+    the turn must say so and stop, not wedge through ten slow retries.
+    """
+    try:
+        from app.services import llama_runtime
+
+        rows = llama_runtime.list_servers().get('servers', [])
+        return not any(str(r.get('status') or '') == 'ready' for r in rows)
+    except Exception:
+        return False
 
 
 def _checkToolGuard(session: WorkbenchSession, toolName: str, args: dict[str, object]) -> str | None:

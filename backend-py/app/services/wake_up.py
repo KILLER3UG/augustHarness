@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from app.json_narrowing import as_bool, as_dict, as_int, as_str
@@ -182,7 +183,32 @@ def _gather_facts() -> dict[str, object]:
             )
             if len(jobs) >= MAX_JOBS_IN_BRIEF:
                 break
-    return {'recentSessions': sessions, 'automations': jobs}
+
+    # The CURRENT local-model state, read live (owner ruling, STOP 1B): the
+    # composing model once inferred a context length from a session TITLE and
+    # stated it as fact. The truth goes in as its own field so the brief never
+    # has to guess.
+    localModel: dict[str, object] = {}
+    with best_effort('wake-up.local-model-facts'):
+        from app.services import llama_runtime
+
+        rows = llama_runtime.list_servers().get('servers', [])
+        ready = next((r for r in rows if str(r.get('status', '')) == 'ready'), None)
+        if ready is not None:
+            localModel = {
+                'name': as_str(ready.get('name'), 'local model'),
+                'contextTokens': as_int(ready.get('ctxSize'), 0),
+                'state': 'serving',
+            }
+        else:
+            warm = llama_runtime._load_warm()
+            if warm.get('ggufPath'):
+                localModel = {
+                    'name': Path(str(warm.get('ggufPath'))).stem,
+                    'contextTokens': as_int(warm.get('ctxSize'), 0),
+                    'state': 'not loaded — it reloads on the first message',
+                }
+    return {'recentSessions': sessions, 'automations': jobs, 'localModel': localModel}
 
 
 def _fallback_brief(facts: dict[str, object]) -> str:
@@ -196,6 +222,11 @@ def _fallback_brief(facts: dict[str, object]) -> str:
     if jobs:
         names = ', '.join(as_str(j.get('name')) for j in jobs[:3])
         lines.append(f'Background automations: {names}.')
+    local = as_dict(facts.get('localModel'))
+    if local:
+        ctx = as_int(local.get('contextTokens'), 0)
+        ctxText = f' · {ctx // 1024}k context' if ctx >= 1024 else ''
+        lines.append(f"Local model: {as_str(local.get('name'), 'local model')}{ctxText} — {as_str(local.get('state'), 'unknown')}.")
     lines.append('What would you like to pick up first?')
     return '\n'.join(lines)
 
@@ -246,7 +277,10 @@ async def _compose(facts: dict[str, object]) -> str:
         '2-4 short lines covering where things left off (recent sessions) and '
         'any open background automations, ending with ONE concrete question to '
         're-engage. Use only the facts below — do not invent work, deadlines, '
-        'or results. No pleasantries beyond "Welcome back.".\n\nFacts:\n'
+        'or results. No pleasantries beyond "Welcome back.". The localModel '
+        'field is the CURRENT state of the served local model: state its '
+        'context length only from that field — session titles are history, '
+        'not the current configuration.\n\nFacts:\n'
         + json.dumps(facts, ensure_ascii=False)
     )
     with best_effort('wake-up.model-compose'):

@@ -129,7 +129,10 @@ def _startTurnTask(
             try:
                 session = wb.getWorkbenchSession(sessionId)
                 if session:
-                    session.status = 'idle'
+                    # A CANCELLED turn keeps its row visible as cancelled —
+                    # the user stopped it, and the rail should say so rather
+                    # than read as a finished chat (owner ruling, STOP 1B).
+                    session.status = 'cancelled'
                     # The cancelled turn's persist block never ran, so the last
                     # barrier flush left turnOpen=True on disk — reset it here
                     # or the next load fabricates a phantom "[interrupted]"
@@ -152,7 +155,11 @@ def _startTurnTask(
             try:
                 session = wb.getWorkbenchSession(sessionId)
                 if session:
-                    session.status = 'idle'
+                    # A turn that died keeps its row visible as interrupted —
+                    # the transcript survives and the rail says what happened
+                    # instead of reading as a finished chat (owner ruling,
+                    # STOP 1B).
+                    session.status = 'interrupted'
                     session.turnOpen = False
                     session.updatedAt = wb._now()
                     wb.saveSessions()
