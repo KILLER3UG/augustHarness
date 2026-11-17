@@ -9,7 +9,7 @@ import type { CodeReviewResult, ReviewFinding } from '@/api/codeReview';
 
 const TAG_STYLES: Record<string, string> = {
   P0: 'bg-destructive/20 text-destructive border-destructive/40',
-  P1: 'bg-orange-500/15 text-orange-400 border-orange-500/40',
+  P1: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/40',
   P2: 'bg-warning/15 text-warning-fg border-warning/40',
   P3: 'bg-white/[0.06] text-muted-foreground border-white/10',
 };
@@ -100,7 +100,7 @@ export function ReviewFindingsPanel({
           {counts.p0 > 0 && <TagBadge tag="P0" />}
           {counts.p0 > 0 && <span className="text-2xs tabular-nums text-destructive">{counts.p0}</span>}
           {counts.p1 > 0 && <TagBadge tag="P1" />}
-          {counts.p1 > 0 && <span className="text-2xs tabular-nums text-orange-400">{counts.p1}</span>}
+          {counts.p1 > 0 && <span className="text-2xs tabular-nums text-zinc-300">{counts.p1}</span>}
           {counts.p2 > 0 && <TagBadge tag="P2" />}
           {counts.p2 > 0 && <span className="text-2xs tabular-nums text-warning-fg">{counts.p2}</span>}
           {counts.p3 > 0 && <TagBadge tag="P3" />}

@@ -8,7 +8,7 @@
 const PALETTE: Array<[string, string]> = [
   ['#6d28d9', '#a78bfa'],
   ['#0f766e', '#5eead4'],
-  ['#b45309', '#fcd34d'],
+  ['#3f3f46', '#d4d4d8'],
   ['#be123c', '#fda4af'],
   ['#1d4ed8', '#93c5fd'],
   ['#4d7c0f', '#bef264'],
