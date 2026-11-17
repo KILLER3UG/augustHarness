@@ -18,7 +18,7 @@
 
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Paperclip, Mic, AtSign, Plus, Bot, Swords, Gavel, Camera, type LucideIcon } from 'lucide-react';
+import { Paperclip, AtSign, Plus, Bot, Swords, Gavel, Camera, type LucideIcon } from 'lucide-react';
 import { ToolBtn } from '../ComposerControls';
 import type { AnchorPos } from './useComposerPopovers';
 
@@ -68,7 +68,6 @@ export function ComposerActionsMenu({
   onToggle,
   onAttach,
   onMention,
-  onVoice,
   onCamera,
   onSpawn,
   onAskParallel,
@@ -81,7 +80,6 @@ export function ComposerActionsMenu({
   onToggle: () => void;
   onAttach: () => void;
   onMention: () => void;
-  onVoice: () => void;
   /** Open the camera capture popover (browser webcam). */
   onCamera?: () => void;
   /** Open the sub-agent spawn launcher (bound to the active session). */
@@ -119,7 +117,6 @@ export function ComposerActionsMenu({
               <MenuRow icon={AtSign} label="Mention skill / tool" onClick={onMention} />
             </MenuGroup>
             <MenuGroup label="Input">
-              <MenuRow icon={Mic} label="Voice input" onClick={onVoice} />
               {onCamera && (
                 <MenuRow
                   icon={Camera}

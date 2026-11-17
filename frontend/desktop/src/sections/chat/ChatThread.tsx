@@ -63,7 +63,6 @@ import { useChatModels } from './hooks/useChatModels';
 import { useChatUsage } from './hooks/useChatUsage';
 import { useChatAttachments } from './hooks/useChatAttachments';
 import { useChatSend } from './hooks/useChatSend';
-import { useChatVoiceCommands } from './hooks/useChatVoiceCommands';
 import { usePlanTurn } from './hooks/usePlanTurn';
 import { useChatUiActions } from './hooks/useChatUiActions';
 import { useChatMessageActions } from './hooks/useChatMessageActions';
@@ -663,21 +662,6 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
     setShowToolsDropdown: dropdownClosers.setShowToolsDropdown,
     setShowCommandsDropdown: dropdownClosers.setShowCommandsDropdown,
     loadMessagesForSession,
-  });
-
-  const { voiceActive, startVoiceInput, stopVoiceInput } = useChatVoiceCommands({
-    sessionId,
-    messages,
-    setMessages,
-    setInput,
-    clearAttachments,
-    attachments,
-    workspacePath: activeSession?.workspacePath,
-    workbenchSessionId: activeSession?.workbenchSessionId,
-    send,
-    setExamActive,
-    setExamSeed,
-    setAugPreview,
   });
 
   const {
@@ -1416,9 +1400,6 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
       onDebateLaunch={launchDebate}
       offlineCount={offlineCount}
       onFlushOffline={() => void flushOffline()}
-      voiceActive={voiceActive}
-      startVoiceInput={startVoiceInput}
-      stopVoiceInput={stopVoiceInput}
       scrolledFromBottom={scrolledFromBottom}
       showNewContentPill={hasNewContentWhileUnpinned}
       onScrollToBottom={scrollToBottom}

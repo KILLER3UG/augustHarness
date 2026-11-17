@@ -16,7 +16,7 @@
  * need them. */
 
 import { useState, useEffect, useRef, type ReactNode } from 'react';
-import { ArrowUp, ListEnd, Mic, Square } from 'lucide-react';
+import { ArrowUp, ListEnd, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { WorkbenchSession } from '@/types/workbench';
 import type { ModelItem } from '../model-display';
@@ -52,7 +52,6 @@ export function ComposerToolbar({
   onToggleActions,
   onAttach,
   onMention,
-  onVoice,
   onCamera,
   cameraOpen,
   cameraPos,
@@ -82,7 +81,6 @@ export function ComposerToolbar({
   onToggleActions: () => void;
   onAttach: () => void;
   onMention: () => void;
-  onVoice: () => void;
   /** Open the camera capture popover. When omitted, no camera item is shown. */
   onCamera?: () => void;
   /** True while the camera popover is open. */
@@ -182,7 +180,6 @@ export function ComposerToolbar({
             onToggle={onToggleActions}
             onAttach={onAttach}
             onMention={onMention}
-            onVoice={onVoice}
             onCamera={onCamera}
             onSpawn={() => {
               onToggleActions();
@@ -237,24 +234,9 @@ export function ComposerToolbar({
             uses", and the stop button that replaces it while generating is a
             "filled light circle with a dark rounded square inside". */}
         <div className="flex shrink-0 items-center gap-1">
-          {/* The reference's right-hand cluster is a voice glyph beside the
-              send circle. August had that glyph AND a chevron here, both wired
-              to the SAME `+` menu — two controls advertising two menus, one
-              menu. The mic stays because voice input was otherwise buried two
-              levels down inside that menu; the chevron goes, because a second
-              trigger for one popover is decoration. */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            onClick={onVoice}
-            title="Voice input"
-            aria-label="Voice input"
-            data-testid="composer-voice-button"
-            className="tool-button"
-          >
-            <Mic aria-hidden />
-          </Button>
+          {/* Voice input is REMOVED (owner ruling, STOP 1B): Live/voice is
+              deleted and out of scope, and the mic advertised it from the
+              composer. The send/stop circle is the one primary action. */}
           {streaming ? (
             chordPreview && canSend ? (
               /* The previewed chord action, morphed over Stop. Clicking it

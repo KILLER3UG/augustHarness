@@ -45,7 +45,6 @@ import { ComposerCommandsDropdown } from './composer/ComposerCommandsDropdown';
 import { ComposerToolbar } from './composer/ComposerToolbar';
 import { FontChooserToast } from './composer/FontChooserToast';
 import { ComposerWorkspaceChips } from './composer/ComposerWorkspaceChips';
-import { ComposerVoiceListening } from './composer/ComposerVoiceListening';
 import { ContextUsageReadout } from './composer/ContextUsageReadout';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
@@ -122,9 +121,6 @@ export interface ChatThreadComposerProps {
   /** Offline compose (C9): queued messages waiting for the backend. */
   offlineCount?: number;
   onFlushOffline?: () => void;
-  voiceActive: boolean;
-  startVoiceInput: () => void;
-  stopVoiceInput: () => void;
   /** Jump-to-bottom affordance anchored to the composer card's top border. */
   scrolledFromBottom: boolean;
   showNewContentPill: boolean;
@@ -173,9 +169,6 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
     onDebateLaunch,
     offlineCount = 0,
     onFlushOffline,
-    voiceActive,
-    startVoiceInput,
-    stopVoiceInput,
     scrolledFromBottom,
     showNewContentPill,
     onScrollToBottom,
@@ -534,14 +527,11 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
             showNewContentPill={showNewContentPill}
           />
         </div>
-        {voiceActive ? (
-          <ComposerVoiceListening onStop={stopVoiceInput} />
-        ) : (
-          <>
-            {/* Folder + branch context row — only on a fresh session (empty
-                transcript), where the workspace choice is still open. Once the
-                chat has messages the binding is fixed; the titlebar chips stay
-                as the read-only context. */}
+        <>
+          {/* Folder + branch context row — only on a fresh session (empty
+              transcript), where the workspace choice is still open. Once the
+              chat has messages the binding is fixed; the titlebar chips stay
+              as the read-only context. */}
             <ComposerAttachmentChips
               attachments={attachments}
               onRemove={removeAttachment}
@@ -558,8 +548,7 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
                 {ghostNext && sendKind === 'continue' ? ` · ${ghostNext}` : ''}
               </div>
             ) : null}
-          </>
-        )}
+        </>
 
         {/* The composer ROW: the `+`, the input, the one primary action. The
             input lives INSIDE it because the reference's card is one row — an
@@ -594,10 +583,6 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
             popovers.setShowComposerActionsDropdown(false);
           }}
           onMention={popovers.openMentionPicker}
-          onVoice={() => {
-            startVoiceInput();
-            popovers.setShowComposerActionsDropdown(false);
-          }}
           onCamera={attachFiles ? () => {
             popovers.setShowComposerActionsDropdown(false);
             setCameraOpen((value) => !value);
@@ -609,7 +594,6 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
           onAskParallel={() => setArenaOpen(true)}
           onStartDebate={() => setDebateOpen(true)}
         >
-          {voiceActive ? null : (
             <textarea
               ref={taRef}
               value={input}
@@ -647,7 +631,6 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
               className="block w-full resize-none bg-transparent px-1 py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground/70"
               style={{ minHeight: '36px', maxHeight: '240px' }}
             />
-          )}
         </ComposerToolbar>
 
         {showPreview && input.trim() && (
