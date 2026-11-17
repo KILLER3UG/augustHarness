@@ -590,3 +590,122 @@ seam ready; debug build exists).
 - Deep-link/session-row persistence gap (killed turns lose the session
   row; transcript survives).
 
+
+## Fresh-agent takeover (2026-11-17/18) — Parts 1–3 + STOP 2, executed at d675fadc → b0c42dac
+
+The takeover brief (fix the context selector, subagent 8k overflow, 6k skill
+bloat, monochrome diet, bug rulings, screens/controls/settings diets) was
+executed as 13 commits on `fix/local-model-2026-11-16`, each gates-green.
+`gates:all` is green at the final state (static/backend/frontend+build/mobile;
+178 tools, smoke 21/21, tool-surface parity anthropic=openai=141, lint 149<152,
+design ratchet re-baselined lower: 770→752 entries, raw status colors 8→0).
+
+### Part 1 (commits 7c6770da, d41fadc2, 170042c1, b13e1832, b10f0a2f)
+- **Context selector** (7c6770da): the row unmounted the moment an apply
+  flipped the server to `starting` (ready-only lookup; the in-row spinner was
+  dead code) and bottom-right toasts painted over it — both fixed; row stays
+  mounted + disabled + spinner; toasts moved top-center; same-size applies
+  say so; 64k preset + explicit Apply button added (composer + Local Models
+  tab). LIVE-VERIFIED in the real shell below.
+- **Worker bare discipline** (d41fadc2): workers resolved to a small local
+  model inherited the PARENT's surface and the 4096 output floor — the 8k
+  fanout death. Workers on loopback ≤16k now narrow to the bare allowlist
+  (bridges kept, prose-trimmed), the reply is capped at window//4 (new
+  `output_ceiling` on both provider paths), the skills index scales to the
+  worker window, and the spawn schema gains a `tools` allow-list (2–5)
+  threaded through orchestrator → runSubagent → executeSubAgent. Loopback
+  re-sends drop prior rounds' reasoning_content.
+- **Compact skill projection** (170042c1): `load_skill` reads the serving
+  turn's window; ≤16k loads the deterministic compact projection (headings,
+  checklists, tool mappings; paragraphs folded, fences capped) — measured
+  ≤3,553 chars (~850 tokens) on all bundled skills (research 7088→3549,
+  programmer 5529→2330); `full=true` and `load_skill(name, file=…)` keep the
+  complete text reachable; worker preloads compact too.
+- **Reasoning reserve** (b13e1832): the thinking-only rescue runs twice on
+  loopback turns (once on cloud); attempt number now real. Loopback re-sends
+  strip prior thinking (in d41fadc2).
+- **No raw SUBAGENT_COMPLETE bubbles** (b10f0a2f): live injection and
+  hydrated history both skip the envelope (worker results live in the
+  accordion); the fanout close line REPLACES "Running N sub-agents".
+
+### Part 2 (10046c48, 27f5441b, df89d41a, 4fe4808b, 208b138d)
+- **Monochrome** (10046c48): every warm tint and terracotta/amber accent
+  retired — dark: #0e0e10 page / #0a0a0a rail / #161618 cards / 1px neutral
+  hairlines / WHITE as the single active colour; light: zinc with near-black
+  active. Warning reads neutral; red reserved for destructive. Schematic
+  electrical identities keep their physical colours.
+- **Titlebar** (27f5441b): SystemHud + its nvidia-smi/30s poll deleted;
+  breadcrumb, Search-or-run, Canvas, theme toggle removed; keeps sidebar
+  toggle, thread title, jobs/drawer doors (transient/functional), window
+  controls.
+- **Sidebar/composer** (df89d41a): usage card + disclaimer + 0.6% readout
+  deleted (with the readout's component); same-name/same-path sidebar folders
+  merge at hydration.
+- **Rulings** (4fe4808b): `/c/new`-equivalent "+ New thread" ALWAYS mints a
+  fresh chat (`createEmptySession`; reuse door kept for non-action callers);
+  OnboardingTour deleted (its gate could never pass with the seeded Bot Chat;
+  checklist is the only first-run surface); workbench API + SSE stream raw
+  fetches gate on discovery (`whenReady`) — the shell's stale-port failures.
+- **Automation tools** (208b138d): create/update/list/delete_automation over
+  automations_store; plan-blocked mutations; stale create_routine policy
+  entries retired; receipts automation_created/updated/deleted rendered by
+  AutomationReceiptChip with undo (human API door); trigger token never in a
+  receipt.
+
+### Part 3 (f0069090, a84980c9, b0c42dac)
+- **Screens 8→2+drawers** (f0069090): Charts deleted (/charts → chat);
+  History merged into the sidebar Threads list; Automations folded into Runs
+  as a minimal view/undo list (no manual create form — agent-driven);
+  Learning folded into Memory & Skills settings (/learning redirects to
+  /settings/memory-knowledge); Artifacts + Docs stay deep-linkable, off the
+  primary rail (nav rows are their compact doors). Rail: Threads / Runs /
+  Artifacts / Settings + Docs under More. Mobile tabbar Charts→Runs.
+- **Controls ≤6** (b0c42dac + 27f5441b): default-visible chat controls are
+  sidebar toggle, + New thread, composer input, + attach, model+context
+  chip, send/stop; mode and workspace chips are rows INSIDE the model menu.
+- **Settings 5 tabs** (a84980c9): General · Models & Local Runtime · Memory &
+  Skills · Permissions & Workspace (new tabbed host over sandbox/tool-grants/
+  privacy/external-access) · App & Updates; all other sections keep their ids
+  and deep links as hidden tier (search-reachable).
+
+### STOP 2 evidence (docs/evidence/desktop-diet/, real Tauri shell via CDP)
+Clean scratch profile + served LFM3-1.7B (vulkan). Verified LIVE:
+- **16k preset apply end-to-end**: menu → preset click → stop/relaunch →
+  server row `ready ctx 16384 (prev 8192)`, llama-server /props `n_ctx
+  16384`, /api/models `contextWindow 16384`, warm.json `ctxSize 16384`, the
+  composer chip reads `16k` (04-after-16k-reload.png).
+- **Custom value via Apply**: typed 12288 → Apply → row `ready ctx 12288`,
+  /props `n_ctx 12288`, chip `12k` (05–07).
+- **Monochrome + chrome**: 01/02 show zero telemetry text, no orange anywhere
+  (warning icons render neutral gray), dieted rail, single-control composer
+  footer, workspace + mode rows inside the model menu.
+- The profile's own wake-up turn rendered the new fanout grammar ("Running 2
+  sub-agents / Ran 2 sub-agents — capped at 2 at a time"), the thinking-only
+  rescue warnings and the abort notice — with NO raw [SUBAGENT_COMPLETE]
+  bubble anywhere in the transcript.
+- Environmental limits, recorded honestly: the machine ran another session
+  (pytest 3.2 GB + an 8 GB leftover headless chrome) at ~94% RAM, so the
+  memory-pressure watchdog released the warm model at idle repeatedly and
+  restarted the backend twice mid-testing (both worked as designed). The
+  receipt-card click-through turn was attempted twice; both attempts hit
+  backend churn mid-turn and no card rendered — the card's RENDER path is
+  unchanged since baec885c and the receipt JSON is transcript-verified
+  (wb_20261116_160527_9749bd), so the click-through stays owed on a quiet
+  machine. A fresh subagent fanout at 8k/16k with the new worker discipline
+  is likewise owed on a quiet machine (the machinery itself is verified; the
+  8k overflow fix is gate-verified at the code level).
+- Reliability tally: the standing A.2 numbers (107 calls, 98.1%) are on the
+  bare surface already; a fresh 100-call tally with the worker ceiling +
+  compact skills is owed (hours of 1.7B time; impractical during machine
+  churn).
+
+### Open for the owner
+- Receipt-card + undo click-through, a fresh 8k/16k fanout, and a fresh
+  100-call tally — all blocked on machine quiet (they are the same tests the
+  STOP 1B pass ran, against the new code paths).
+- The takeover's named reference repos (Octopus-SI-OS, mcode-stack, swamp)
+  appear nowhere on this machine; the equivalent invariants (ceiling at
+  dispatch, no verifier gate, session rows at turn start, metered cache-
+  friendly injection, result caps, daemon TTL) are the ones the plan already
+  records. The closest material is the untracked
+  docs/research/august-harness-review/ series (MCode notes included).
