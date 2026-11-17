@@ -45,7 +45,6 @@ import { ComposerCommandsDropdown } from './composer/ComposerCommandsDropdown';
 import { ComposerToolbar } from './composer/ComposerToolbar';
 import { FontChooserToast } from './composer/FontChooserToast';
 import { ComposerWorkspaceChips } from './composer/ComposerWorkspaceChips';
-import { ContextUsageReadout } from './composer/ContextUsageReadout';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { useFocusedSubagent } from '@/components/chat/focused-subagent';
@@ -685,54 +684,41 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
 
           Before a session's first turn there is no measurement, and the
           readout renders nothing at all rather than a confident `0%`. */}
+      {/* Part D diet — the footer carries ONE control: the model + context
+          selector. The mode and workspace chips moved INSIDE that menu (they
+          are turn configuration, not per-message controls), which is how the
+          default-visible chat controls land at ≤6. */}
       <div
-        className="composer-foot mt-1.5 flex items-center justify-between gap-3 px-1 select-none"
+        className="composer-foot mt-1.5 flex items-center justify-end gap-3 px-1 select-none"
         data-testid="composer-footer-row"
       >
-        {/* The row shares width with the project and model chips, and those are
-            shrink-0 — so this line got whatever was left, which at a normal
-            window width meant it ended mid-word: "…Please doubl…". A truncated
-            disclaimer informs no one. Shortened to what fits, with the full
-            sentence on hover rather than dropped. */}
-        {/* The permission level sits at the LEFT edge — directly under the `+`
-            that opens the menu it belongs to — because it is the one setting
-            that decides whether the agent pauses for you. */}
-        <WorkbenchModeSelector
-          selectedMode={workbenchMode}
-          onChange={handleGuardModeChange}
-          sandboxMode={sandboxMode}
-          onSandboxChange={handleSandboxChange}
-          harnessMode={normalizeHarnessMode(workbenchSession?.agentMode)}
-          onHarnessChange={persistHarnessMode}
+        <ModelEffortMenu
+          visibleModels={visibleModels}
+          selected={selectedModel}
+          onSelect={onSelectModel}
+          onEditModels={onEditModels}
+          effort={effort}
+          onEffortChange={onEffortChange}
+          thinkingEnabled={thinkingEnabled}
+          onThinkingChange={onThinkingChange}
+          workspaceControl={
+            <ComposerWorkspaceChips
+              sessionId={sessionId}
+              workbenchSessionId={workbenchSession?.id || activeWorkbenchSessionId || null}
+              workspacePath={workspacePath}
+            />
+          }
+          modeControl={
+            <WorkbenchModeSelector
+              selectedMode={workbenchMode}
+              onChange={handleGuardModeChange}
+              sandboxMode={sandboxMode}
+              onSandboxChange={handleSandboxChange}
+              harnessMode={normalizeHarnessMode(workbenchSession?.agentMode)}
+              onHarnessChange={persistHarnessMode}
+            />
+          }
         />
-        <p
-          className="composer-foot-note min-w-0 flex-1 truncate"
-          title="August is an AI assistant and can make mistakes. Please double-check responses."
-        >
-          August can make mistakes — double-check responses.
-        </p>
-        <div className="flex min-w-0 shrink-0 items-center gap-2">
-          {/* The folder chip belongs to the chat footer on every turn, not
-              only an empty one: the sidebar's "Projects" row opens this picker,
-              and hiding the component on a non-empty chat left that row doing
-              nothing. */}
-          <ComposerWorkspaceChips
-            sessionId={sessionId}
-            workbenchSessionId={workbenchSession?.id || activeWorkbenchSessionId || null}
-            workspacePath={workspacePath}
-          />
-          <ModelEffortMenu
-            visibleModels={visibleModels}
-            selected={selectedModel}
-            onSelect={onSelectModel}
-            onEditModels={onEditModels}
-            effort={effort}
-            onEffortChange={onEffortChange}
-            thinkingEnabled={thinkingEnabled}
-            onThinkingChange={onThinkingChange}
-          />
-          <ContextUsageReadout sessionId={sessionId} />
-        </div>
       </div>
 
       {debateOpen ? (
