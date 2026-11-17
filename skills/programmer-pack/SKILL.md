@@ -45,8 +45,8 @@ agent asserts.
    its definition and usages; never invent a file, symbol, API, or import.
    Check the project manifest for the real dependency versions before
    assuming a library exists.
-2. **Plan in the open.** Write the steps with `submit_todos` and keep them
-   current with `update_todos` — one todo per verifiable step, ordered by
+2. **Plan in the open.** Write the steps with `update_todos` and keep them
+   current as work progresses — one todo per verifiable step, ordered by
    risk. Flag the risky ones (data loss, auth, public interfaces, anything
    that needs the user's approval) and ask before crossing that line.
 3. **Implement small.** Prefer `apply_patch` for targeted edits and

@@ -128,7 +128,7 @@ async def _edit(**kwargs: object) -> str:
         if refusal:
             return _blocked('goal_edit', [refusal])
         try:
-            bound = _bound_json(kwargs.get('bound_json'))
+            bound = _bound_json(kwargs.get('bound') if kwargs.get('bound') is not None else kwargs.get('bound_json'))
             env, removed = await asyncio.to_thread(
                 lambda: S.create_env(parent_id=parent_id, title=as_str(kwargs.get('title'), ''),
                                      goal=as_str(kwargs.get('goal'), ''), inputs=kwargs.get('inputs'),
@@ -153,13 +153,14 @@ async def _edit(**kwargs: object) -> str:
     for key in ('title', 'goal', 'inputs', 'outputs', 'status', 'reason'):
         if kwargs.get(key) not in (None, ''):
             patch[key] = kwargs.get(key)
-    if kwargs.get('bound_json') not in (None, ''):
+    _boundArg = kwargs.get('bound') if kwargs.get('bound') is not None else kwargs.get('bound_json')
+    if _boundArg not in (None, ''):
         try:
-            patch['bound'] = _bound_json(kwargs.get('bound_json'))
+            patch['bound'] = _bound_json(_boundArg)
         except R.GoalRefusal as exc:
             return _blocked('goal_edit', exc.reasons)
     if not patch:
-        return _blocked('goal_edit', ['nothing to change — pass title, goal, inputs, outputs, bound_json, status or reason'])
+        return _blocked('goal_edit', ['nothing to change — pass title, goal, inputs, outputs, bound, status or reason'])
     raw_version = kwargs.get('version')
     version: int | None = None
     if raw_version not in (None, ''):
@@ -278,7 +279,7 @@ def register() -> None:
     tool_registry.register(
         'goal_edit',
         'Edit your working environment while the task runs. op=create opens a sub-goal under a parent '
-        '(title, goal, inputs, outputs, optional bound_json with allow/deny/maxRounds/contextChars); '
+        '(title, goal, inputs, outputs, optional bound object with allow/deny/maxRounds/contextChars); '
         'op=update rewrites a goal you own (pass version to avoid clobbering a concurrent edit, and a '
         'reason when closing). No approval is queued — this is work state, not a skill. What you cannot '
         'do is WIDEN: a sub-goal may only lose tools, gain refusals and lower its ceilings, and the '
@@ -294,7 +295,17 @@ def register() -> None:
                 'goal': {'type': 'string', 'description': '10-600 chars: what the work is FOR.'},
                 'inputs': {'type': 'array', 'items': {'type': 'string'}, 'description': 'What the work reads.'},
                 'outputs': {'type': 'array', 'items': {'type': 'string'}, 'description': 'What has to exist for this to be done. Name them.'},
-                'bound_json': {'type': 'string', 'description': 'JSON: {"allow":[names],"deny":[names],"maxRounds":n,"contextChars":n}. Clamped to the parent.'},
+                'bound': {
+                    'type': 'object',
+                    'description': 'Ceilings for this goal, clamped to the parent: allow/deny tool-name lists, maxRounds, contextChars.',
+                    'properties': {
+                        'allow': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Tool names this goal may call.'},
+                        'deny': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Tool names refused here.'},
+                        'maxRounds': {'type': 'number', 'description': 'Tool-round ceiling.'},
+                        'contextChars': {'type': 'number', 'description': 'Context-character ceiling.'},
+                    },
+                },
+                'bound_json': {'type': 'string', 'description': 'DEPRECATED alias for bound — a JSON string; use bound.'},
                 'status': {'type': 'string', 'description': 'update: active | done | abandoned. done needs its outputs accounted for; abandoned never needs anything.'},
                 'version': {'type': 'number', 'description': 'update: the version you read. A stale one is refused WITH the current version.'},
                 'reason': {'type': 'string', 'description': 'Why — required in practice when closing, and it counts as evidence for an output it names.'},
@@ -303,19 +314,21 @@ def register() -> None:
         },
         keywords=['goal', 'environment', 'create', 'edit', 'narrow'],
     )
+    # STOP 1B split: goal_output dispatched four ops (record | move | claim |
+    # mark) through 17 properties — the audit's worst schema offender after
+    # `bulk`. Two focused tools now share the handler; the old name stays
+    # dispatchable (hidden) for backward compatibility.
     tool_registry.register(
-        'goal_output',
-        'File what you produced and rule on what you concluded. op=record attaches a MANIFEST to a goal '
-        '(kind, ref_store, ref_key or ref_file_id, summary) — the bytes stay where they are, nothing is '
-        'copied. op=move re-files it (the attempt is recorded either way). op=claim states a conclusion. '
-        'op=mark turns a claim into a verdict and REQUIRES the row that proves it: "confirmed" with no '
-        'evidence is the one thing this app must not let you mint.',
+        'goal_record',
+        'File what you produced against a goal. op=record attaches a MANIFEST (kind, ref_store, '
+        'ref_key or ref_file_id, summary) — the bytes stay where they are, nothing is copied. '
+        'op=move re-files it under another goal (the attempt is recorded either way).',
         _output,
         {
             'type': 'object',
             'properties': {
-                'op': {'type': 'string', 'description': 'record | move | claim | mark'},
-                'env_id': {'type': 'string', 'description': 'record/claim: the goal (default: this session\u2019s).'},
+                'op': {'type': 'string', 'description': 'record | move', 'enum': ['record', 'move']},
+                'env_id': {'type': 'string', 'description': 'record: the goal (default: this session\u2019s).'},
                 'kind': {'type': 'string', 'description': 'record: note | plan | report | skill | fact | file | other.'},
                 'ref_store': {'type': 'string', 'description': 'record: facts | notebook | skills | file | strategy (default facts).'},
                 'ref_key': {'type': 'string', 'description': 'record: the slug or name in that store.'},
@@ -323,6 +336,23 @@ def register() -> None:
                 'summary': {'type': 'string', 'description': 'record: one line saying what this is, in the words of the output it satisfies.'},
                 'id': {'type': 'string', 'description': 'move: the artifact id.'},
                 'to': {'type': 'string', 'description': 'move: the goal to file it under.'},
+                'reason': {'type': 'string', 'description': 'move: why it is being re-filed.'},
+            },
+            'required': ['op'],
+        },
+        keywords=['goal', 'output', 'artifact', 'record'],
+    )
+    tool_registry.register(
+        'goal_claim',
+        'State a conclusion and rule on it. op=claim states a conclusion (text, optionally about an '
+        'artifact). op=mark turns a claim into a verdict and REQUIRES the row that proves it: '
+        '"confirmed" with no evidence is the one thing this app must not let you mint.',
+        _output,
+        {
+            'type': 'object',
+            'properties': {
+                'op': {'type': 'string', 'description': 'claim | mark', 'enum': ['claim', 'mark']},
+                'env_id': {'type': 'string', 'description': 'claim: the goal (default: this session\u2019s).'},
                 'text': {'type': 'string', 'description': 'claim: the sentence you are standing behind.'},
                 'about_artifact_id': {'type': 'string', 'description': 'claim: the artifact it is about, when there is one.'},
                 'claim_id': {'type': 'string', 'description': 'mark: the claim this rules on.'},
@@ -330,10 +360,17 @@ def register() -> None:
                 'evidence_store': {'type': 'string', 'description': 'mark: where the proof lives.'},
                 'evidence_key': {'type': 'string', 'description': 'mark: the slug/name of the proof.'},
                 'evidence_file_id': {'type': 'string', 'description': 'mark: a path/id proof.'},
-                'reason': {'type': 'string', 'description': 'move: why it is being re-filed.'},
             },
             'required': ['op'],
         },
+        keywords=['goal', 'claim', 'mark', 'evidence', 'verdict'],
+    )
+    tool_registry.register(
+        'goal_output',
+        'DEPRECATED — split into goal_record (file artifacts) and goal_claim (claims and verdicts). '
+        'Kept dispatchable for backward compatibility only; not advertised.',
+        _output,
+        hidden=True,
         keywords=['goal', 'output', 'artifact', 'claim', 'mark', 'evidence'],
     )
     tool_registry.register(

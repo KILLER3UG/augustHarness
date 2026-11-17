@@ -377,6 +377,7 @@ def main() -> int:
         # An empty registry is a failed probe, not a clean table.
         try:
             from app.json_narrowing import as_dict, as_str
+            from app.services.tool_registry import get as _toolGet
             from app.services.tool_registry import listTools
             from app.services.workbench.subagent import _SPAWN_TOOLS, _SUBAGENT_NEVER_TOOLS
 
@@ -384,7 +385,14 @@ def main() -> int:
                 as_str(as_dict(as_dict(t).get('function')).get('name'))
                 for t in listTools(include_host_agent=True)
             }
-            unknown = sorted((_SUBAGENT_NEVER_TOOLS | _SPAWN_TOOLS) - registered)
+            # A merged-away name (STOP 1B aliases, e.g. create_agent →
+            # create_bot) is not dead: dispatch resolves it. Only a name that
+            # resolves to NOTHING is a dead row.
+            unknown = sorted(
+                n
+                for n in (_SUBAGENT_NEVER_TOOLS | _SPAWN_TOOLS)
+                if n not in registered and _toolGet(n) is None
+            )
             check(
                 'every sub-agent deny name is a registered tool',
                 bool(registered) and not unknown,

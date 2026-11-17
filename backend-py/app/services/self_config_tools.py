@@ -506,25 +506,12 @@ def register() -> None:
             'required': ['ctxSize'],
         },
     )
-    tool_registry.register(
-        'create_agent',
-        'Create a new agent (a Bot) with a name, role and description. The agent is persisted '
-        'and immediately usable — bind it to a session or invoke it as a sub-agent. Its tool '
-        'surface is inherited from the turn that spawns it; capabilities are the user to set, '
-        'and so is its place in the agent hierarchy. Only the Foreman bot may pin model/provider.',
-        createAgent,
-        {
-            'type': 'object',
-            'properties': {
-                'name': {'type': 'string', 'description': 'Human-readable agent name.'},
-                'description': {'type': 'string', 'description': 'What the agent does.'},
-                'role': {'type': 'string', 'description': "Role label (e.g. 'Researcher')."},
-                'model': {'type': 'string', 'description': 'Model id — Foreman bot only.'},
-                'provider': {'type': 'string', 'description': 'Provider name — Foreman bot only.'},
-            },
-            'required': ['name'],
-        },
-    )
+    # STOP 1B merge: create_agent/list_agents and create_bot/list_bots were
+    # two names for near-identical operations on the same roster. One clean
+    # name each remains (with the ceiling logic the bot door already had);
+    # the old names stay dispatchable as aliases.
+    tool_registry.register_alias('create_agent', 'create_bot')
+    tool_registry.register_alias('list_agents', 'list_bots')
     tool_registry.register(
         'update_agent',
         "Update an existing agent's name, description or role. Pass only the fields to change. "
@@ -543,7 +530,7 @@ def register() -> None:
     )
     tool_registry.register(
         'delete_agent',
-        'Delete an agent by id. Use list_agents to find available agent IDs.',
+        'Delete an agent by id. Use list_bots to find available agent IDs.',
         deleteAgent,
         {
             'type': 'object',
@@ -551,6 +538,4 @@ def register() -> None:
             'required': ['agentId'],
         },
     )
-    tool_registry.register(
-        'list_agents', 'List all registered agents.', listAgents, {'type': 'object', 'properties': {}, 'required': []}
-    )
+    # list_agents merged into list_bots (STOP 1B) — alias above.

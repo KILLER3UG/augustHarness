@@ -122,7 +122,7 @@ _MEMORY_BRAIN_STORES = frozenset(
 )
 
 
-async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int = 10) -> str:
+async def _brainQuery(store: str, query: str = '', filters: object = None, limit: int = 10) -> str:
     """Read-only query over runtime stores (sessions, messages, daemons, blackboard)."""
     from app.json_narrowing import as_int, as_str
     from app.services.memory_store import brain_query as _bq
@@ -131,7 +131,6 @@ async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int
     # dict used to leak `'int' object is not iterable` through the except.
     store = as_str(store)
     query = as_str(query)
-    filters = as_str(filters)
     if not store:
         return '{"error": "brain_query: store is required — one of sessions, messages, daemons, blackboard, facts."}'
     if store in _MEMORY_BRAIN_STORES:
@@ -139,14 +138,31 @@ async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int
         if _masterRefusal:
             return _masterRefusal
     try:
-        filtersDict = {}
-        if filters and filters.strip():
-            import json as _json
+        filtersDict: dict = {}
+        if filters not in (None, ''):
+            # The schema declares an OBJECT; a stringified-JSON straggler is
+            # coerced here so an old caller keeps working. Malformed input is
+            # NAMED, never silently dropped — a silently ignored filter made
+            # the model trust rows it never asked for.
+            if isinstance(filters, dict):
+                filtersDict = filters
+            else:
+                import json as _json
 
-            try:
-                filtersDict = _json.loads(filters)
-            except _json.JSONDecodeError:
-                pass
+                try:
+                    parsed = _json.loads(as_str(filters))
+                    if isinstance(parsed, dict):
+                        filtersDict = parsed
+                    else:
+                        return (
+                            '{"error": "brain_query: filters must be a JSON object '
+                            'like {\\"category\\":\\"auth\\"} — pass it as an object."}'
+                        )
+                except _json.JSONDecodeError:
+                    return (
+                        '{"error": "brain_query: filters is not valid JSON — pass an object '
+                        'like {\\"category\\":\\"auth\\"}, or omit filters."}'
+                    )
         result = _bq(store, query, filtersDict or None, as_int(limit, 10))
         return result
     except Exception as exc:
@@ -2347,8 +2363,9 @@ def register() -> None:
     )
     tool_registry.register(
         'search',
-        'Unified search across files and web with dedup — one call, scope decides. '
-        'Prefer this over juggling search_files vs web_search.',
+        'DEPRECATED — superseded by the scoped tools: search_files (workspace), web_search '
+        '(web), brain_query (sessions/history). Kept dispatchable for backward compatibility '
+        'only; not advertised.',
         _search,
         {
             'type': 'object',
@@ -2362,6 +2379,7 @@ def register() -> None:
             },
             'required': ['query'],
         },
+        hidden=True,
     )
     tool_registry.register(
         'brain_query',
@@ -2388,8 +2406,9 @@ def register() -> None:
                 },
                 'query': {'type': 'string', 'description': 'Search text (FTS or LIKE). Optional.'},
                 'filters': {
-                    'type': 'string',
-                    'description': 'JSON object of column filters (e.g. \'{"category": "auth"}\'). Optional.',
+                    'type': 'object',
+                    'description': 'Column filters as an object (e.g. {"category": "auth"}). Optional. A JSON string is coerced.',
+                    'additionalProperties': {'type': 'string'},
                 },
                 'limit': {'type': 'integer', 'description': 'Max rows to return (1-100). Default 10.'},
             },
