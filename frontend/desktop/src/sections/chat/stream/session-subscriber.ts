@@ -25,6 +25,7 @@ import { api } from '@/api/client';
 import { streamWorkbenchReconnect } from '@/api/workbench';
 import { pushBrowserAction } from '@/lib/browser-store';
 import { upsertQueuedMessage, removeQueuedMessage } from '../queue-store';
+import { parseSubagentReceipt } from '../subagent-receipt';
 import { updateSessionStreamState, useSessionStreamStore } from './session-stream-store';
 import { injectSessionMessage } from './session-history';
 import { buildCompactionNoticeMessage } from '@/sections/chat/message/CompactionNoticeCard';
@@ -231,6 +232,11 @@ export function ensureSessionSubscriber(sessionOrWorkbenchId: string): void {
       if (!data?.messageId || !data?.sessionId) return;
       const queueUiId = resolveUiSessionId(data.sessionId);
       removeQueuedMessage(queueUiId, data.messageId);
+      // A subagent completion receipt is addressed to the model, not the
+      // user: the worker's progress and result live in the subagent
+      // accordion, so the raw [SUBAGENT_COMPLETE …] envelope must never
+      // become a right-aligned queued bubble in the transcript.
+      if (parseSubagentReceipt(data.text)) return;
       const injected = {
         id: `qm-${data.messageId}`,
         role: 'user' as const,

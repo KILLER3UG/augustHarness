@@ -2,6 +2,7 @@ import { api } from '@/api/client';
 import type { ChatMessage, MessageBlock } from '@/types/chat';
 import { isSessionIdTombstoned } from '@/store/sessions';
 import { normalizeSystemBlocks } from './append-block-event';
+import { parseSubagentReceipt } from '../subagent-receipt';
 import {
   getOrInitSessionStreamState,
   useSessionStreamStore,
@@ -263,6 +264,11 @@ export function mapRemoteMessages(remote: unknown[]): ChatMessage[] {
       const rendered = contentFromBlocks(blocks);
       if (rendered) text = rendered;
     }
+    // Subagent completion receipts are model-addressed protocol, not user
+    // chat: the worker's progress and result render inside the subagent
+    // accordion, so the raw [SUBAGENT_COMPLETE …] envelope never becomes a
+    // transcript bubble — live or hydrated.
+    if (role === 'user' && parseSubagentReceipt(text)) continue;
     // A message can be meaningful with no text at all (tool call, thinking
     // only, attachment-only) — dropping those is what erased tool cards.
     if (!text.trim() && !blocks && !structured.tool) continue;
