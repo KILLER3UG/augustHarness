@@ -7,8 +7,6 @@ import { isTauri } from "@/lib/tauri-detect";
 import { revealInFolder } from "@/lib/tauri-shell";
 import { renameSession, useSessionsStore } from "@/store/sessions";
 import { routeLabelFor } from "@/lib/route-labels";
-import { toggleCommandPalette } from "@/store/command-palette";
-import { setThemeMode, useThemeStore } from "@/lib/theme";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -16,9 +14,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { RightDrawerDropdown } from "./RightDrawerLauncher";
-import { closeRightDrawer, openRightDrawer, useRightDrawer } from "./RightDrawerState";
 import { BackgroundJobsButton } from "./BackgroundJobsButton";
-import { SystemHud } from "./SystemHud";
 import { MarqueeTitle } from "@/components/ui/MarqueeTitle";
 import { Button } from "@/components/ui/button";
 import { SignalIcon } from "@/components/ui/SignalIcon";
@@ -52,13 +48,6 @@ export function ChatTitlebar({
     [stream?.messages],
   );
 
-  const workspaceName = useMemo(() => {
-    const path = session?.workspacePath;
-    if (!path) return null;
-    const parts = path.split(/[\\/]/).filter(Boolean);
-    return parts[parts.length - 1] ?? null;
-  }, [session?.workspacePath]);
-
   const sessionStatus = useSessionsStore((state) =>
     session ? state.sessionStates[session.id] : undefined,
   );
@@ -66,21 +55,6 @@ export function ChatTitlebar({
     sessionStatus === 'streaming' ||
     sessionStatus === 'working' ||
     sessionStatus === 'awaiting';
-
-  const themeMode = useThemeStore((state) => state.mode);
-  const drawer = useRightDrawer();
-  const canvasActive = drawer.open && drawer.activeSection === 'canvas';
-  const [systemDark, setSystemDark] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches,
-  );
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => setSystemDark(media.matches);
-    media.addEventListener('change', onChange);
-    return () => media.removeEventListener('change', onChange);
-  }, []);
-  const effectiveTheme = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode;
-  const toggleTheme = () => setThemeMode(effectiveTheme === 'dark' ? 'light' : 'dark');
 
   /* Route-aware title (2026-09-16 UI scan B2): the bar used to render
    * `session?.title ?? "New chat"` on EVERY route, so Board/Runs/History/
@@ -179,17 +153,11 @@ export function ChatTitlebar({
           absolute overlay: the title truncates against the column instead of
           colliding with the actions at narrow widths, and the drag region
           rides the wrapper while the dropdown trigger stays interactive
-          inside it. */}
+          inside it. The workspace breadcrumb is gone (Part D diet): the
+          folder chip in the composer already names the workspace, and the
+          session menu below still carries the workspace actions. */}
       <div className="titlebar-center" data-tauri-drag-region>
         <div className="crumbs">
-          {workspaceName ? (
-            <>
-              <span className="crumb-muted" title={session?.workspacePath || workspaceName}>
-                {workspaceName}
-              </span>
-              <span className="crumb-slash">/</span>
-            </>
-          ) : null}
           {session ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -239,44 +207,6 @@ export function ChatTitlebar({
       </div>
 
       <div className="titlebar-actions">
-        <Button variant="bare"
-          type="button"
-          className="cmd-button"
-          onClick={() => toggleCommandPalette()}
-          title="Search or run a command (Ctrl+K)"
-          aria-label="Search or run"
-          aria-keyshortcuts="Control+K"
-        >
-          <SignalIcon name="search" />
-          <span>Search or run</span>
-        </Button>
-
-        <Button variant="bare"
-          type="button"
-          className="canvas-toggle"
-          data-open={canvasActive}
-          onClick={() => {
-            if (canvasActive) closeRightDrawer();
-            else openRightDrawer('canvas');
-          }}
-          title="Canvas"
-          aria-label="Canvas"
-          aria-pressed={canvasActive}
-        >
-          <SignalIcon name="panel" />
-          Canvas
-        </Button>
-
-        <Button variant="bare"
-          type="button"
-          className="icon-button"
-          onClick={toggleTheme}
-          title={effectiveTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-          aria-label={effectiveTheme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        >
-          <SignalIcon name={effectiveTheme === 'dark' ? 'sun' : 'moon'} />
-        </Button>
-
         {/* The global door to the background job tray. It renders nothing when
             there is no job, so the chrome stays quiet. */}
         <BackgroundJobsButton />
@@ -285,10 +215,6 @@ export function ChatTitlebar({
           workersBadge={workersBadge}
           artifactsCount={artifactsCount}
         />
-
-        {/* The reference's muted mono telemetry strip, at the same slot. It
-            samples the gateway poll's clock — it adds no timer of its own. */}
-        <SystemHud />
 
         {/* Windows-style title bar buttons — Tauri only (dead no-ops in the
             mobile WebView). */}
