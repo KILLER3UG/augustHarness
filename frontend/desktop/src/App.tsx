@@ -5,7 +5,6 @@ import { ALL_ROUTES, SECTION_ROUTES } from '@/routes';
 import { CommandPalette } from '@/components/overlays/CommandPalette';
 import { ShortcutsModal } from '@/components/overlays/ShortcutsModal';
 import { ConversationSearchModal } from '@/components/overlays/ConversationSearchModal';
-import { OnboardingTour } from '@/components/overlays/OnboardingTour';
 import { ProviderOnboardingModal } from '@/components/overlays/ProviderOnboardingModal';
 import { BackendStatusPill } from '@/components/shell/BackendStatusPill';
 import { UpdateConversation } from '@/components/overlays/UpdateConversation';
@@ -145,12 +144,7 @@ export default function App() {
         {/* First-run overlays stay off the dev-only design route: they cover
             the whole viewport with a scrim, and the /_design labs are driven by
             automated checks that click the controls underneath. */}
-        {!window.location.pathname.startsWith('/_design') && (
-          <>
-            <OnboardingTour />
-            <ProviderOnboardingModal />
-          </>
-        )}
+        {!window.location.pathname.startsWith('/_design') && <ProviderOnboardingModal />}
         {/* First launch after a version bump: animated "what's new" chat. */}
         <UpdateConversation />
       {/* Passive status affordance for the backend bootstrap — never a

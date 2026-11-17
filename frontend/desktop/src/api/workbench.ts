@@ -14,6 +14,17 @@ import type {
 } from '@/types/workbench';
 import type { FileAttachment } from '@/types/chat';
 import { workbenchClient } from './workbench/WorkbenchClient';
+import { whenReady } from './client';
+
+/** Raw-fetch door for the stream-only endpoints below, gated on backend port
+ * discovery exactly like the `api` client: in the Tauri shell a fetch fired
+ * before discovery resolves went out as a relative /api against the ASSET
+ * origin (logged STOP 1B shell bug) and every one of these calls started
+ * life failing. `whenReady()` waits for the discovered base + fetch patch. */
+async function gatedFetch(input: string, init?: RequestInit): Promise<Response> {
+  await whenReady();
+  return fetch(input, init);
+}
 
 export interface CreateWorkbenchSessionParams {
   provider?: string;
@@ -80,7 +91,7 @@ export async function getRecentFigures(
   sessionId: string,
   since: string,
 ): Promise<RecentFiguresResult> {
-  const res = await fetch(
+  const res = await gatedFetch(
     `/api/workbench/figures/recent?sessionId=${encodeURIComponent(sessionId)}`
     + `&since=${encodeURIComponent(since)}`,
   );
@@ -101,7 +112,7 @@ export async function confirmWorkbenchMutation(
   token: string,
   handlers: WorkbenchEventHandlers
 ): Promise<void> {
-  const res = await fetch('/api/workbench/mutations/respond', {
+  const res = await gatedFetch('/api/workbench/mutations/respond', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
@@ -295,7 +306,7 @@ export async function resetWorkbenchSession(
   params: ResetWorkbenchSessionParams = {}
 ): Promise<WorkbenchSession> {
   const sid = params.sessionId ? encodeURIComponent(params.sessionId) : '';
-  const res = await fetch(`/api/workbench/sessions/${sid}/reset`, {
+  const res = await gatedFetch(`/api/workbench/sessions/${sid}/reset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -451,7 +462,7 @@ export interface AnswerWorkbenchBtwParams {
 export async function answerWorkbenchBtw(
   params: AnswerWorkbenchBtwParams
 ): Promise<WorkbenchBtwResult> {
-  const res = await fetch('/api/workbench/btw', {
+  const res = await gatedFetch('/api/workbench/btw', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -515,13 +526,13 @@ export interface BrainConfigResponse {
 }
 
 export async function getBrainConfig(): Promise<BrainConfigResponse> {
-  const res = await fetch('/api/brain/config');
+  const res = await gatedFetch('/api/brain/config');
   if (!res.ok) throw new Error(`getBrainConfig failed: ${res.status}`);
   return res.json() as Promise<BrainConfigResponse>;
 }
 
 export async function saveBrainConfig(updates: Partial<BrainConfig>): Promise<{ ok: boolean; config: BrainConfig; defaults: BrainConfig }> {
-  const res = await fetch('/api/brain/config', {
+  const res = await gatedFetch('/api/brain/config', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates || {}),
@@ -534,13 +545,13 @@ export async function saveBrainConfig(updates: Partial<BrainConfig>): Promise<{ 
 }
 
 export async function resetBrainConfig(): Promise<{ ok: boolean; config: BrainConfig; defaults: BrainConfig }> {
-  const res = await fetch('/api/brain/config/reset', { method: 'POST' });
+  const res = await gatedFetch('/api/brain/config/reset', { method: 'POST' });
   if (!res.ok) throw new Error(`resetBrainConfig failed: ${res.status}`);
   return res.json() as Promise<{ ok: boolean; config: BrainConfig; defaults: BrainConfig }>;
 }
 
 export async function getBrainConfigFromSession(sessionId: string): Promise<BrainConfigResponse> {
-  const res = await fetch(`/api/brain/config/from-session?sessionId=${encodeURIComponent(sessionId)}`);
+  const res = await gatedFetch(`/api/brain/config/from-session?sessionId=${encodeURIComponent(sessionId)}`);
   if (!res.ok) throw new Error(`getBrainConfigFromSession failed: ${res.status}`);
   return res.json() as Promise<BrainConfigResponse>;
 }

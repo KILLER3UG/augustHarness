@@ -2,8 +2,6 @@
 /* Multi-step checklist: provider → workspace → optional Google.           */
 
 import { useState } from 'react';
-import { useSessionsStore } from '@/store/sessions';
-import { tourPending } from './OnboardingTour';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -70,10 +68,10 @@ export function ProviderOnboardingModal() {
   const [importJson, setImportJson] = useState('');
   const [importError, setImportError] = useState('');
   const [importing, setImporting] = useState(false);
-  // One first-run surface at a time: the tour owns the screen first.
-  const sessionCount = useSessionsStore((s) => s.sessions.length);
-
-  if (!shouldShow || isLoading || tourPending(sessionCount) || yields) return null;
+  // The first-launch tour is deleted (Part D ruling — the setup checklist
+  // below is the only first-run surface, and a seeded session never blocked
+  // it; the dead tourPending gate went with the tour).
+  if (!shouldShow || isLoading || yields) return null;
 
   const handleImport = async () => {
     setImportError('');

@@ -2,7 +2,13 @@
  * Reads named SSE frames and dispatches them via streamEvents. */
 
 import type { WorkbenchEventHandlers, WorkbenchGuardMode, WorkbenchTurnUsage } from '@/types/workbench';
-import { resetDiscoveryCoalesced } from '@/api/client';
+import { resetDiscoveryCoalesced, whenReady } from '@/api/client';
+
+/** Stream door, discovery-gated like the `api` client — see workbench.ts. */
+async function gatedFetch(input: string, init?: RequestInit): Promise<Response> {
+  await whenReady();
+  return fetch(input, init);
+}
 import { isTransportError } from '@/lib/error-copy';
 import { clearStreamReconnecting, markStreamReconnecting } from '@/store/streamLink';
 import { dispatchWorkbenchEvent } from './streamEvents';
@@ -42,7 +48,7 @@ export async function streamWorkbenchChat(
   handlers: WorkbenchEventHandlers,
   signal?: AbortSignal
 ): Promise<{ sinceSeq?: number; consumedViaPost?: boolean; queued?: boolean; status?: string; message?: string }> {
-  const res = await fetch('/api/workbench/chat', {
+  const res = await gatedFetch('/api/workbench/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -333,7 +339,7 @@ export async function streamWorkbenchReconnect(
         qs.set('sinceSeq', String(currentSeq));
       }
 
-      const res = await fetch(`/api/workbench/chat/stream?${qs.toString()}`, { signal });
+      const res = await gatedFetch(`/api/workbench/chat/stream?${qs.toString()}`, { signal });
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
         throw new Error(`Reconnect stream failed: ${res.status} ${errText}`);

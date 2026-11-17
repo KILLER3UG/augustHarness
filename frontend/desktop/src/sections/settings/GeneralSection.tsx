@@ -19,7 +19,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 
 import { usePreferencesStore, type ChatFont, type LiveHtmlPreview, type VoiceSpeed } from '@/lib/preferences';
-import { setOnboardingSeen, shouldShowOnboarding } from '@/components/overlays/OnboardingTour';
 import { useAccountStore } from '@/store/account';
 import { SectionHeader } from '@/components/SectionHeader';
 import { SettingsToggle } from '@/components/settings/SettingsToggle';
@@ -133,10 +132,6 @@ export function GeneralSection() {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const account = accounts.find((a) => a.id === activeAccountId) ?? null;
 
-  // Backed by the key OnboardingTour actually gates on, so this switch now has
-  // an effect. It used to be `useState(true)`: unwired, reset on every revisit
-  // to Settings, and ignored by the tour.
-  const [tour, setTour] = useState<boolean>(() => shouldShowOnboarding());
   const [osNotify, setOsNotify] = useState(false);
 
   useEffect(() => {
@@ -242,11 +237,6 @@ export function GeneralSection() {
     (on ? enableAutostart() : disableAutostart())
       .then(() => setAutostart(on))
       .catch(() => setAutostart(null));
-  };
-
-  const toggleTour = (next: boolean) => {
-    setTour(next);
-    setOnboardingSeen(!next);
   };
 
   return (
@@ -520,17 +510,6 @@ export function GeneralSection() {
                 </div>
               ))}
             </div>
-          </Section>
-
-          {/* Onboarding */}
-          <Section title="Onboarding">
-            <SettingsToggle
-              checked={tour}
-              onCheckedChange={toggleTour}
-              label="Show onboarding tour"
-              description="Play the guided walkthrough the next time you start August with no conversations yet."
-              tooltip="The tour highlights where to find chat, settings, and activity. It only plays while you have zero conversations, so clearing this stops it permanently."
-            />
           </Section>
 
           {/* App description */}

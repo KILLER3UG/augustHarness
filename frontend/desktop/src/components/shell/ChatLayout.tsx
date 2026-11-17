@@ -11,7 +11,7 @@ import { MOBILE_QUERY, useMediaQuery } from '@/hooks/useMediaQuery';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSessionsStore, createSession, getOrCreateEmptySession, createEmptySessionInFolder, defaultSessionTitle, updateSessionWorkbenchMetadata, reconcileSessionsFromBackend, healDuplicateSessions, toggleFolderCollapse, ensureFolderForWorkspacePath, resolveActiveSession } from "@/store/sessions";
+import { useSessionsStore, createSession, createEmptySession, createEmptySessionInFolder, defaultSessionTitle, updateSessionWorkbenchMetadata, reconcileSessionsFromBackend, healDuplicateSessions, toggleFolderCollapse, ensureFolderForWorkspacePath, resolveActiveSession } from "@/store/sessions";
 import { startRealtimeBridge } from "@/realtime/bridge";
 import { addWorkspace, useWorkspacesStore } from "@/store/workspaces";
 import { CHAT_SURFACE_ROUTES, SettingsPageRoute } from "@/routes";
@@ -379,7 +379,7 @@ export function ChatLayout() {
     // uncategorized instead of landing in a Projects folder, and bind it to
     // nothing — a task chat has no directory until the user picks one.
     if (folderId === null) {
-      const newSess = getOrCreateEmptySession(null, defaultSessionTitle(), null);
+      const newSess = createEmptySession(null, defaultSessionTitle(), null);
       void navigate(`/c/${newSess.id}`);
       return;
     }
@@ -419,8 +419,9 @@ export function ChatLayout() {
 
     // No project in play → the chat lands in "Tasks" and binds no directory at
     // all. It reads anywhere on the machine and writes to temp until the user
-    // opens a folder.
-    const newSess = getOrCreateEmptySession(
+    // opens a folder. ALWAYS a fresh row — "+ New thread" must never resume
+    // the most recent session (owner ruling, Part D bugs).
+    const newSess = createEmptySession(
       targetFolderId,
       defaultSessionTitle(),
       projectPath,
@@ -547,7 +548,6 @@ export function ChatLayout() {
     const path = location.pathname;
     const lowered = path.toLowerCase();
     if (lowered.startsWith('/settings')) return 'Workspace / preferences';
-    if (lowered === '/charts') return 'Output / data';
     if (lowered === '/artifacts') return 'Library / everything';
     if (path === '/' || lowered.startsWith('/c/')) {
       const ws = active?.workspacePath;
