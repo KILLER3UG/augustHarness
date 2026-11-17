@@ -14,7 +14,8 @@
     "tauri:build": "tauri build",
     "tauri:dev": "tauri dev",
     "tauri:info": "tauri info",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "tauri:dev:cdp": "tauri dev --config src-tauri/tauri.dev-cdp.conf.json"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
