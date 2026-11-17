@@ -112,6 +112,31 @@ class SandboxPolicy:
         return self.mode == 'read-only' and not self.allow_unsandboxed
 
 
+# Command-output caps at the SOURCE (owner ruling, STOP 1B): a recursive
+# listing or a chatty build log re-entered the conversation at full size and
+# the window-scale cap downstream only bounded the worst case. Head keeps the
+# opening (the interesting part of most output), tail keeps the end (errors
+# and summaries live there), and the footer tells the model exactly how to
+# narrow the next call.
+_COMMAND_HEAD_LINES = 40
+_COMMAND_TAIL_LINES = 160
+
+
+def _capCommandStream(text: str, stream: str) -> str:
+    lines = text.splitlines()
+    if len(lines) <= _COMMAND_HEAD_LINES + _COMMAND_TAIL_LINES:
+        return text
+    dropped = len(lines) - _COMMAND_HEAD_LINES - _COMMAND_TAIL_LINES
+    head = '\n'.join(lines[:_COMMAND_HEAD_LINES])
+    tail = '\n'.join(lines[-_COMMAND_TAIL_LINES:])
+    return (
+        f'{head}\n'
+        f'[... {dropped} line(s) of {stream} omitted — '
+        f'pipe through a filter (grep/rg) or narrow the command to see them ...]\n'
+        f'{tail}'
+    )
+
+
 @dataclass
 class SandboxResult:
     """Outcome of a sandboxed (or soft) command run."""
@@ -142,9 +167,9 @@ class SandboxResult:
             )
         parts: list[str] = []
         if self.stdout:
-            parts.append(self.stdout)
+            parts.append(_capCommandStream(self.stdout, 'stdout'))
         if self.stderr:
-            parts.append(f'STDERR:\n{self.stderr}')
+            parts.append(f'STDERR:\n{_capCommandStream(self.stderr, "stderr")}')
         # Always surface the exit code when known (zero included) — the
         # model (and the user) judge command success deterministically.
         if self.exit_code is not None:
