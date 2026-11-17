@@ -13,7 +13,7 @@ import { SignalIcon, type SignalIconName } from '@/components/ui/SignalIcon';
 
 const TABS: ReadonlyArray<{ key: string; label: string; icon: SignalIconName; path: string }> = [
   { key: 'chat', label: 'Chat', icon: 'chat', path: '/' },
-  { key: 'charts', label: 'Charts', icon: 'chart', path: '/charts' },
+  { key: 'runs', label: 'Runs', icon: 'play', path: '/runs' },
   { key: 'artifacts', label: 'Artifacts', icon: 'grid', path: '/artifacts' },
   { key: 'settings', label: 'Settings', icon: 'settings', path: '/settings' },
 ];

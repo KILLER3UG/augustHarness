@@ -39,7 +39,9 @@ export interface SessionListNavProps {
   mobile?: boolean;
 }
 
-/** Primary destinations — the mockup's four, in its order. */
+/** Primary destinations (Part D diet): Threads, Runs (Absorbs Automations
+ * and the Board), Artifacts, Settings. Charts is deleted; History is the
+ * Threads list itself. */
 const PRIMARY: ReadonlyArray<{
   key: string;
   label: string;
@@ -48,19 +50,15 @@ const PRIMARY: ReadonlyArray<{
   pill?: string;
 }> = [
   { key: 'threads', label: 'Threads', icon: 'chat', to: '/' },
-  { key: 'charts', label: 'Charts', icon: 'chart', to: '/charts', pill: 'NEW' },
+  { key: 'runs', label: 'Runs', icon: 'play', to: '/runs' },
   { key: 'artifacts', label: 'Artifacts', icon: 'grid', to: '/artifacts' },
   { key: 'settings', label: 'Settings', icon: 'settings', to: '/settings' },
 ];
 
-/** Every surface the mockup does not show stays reachable here. */
+/** Every surface the primary rows do not show stays reachable here. After
+ * the Part D fold (Automations→Runs, Board→Runs, History→Threads,
+ * Learning→Settings, Live deleted), the compact reader is the only entry. */
 const MORE: ReadonlyArray<{ label: string; icon: SignalIconName; to: string }> = [
-  { label: 'Automations', icon: 'clock', to: '/automations' },
-  { label: 'Runs', icon: 'play', to: '/runs' },
-  { label: 'Board', icon: 'grid', to: '/board' },
-  { label: 'Live', icon: 'mic', to: '/live' },
-  { label: 'History', icon: 'clock', to: '/history' },
-  { label: 'Learning', icon: 'layers', to: '/learning' },
   { label: 'Docs', icon: 'file', to: '/docs' },
 ];
 

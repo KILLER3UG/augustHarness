@@ -4,12 +4,8 @@ import { type ReactNode, lazy, Suspense } from 'react';
 import { Navigate, useParams } from 'react-router-dom';
 import {
   LayoutDashboard,
-  LineChart,
   MessageSquare,
-  Bot,
-  BookOpen,
   History,
-  GraduationCap,
   PackageOpen,
   type LucideIcon,
 } from 'lucide-react';
@@ -30,23 +26,11 @@ function loadSettingsPage() {
 const SettingsPage = lazy(() =>
   loadSettingsPage().then((m) => ({ default: m.SettingsPage })),
 );
-const AutomationsPage = lazy(() =>
-  import('@/sections/automations/AutomationsPage').then((m) => ({ default: m.AutomationsPage })),
-);
 const RunsPage = lazy(() =>
   import('@/sections/runs/RunsPage').then((m) => ({ default: m.RunsPage })),
 );
 const ArtifactsPage = lazy(() =>
   import('@/sections/artifacts/ArtifactsPage').then((m) => ({ default: m.ArtifactsPage })),
-);
-const ChartsPage = lazy(() =>
-  import('@/sections/charts/ChartsPage').then((m) => ({ default: m.ChartsPage })),
-);
-const HistoryPage = lazy(() =>
-  import('@/sections/history/HistoryPage').then((m) => ({ default: m.HistoryPage })),
-);
-const LearningHub = lazy(() =>
-  import('@/sections/learning/LearningHub').then((m) => ({ default: m.LearningHub })),
 );
 // Dev-only. The `lazy()` CALL lives inside the branch on purpose: at module top
 // level it is a side-effecting call Rollup cannot drop, which is how the lab —
@@ -105,11 +89,13 @@ export const SECTION_ROUTES: readonly SectionRoute[] = [
   { path: '/', label: 'Chat', Icon: MessageSquare, element: React.createElement(ChatThread, { sessionId: null }), nav: true },
   { path: '/c/:sessionId', label: 'Chat', Icon: MessageSquare, element: React.createElement(ChatThreadWithParams) },
   {
+    /* Part D diet — Automations is FOLDED INTO Runs (a section there; the
+     * manual create form is gone; creation is agent-driven). This entry only
+     * redirects old /automations deep links. */
     path: '/automations',
-    label: 'Automations',
-    Icon: Bot,
-    element: React.createElement(LazySection, { name: 'Automations' }, React.createElement(AutomationsPage)),
-    nav: true,
+    label: 'Runs',
+    Icon: History,
+    element: React.createElement(Navigate, { to: '/runs', replace: true }),
   },
   {
     path: '/runs',
@@ -127,18 +113,22 @@ export const SECTION_ROUTES: readonly SectionRoute[] = [
     element: React.createElement(Navigate, { to: '/runs', replace: true }),
   },
   {
+    /* Part D diet — Charts is DELETED (trading charts belong to August
+     * Trading, not the researcher/programmer harness). Deep links go to chat;
+     * the charts SKILL (agent-made visuals via artifacts) is unaffected. */
     path: '/charts',
-    label: 'Charts',
-    Icon: LineChart,
-    element: React.createElement(LazySection, { name: 'Charts' }, React.createElement(ChartsPage)),
-    nav: true,
+    label: 'Chat',
+    Icon: MessageSquare,
+    element: React.createElement(Navigate, { to: '/', replace: true }),
   },
   {
+    /* Part D diet — Artifacts stays deep-linkable but is no longer a
+     * top-level screen: the rail's Artifacts row and the right drawer are its
+     * compact doors. */
     path: '/artifacts',
     label: 'Artifacts',
     Icon: PackageOpen,
     element: React.createElement(LazySection, { name: 'Artifacts' }, React.createElement(ArtifactsPage)),
-    nav: true,
   },
   {
     /* Live/voice is DELETED (out of scope for v1 — docs/agent/product.md).
@@ -149,32 +139,29 @@ export const SECTION_ROUTES: readonly SectionRoute[] = [
     element: React.createElement(Navigate, { to: '/', replace: true }),
   },
   {
+    /* Part D diet — History is MERGED INTO the sidebar's Threads list (the
+     * rail IS the history). Deep links land in chat. */
     path: '/history',
-    label: 'History',
-    Icon: History,
-    element: React.createElement(LazySection, { name: 'History' }, React.createElement(HistoryPage)),
-    nav: true,
+    label: 'Chat',
+    Icon: MessageSquare,
+    element: React.createElement(Navigate, { to: '/', replace: true }),
   },
   {
-    /* Audit P2#14 — the learning loop as a work surface. Additive: the
-     * settings sections this route reuses keep their own entries, and the
-     * settings registry is unchanged. */
+    /* Part D diet — Learning is FOLDED INTO the Memory & Skills settings.
+     * Deep links land on the Memory & Knowledge section. */
     path: '/learning',
-    label: 'Learning',
-    Icon: GraduationCap,
-    element: React.createElement(LazySection, { name: 'Learning' }, React.createElement(LearningHub)),
-    nav: true,
+    label: 'Settings',
+    Icon: PackageOpen,
+    element: React.createElement(Navigate, { to: '/settings/memory-knowledge', replace: true }),
   },
   {
     /* The Nessa Docs reader: a project's `docs/state/` map, rendered from the
-     * catalog the backend validates. Lazy like every other non-chat surface —
-     * and the mermaid renderer it may load is lazy a second time inside, so a
-     * docs page with no diagram never fetches the parser at all. */
+     * catalog the backend validates. Part D diet — not a top-level screen;
+     * the rail's More row is its compact door. */
     path: '/docs',
     label: 'Docs',
-    Icon: BookOpen,
+    Icon: PackageOpen,
     element: React.createElement(LazySection, { name: 'Docs' }, React.createElement(DocsPage)),
-    nav: true,
   },
 ] as const;
 

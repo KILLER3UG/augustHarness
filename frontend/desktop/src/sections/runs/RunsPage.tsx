@@ -27,6 +27,7 @@ import { api } from '@/api/client';
 import { PageLoader } from '@/components/PageLoader';
 import { QueryErrorState } from '@/components/QueryErrorState';
 import { BoardSection } from '@/sections/runs/BoardSection';
+import { AutomationsSection } from './AutomationsSection';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -367,6 +368,9 @@ export function RunsPage() {
       {/* The agent board, folded into Runs (the old /board page): the team
           launcher and the durable kanban, synced live to run status. */}
       <BoardSection />
+      {/* Automations, folded into Runs (the old /automations page): the
+          minimal view/undo list — creation is agent-driven by chat. */}
+      <AutomationsSection />
     </div>
   );
 }
