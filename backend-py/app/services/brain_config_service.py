@@ -356,10 +356,12 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # see it happen and no setting having been chosen — is a destructive
     # default in a codebase whose rule is that anything which removes what
     # the user owns is opt-in (the OQ5 retirement pass is propose-only for
-    # the same reason). A budget that is OFF until someone sets it is a
-    # switch; a budget that starts curating is a decision the user never
-    # made. 0 also has to stay writable so an armed budget can be disarmed.
-    ('factBudget', 'fact_budget', 0, 'num'),
+    # the same reason). OWNER RULING, STOP 1B: the budget ships ARMED at 80 —
+    # an unattended store grows monotonically while the boot index silently
+    # pushes facts out of its window, and archiving (not deleting) the weakest
+    # tail with the Memory UI as the restore door is the curation the user
+    # asked for. 0 stays writable so an armed budget can be disarmed.
+    ('factBudget', 'fact_budget', 80, 'num'),
     # M-7 negative recall signal: a fact that is injected again and again
     # and never quoted is a stale-but-plausible entry holding rank. These
     # three are the penalty's constants — weight (how much one unused
