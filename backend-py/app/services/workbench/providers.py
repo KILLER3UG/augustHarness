@@ -26,6 +26,24 @@ from app.services.workbench.effort import (
     resolve_completion_limits,
 )
 
+
+def _loopbackOutputFloor(provider: dict | None, has_tools: bool, max_tokens: int) -> int:
+    """Output floor for LOCAL models — a starved reply is a lie.
+
+    A local reasoning model spends the reply budget ON the reasoning; a
+    ceiling configured below the floor is a starvation knob, so the floor
+    wins in code. A turn that carries TOOLS needs headroom for the tool-call
+    JSON itself: the coding A/B watched stop_reason=length truncate tool
+    arguments mid-stream at the 1024 floor, so a tool-carrying request floors
+    at 4096.
+    """
+    from app.providers.api_format import is_loopback_base_url as _isLoopback
+
+    if not _isLoopback(provider.get('baseUrl') if provider else None):
+        return max_tokens
+    floor = 4096 if has_tools else 1024
+    return max(floor, int(max_tokens or 0))
+
 logger = logging.getLogger('workbench.providers')
 
 
@@ -659,10 +677,7 @@ async def call_anthropic_workbench(
         thinking_budget, max_tokens = 0, model_out
     # Output floor for LOCAL models — same rule as the OpenAI path: a local
     # reasoning model that starves the reply ends thinking-only.
-    from app.providers.api_format import is_loopback_base_url as _isLoopback
-
-    if _isLoopback(provider.get('baseUrl') if provider else None):
-        max_tokens = max(1024, int(max_tokens or 0))
+    max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
     req = AnthropicRequest(model=model, max_tokens=max_tokens)
     body = buildAnthropicUpstreamRequest(req, model, [{'type': 'text', 'text': system_text}])
     body['messages'] = anthropicMessages
@@ -887,12 +902,9 @@ async def call_openai_workbench(
         max_tokens = model_out
     # Output floor for LOCAL models: a small local reasoning model spends the
     # reply budget ON the reasoning and ends the turn with empty content — the
-    # honest answer needs headroom. A configured ceiling below 1024 on a
+    # honest answer needs headroom. A configured ceiling below the floor on a
     # loopback model is a starvation knob, so the floor wins in code.
-    from app.providers.api_format import is_loopback_base_url as _isLoopback
-
-    if _isLoopback(provider.get('baseUrl') if provider else None):
-        max_tokens = max(1024, int(max_tokens or 0))
+    max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
     body['max_tokens'] = max_tokens
     if tools:
         body['tools'] = tools
@@ -1268,10 +1280,7 @@ async def call_responses_workbench(
     else:
         max_tokens = model_out
     # Output floor for LOCAL models — same rule as the chat paths.
-    from app.providers.api_format import is_loopback_base_url as _isLoopback
-
-    if _isLoopback(provider.get('baseUrl') if provider else None):
-        max_tokens = max(1024, int(max_tokens or 0))
+    max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
     body['max_output_tokens'] = max_tokens
     respTools = _responses_tools(tools)
     if respTools:
