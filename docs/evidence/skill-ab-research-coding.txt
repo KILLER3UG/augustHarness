@@ -50,3 +50,39 @@ Runner: scratch tool outside the repo (%TEMP%/august-ab/ab_runner.py),
 never committed. Sessions created by the A/B remain in the store (titles
 "Start a research paper project…"/"Write a Python function parse_range…")
 — they are test data; deleting them is safe but left for the owner.
+
+FINAL A/B RUNS (2026-11-17, after every STOP 1B fix; workspace-bound sessions)
+
+16k pair — the headline result:
+  RESEARCH with_skill   wb_20261117_034643_a33ac8: 26 frames, 13 calls
+    (tool_search 3, tool_describe(research-paper-studio) 2,
+    tool_call(load_skill) 1, list_directory 3, read_file 4),
+    0 error frames, final answer 239 chars. The skill was DISCOVERED and
+    LOADED through the bridge; every access used workspace tools — zero
+    run_command (the demotion held).
+  RESEARCH without_skill wb_20261117_034806_27f678: died early (1 frame,
+    no error recorded — the known killed-turn transcript gap).
+  CODING without_skill wb_20261117_033341_486489 (16k, earlier run):
+    SUCCEEDED — the correct 43-line parse_range.py written into
+    scratch-ab/ + a 1549-char final answer.
+  CODING with_skill wb_20261117_033310_13c41e: died at the 16k ceiling
+    ("Context size has been exceeded" — llama-server rejecting the
+    request; the margin at 16k is ~2-3 tool rounds once a 6k skill body
+    loads).
+
+32k pair (wb_20261117_050158/_050033 research; _051414/_051450 coding):
+  research arms completed again (with_skill: 6 frames / 4 calls — terse);
+  the coding arms ran at ~2-4 tok/s (32k KV on the 4050 Vulkan) and were
+  cancelled after >1h with the new 'cancelled' session status — 32k is
+  not a practical A/B window on this laptop.
+
+DESKTOP SHELL (the REAL Tauri app, clean profile, CDP-driven; 19
+screenshots in docs/evidence/desktop/): first launch PASS (2 clicks to a
+sendable first message with a served model; 1 click pristine), mic gone
+PASS, Tell-August bar PASS, receipt card FAIL on the 8k local model (the
+1.7B never discovered the deferred set_model_context — FIXED: the tool is
+now core-resident, baec885c) — the receipt click-through re-check belongs
+to the next desktop pass. Subagent fanout: the machinery ran (2 workers
+spawned, inline progress) but both workers hit the 8k context ceiling —
+small-model subagent prompts need the same budget discipline the main
+turn got (logged for STOP 1C).
