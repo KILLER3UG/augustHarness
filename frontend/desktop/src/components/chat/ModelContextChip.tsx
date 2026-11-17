@@ -95,7 +95,7 @@ export function ModelContextChip({ tools }: { tools?: ChatMessage['tools'] }) {
       className="memory-card w-fit min-w-0 max-w-full"
       data-open={open}
       data-slot="model-context-receipt"
-      data-testid="model-context-chip"
+      data-testid="model-context-receipt"
     >
       <Button
         variant="bare"

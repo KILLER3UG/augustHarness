@@ -71,6 +71,12 @@ HARNESS_CORE_TOOLS: frozenset[str] = frozenset(
         'read_blackboard',
         'clear_blackboard',
         'setup_provider',
+        # The context-length door MUST be resident on every surface: the
+        # desktop pass showed a 1.7B at 8k never discovers a deferred
+        # set_model_context (the disclosure budget trims it first), so the
+        # owner's context-length feature was unreachable exactly where it
+        # matters most. Small schema (~150 tokens); always offered.
+        'set_model_context',
     }
 )
 
