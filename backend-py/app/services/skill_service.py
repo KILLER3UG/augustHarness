@@ -946,13 +946,95 @@ def get(
     return None
 
 
+_COMPACT_SKILL_MAX_CHARS = 3500
+
+
+def _compact_first_sentence(text: str, cap: int) -> str:
+    """The first sentence of a prose line, hard-capped."""
+    raw = ' '.join(text.split())
+    for cut in ('. ', '.\t'):
+        pos = raw.find(cut)
+        if 0 < pos < cap:
+            return raw[: pos + 1]
+    if len(raw) <= cap:
+        return raw
+    return raw[:cap].rsplit(' ', 1)[0] + '…'
+
+
+def compact_skill_body(body: str, *, max_chars: int = _COMPACT_SKILL_MAX_CHARS) -> str:
+    """A compact projection of a SKILL.md body: the skeleton a small model
+    acts on, without the prose.
+
+    Keeps every heading, list item and table row (the workflow checklist and
+    the tool mappings live there), folds fenced code blocks past 12 lines, and
+    reduces paragraphs to their first sentence. On a ≤16k local window a full
+    6–8k-char body left only 2–3 tool rounds before overflow (the coding A/B's
+    death); this projection lands ≤ ~900 tokens. The complete text stays
+    reachable: ``load_skill(name, file=…)`` reads the skill's own files and a
+    caller that needs the full body can say so explicitly.
+    """
+    if not body:
+        return ''
+    if len(body) <= max_chars:
+        return body
+    out: list[str] = []
+    in_fence = False
+    fence_kept = 0
+    para_open = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+            fence_kept = 0
+            out.append(line)
+            continue
+        if in_fence:
+            fence_kept += 1
+            if fence_kept <= 12:
+                out.append(line)
+            elif fence_kept == 13:
+                out.append('  …')
+            continue
+        if not stripped:
+            para_open = False
+            out.append(line)
+            continue
+        if stripped.startswith('#') or stripped.startswith('|'):
+            out.append(line)
+            continue
+        if re.match(r'^(?:[-*+]|\d+[.)])\s', stripped):
+            # Bullets carry the checklists; fold only extreme ones.
+            out.append(
+                line if len(stripped) <= 240 else line[: 240].rsplit(' ', 1)[0] + '…'
+            )
+            continue
+        if para_open:
+            continue
+        out.append(_compact_first_sentence(line, 200))
+        para_open = True
+    compact = '\n'.join(out)
+    if len(compact) > max_chars:
+        compact = (
+            compact[:max_chars].rsplit('\n', 1)[0]
+            + "\n…(projection capped — read the skill's files for the rest)"
+        )
+    return compact
+
+
 def load_bodies(
-    names: list[str], *, max_chars: int = 24000, workspace: str | Path | None = None
+    names: list[str],
+    *,
+    max_chars: int = 24000,
+    workspace: str | Path | None = None,
+    compact: bool = False,
 ) -> str:
     """Concatenate SKILL.md bodies for worker preload (progressive disclosure skip).
 
     Disabled skills are never inlined (M6 item 1 — ``<harness_guide>`` skips
-    disabled harness skills); a marker keeps the omission visible.
+    disabled harness skills); a marker keeps the omission visible. ``compact``
+    loads the compact projection instead of full bodies — the small-window
+    worker preload path, where a full body costs the same 2–3 tool rounds the
+    main turn's `load_skill` did.
     """
     parts: list[str] = []
     used = 0
@@ -968,6 +1050,8 @@ def load_bodies(
             parts.append(f'## skill:{name}\n(disabled — enable it in Settings → Skills)')
             continue
         body = str(skill.get('instructions') or skill.get('body') or skill.get('content') or '')
+        if compact:
+            body = compact_skill_body(body)
         chunk = f'## skill:{name}\n{body}'.strip()
         if used + len(chunk) > max_chars:
             parts.append(f'## skill:{name}\n(truncated — remaining budget {max(0, max_chars - used)})')
