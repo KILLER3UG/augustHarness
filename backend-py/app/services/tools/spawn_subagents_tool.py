@@ -10,7 +10,9 @@ Schema
         {
           "goal": "string (required)",
           "agentId": "string (optional, default 'general')",
-          "restrictedTools": ["string"] (optional),
+          "restrictedTools": ["string"] (optional, deny-list),
+          "tools": ["string"] (optional, allow-list — the exact tools the
+                    worker may use; preferred on small local models),
           "context": "string (optional)"
         }
       ],
@@ -712,6 +714,7 @@ async def _doSpawn(
                     'goal': item.get('goal', ''),
                     'agentId': item.get('agentId', 'general'),
                     'restrictedTools': item.get('restrictedTools'),
+                    'allowedTools': item.get('tools'),
                     'yieldSchema': item.get('yieldSchema'),
                     'effort': item.get('effort', 'medium'),
                     'model': item.get('model', ''),

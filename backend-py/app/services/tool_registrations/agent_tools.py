@@ -434,7 +434,9 @@ def register() -> None:
         (
             'Spawn one or more sub-agents in parallel for independent work items (single or batch in one '
             'call). Default background=true delivers completions as they finish; background=false blocks. '
-            'Each item may set effort (low/medium/high/max), a model override, and yieldSchema for a JSON result.'
+            'Each item may set effort (low/medium/high/max), a model override, and yieldSchema for a JSON result. '
+            'Give each worker a focused `tools` allow-list (2–5 names it needs for its subtask) — especially '
+            'when the model serving this session is a small local one.'
         ),
         _spawnSubagents,
         {
@@ -449,6 +451,15 @@ def register() -> None:
                             'agentId': {'type': 'string', 'default': 'general'},
                             'context': {'type': 'string'},
                             'restrictedTools': {'type': 'array', 'items': {'type': 'string'}},
+                            'tools': {
+                                'type': 'array',
+                                'items': {'type': 'string'},
+                                'description': (
+                                    'EXACT tools this worker may use (allow-list, 2–5 names). '
+                                    'Preferred on small local models: a focused set keeps the worker prompt well '
+                                    'under the window. Unknown names are ignored; the spawn rule states the set.'
+                                ),
+                            },
                             'effort': {
                                 'type': 'string',
                                 'enum': ['low', 'medium', 'high', 'max'],
@@ -473,7 +484,7 @@ def register() -> None:
                             'skills': {
                                 'type': 'array',
                                 'items': {'type': 'string'},
-                                'description': 'Skill names to preload into the worker (full SKILL.md).',
+                                'description': 'Skill names to preload into the worker (compact projection on small model windows).',
                             },
                             'capability': {
                                 'type': 'string',

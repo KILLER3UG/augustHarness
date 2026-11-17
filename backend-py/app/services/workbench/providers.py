@@ -628,6 +628,7 @@ async def call_anthropic_workbench(
     provider: dict[str, object] | None = None,
     emit: Callable[[dict[str, object]], None] | None = None,
     thinking_enabled: bool = True,
+    output_ceiling: int = 0,
 ) -> dict[str, object]:
     """Call an Anthropic-format model with progressive streaming.
 
@@ -678,6 +679,11 @@ async def call_anthropic_workbench(
     # Output floor for LOCAL models — same rule as the OpenAI path: a local
     # reasoning model that starves the reply ends thinking-only.
     max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
+    # A caller-supplied ceiling (small-window workers) applies AFTER the floor:
+    # the reply must fit beside the prompt inside the model's n_ctx, or the
+    # stream dies mid-generation with "Context size has been exceeded".
+    if output_ceiling > 0:
+        max_tokens = min(max_tokens, output_ceiling)
     req = AnthropicRequest(model=model, max_tokens=max_tokens)
     body = buildAnthropicUpstreamRequest(req, model, [{'type': 'text', 'text': system_text}])
     body['messages'] = anthropicMessages
@@ -851,6 +857,7 @@ async def call_openai_workbench(
     provider: dict[str, object] | None = None,
     emit: Callable[[dict[str, object]], None] | None = None,
     thinking_enabled: bool = True,
+    output_ceiling: int = 0,
 ) -> dict[str, object]:
     """Call an OpenAI-format model with progressive streaming.
 
@@ -888,6 +895,15 @@ async def call_openai_workbench(
             _synthesized, _dropped,
         )
     openaiMessages = translateMessages(messages)
+    # Loopback: prior rounds' reasoning is dead weight on a small window and an
+    # invitation to re-think the same thoughts — the tool results are already
+    # in context. (The Anthropic path drops unsigned thinking on translate;
+    # loopback servers never sign, so nothing survives there to strip.)
+    if is_loopback_base_url(provider.get('baseUrl')):
+        for _msg in openaiMessages:
+            if isinstance(_msg, dict) and _msg.get('role') == 'assistant':
+                _msg.pop('reasoning_content', None)
+                _msg.pop('reasoning', None)
     openaiMessages.insert(0, {'role': 'system', 'content': system_text})
     from app.models.openai import dump_openai_upstream_body
 
@@ -905,6 +921,9 @@ async def call_openai_workbench(
     # honest answer needs headroom. A configured ceiling below the floor on a
     # loopback model is a starvation knob, so the floor wins in code.
     max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
+    # Same caller ceiling as the Anthropic path — see the comment there.
+    if output_ceiling > 0:
+        max_tokens = min(max_tokens, output_ceiling)
     body['max_tokens'] = max_tokens
     if tools:
         body['tools'] = tools
