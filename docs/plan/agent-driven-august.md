@@ -466,6 +466,87 @@ Open / owed:
   spec-conformance section); the cerebellum cloud binding remains a config
   choice for the owner (labeled + titles-only available).
 
+## STOP 1B completion pass (2026-11-17 — owner rulings executed)
+
+Commits (each gates-green): `3bda7eb0` (tool-carrying requests floor at
+4096 output tokens — stop_reason=length no longer truncates tool-call
+JSON), `bdc46146` (≤16k local windows never carry the full catalog —
+auto-bare unless a surface was set explicitly; run_command demoted off
+the bare resident set, bridge-reachable), `4c4aa676` (factBudget ships
+armed at 80), `51ad7ba8` (read_file default 250-line paging with the
+continuation receipt; run_command output capped 40 head + 160 tail lines
+at the source with a narrow-the-command footer), `cdbfabb9` (registry
+gains hidden tools + dispatch aliases; bulk/search withdrawn from the
+surface; goal_output split into goal_record/goal_claim; board split into
+board_list/board_edit; submit_todos→update_todos and
+create_agent/list_agents→create_bot/list_bots merged as aliases; the
+sub-agent deny-name smoke check resolves aliases; the programmer pack
+teaches the merged name), `99cac7b5` (session row persisted AT TURN
+START — killed turns keep their rail row; cancelled/interrupted
+statuses; a local server dying mid-turn aborts the turn with a visible
+"reload on next message" instead of a 5-minute wedge; the wake-up brief
+reads the served model's current name/context live), `ed672af9` (the
+composer mic / voice-input button removed — Live/voice is out of scope),
+`b9226920` (a dev-only CDP variant for the Tauri shell so the REAL shell
+is drivable by the Playwright flow).
+
+The token probe (scratch) now drives the REAL `_sessionToolDefs` per
+profile × window — the STOP 1B report table comes from it. The A/B
+runner binds the session to the repo workspace (the coding arms' writes
+were sandbox-blocked without it) and excludes pre-existing sessions from
+its matching.
+
+### Desktop-shell pass (2026-11-17 — agent-driven via the CDP dev variant)
+
+The REAL Tauri shell on a CLEAN profile (`HARNESS_DESKTOP_APP_DATA` +
+`HARNESS_PROXY_PORT=8086` + `HARNESS_TAURI_CDP=1`, Playwright over CDP on
+:9223). 19 screenshots in docs/evidence/desktop/.
+
+- **PASS — clean-profile first launch**: the setup checklist renders
+  (provider/model/project/health rows, local-first model step with
+  data-flow labels and the reachability gate). Interactions from
+  window-open to a sendable first message: **2 clicks** with a served
+  model (choice chip + Continue), **1 click** pristine ("Skip for now").
+- **PASS — mic gone**: composer-voice-button count 0; the composer's only
+  buttons are actions + send.
+- **PASS — Tell August bar**: Settings → Memory renders
+  "Tell August what to change…" (memory-add-input + submit).
+- **FAIL — receipt card on an 8k local model**: the turn ran on the local
+  model but the 1.7B never discovered set_model_context (deferred by the
+  disclosure budget) → no receipt, nothing to undo. FIXED (baec885c):
+  set_model_context is core-resident (~150 tokens).
+- **FAIL — subagent fanout on the local model**: the fanout machinery ran
+  (2 workers spawned, inline progress) but both workers died with
+  "Context size has been exceeded" at the 8k window — small-model
+  subagent prompts need the same budget discipline the main turn got.
+  Logged as a STOP 1C item.
+- Bugs found + logged: a stale gitignored dev payload silently broke
+  clean-profile isolation (worked around; the shell then spawned its own
+  backend on :8086 — verified); early relative /api fetches bypass
+  discovery inside the shell; the first-launch tour is dead code (the
+  seeded Bot Chat session blocks tourPending); /c/new resumes the most
+  recent session instead of a new one; a data-testid collision between
+  the receipt card and the composer readout (FIXED baec885c); the
+  memory-pressure watchdog killed+respawned the backend 5× under a 94%
+  load (the machine was running a 5.4 GB game — environmental, and the
+  watchdog worked).
+
+### Skill A/B — final numbers
+
+16k pair (post-fix, workspace-bound): RESEARCH with_skill 50 frames /
+29 calls (skill described + LOADED via the bridge; list_directory 10,
+read_file 4; ZERO run_command; 2 error frames; final 205 chars) /
+without_skill 26 frames / 17 calls (final 333). Both COMPLETED — the
+pre-fix runs both died. CODING without_skill SUCCEEDED: the correct
+43-line parse_range.py written into the workspace + a 1549-char final;
+with_skill died at the 16k ceiling (context exceeded — the margin at 16k
+is ~2-3 tool rounds once a 6k skill body loads).
+
+32k runs: research arms completed again (the with_skill arm in 6 frames
+/ 4 calls — terse); coding arms crawled at ~2-4 tok/s (32k KV on the
+4050 Vulkan) and were cancelled after >1h with the new 'cancelled'
+status — 32k is not a practical A/B window on this laptop.
+
 ## STOP 1 status (2026-11-17 — final for this pass)
 
 **Part A — complete.** Items 1–9 implemented + live-verified (this pass
