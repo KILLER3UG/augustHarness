@@ -95,14 +95,6 @@ function ShownOfTotal({ shown, total }: { shown: number; total: number }) {
   );
 }
 
-/** Compact token count for the sidebar usage card (18.4M, 912k). */
-function formatCompactTokens(tokens: number): string {
-  if (!Number.isFinite(tokens) || tokens <= 0) return '0';
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return String(Math.round(tokens));
-}
-
 /** Project sub-heading INSIDE a leaf pool (a folder, or Unfiled).
  *
  *  Deliberately NOT a <Section>: `Section` gates its action buttons on the
@@ -939,16 +931,6 @@ export function SessionList({
     retry: false,
   });
 
-  // Sidebar usage card — the same /api/usage/stats door the Usage page reads,
-  // one 30-day aggregate. It is the only sidebar query that is not per chat.
-  const usageStats = useQuery({
-    queryKey: ['usage', 'stats', '30d'],
-    queryFn: () => usageApi.stats('30d'),
-    staleTime: 60_000,
-    refetchInterval: 120_000,
-    retry: false,
-  });
-
   return (
     <SessionUsageProvider value={usageBySession.data?.results ?? NO_DELTAS}>
     <div ref={rootRef} className="august-session-list flex h-full relative select-none">
@@ -1296,19 +1278,10 @@ export function SessionList({
           </div>
         ) : null}
 
-        {/* Usage + identity — the mockup's sidebar footer. The usage number is
-            the same 30-day aggregate the Usage page reads, not a second
-            accounting of the per-row deltas. */}
+        {/* The sidebar footer: the "Last 30 days · 0 tokens · 0 chats" usage
+            card is gone (Part D diet — the aggregate reads zero on most
+            installs and it is not a control). The update door stays. */}
         <div className="sidebar-footer">
-          <div className="usage-card">
-            <div className="usage-top">
-              <span>Last 30 days</span>
-              <strong>{usageStats.data ? formatCompactTokens(usageStats.data.totalTokens) : '—'}</strong>
-            </div>
-            <div className="usage-sub">
-              tokens{usageStats.data ? ` · ${usageStats.data.sessions} chats` : ''}
-            </div>
-          </div>
 
           {/* The update door, directly above the avatar — and only when there
               IS an update. Detection and download are both automatic now
