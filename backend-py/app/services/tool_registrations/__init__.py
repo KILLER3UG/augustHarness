@@ -14,6 +14,7 @@ def register_all() -> None:
     from app.services.tool_registrations import (
         agent_tools,
         artifact_tools,
+        automation_tools,
         board_tools,
         bot_tools,
         bulk_tools,
@@ -83,6 +84,10 @@ def register_all() -> None:
     shared_tools.register()
     # Bot Mode routines: Bot-owned scheduled jobs + the M-11 notepad door.
     routines.register()
+    # Automations by chat: create/update/list/delete over the ONE routines
+    # record (automations_store) — the owner-ruling GAP tools, receipt cards
+    # with undo (see tool_registrations/automation_tools.py).
+    automation_tools.register()
     # Bot Mode Phase C: the message_agent DM tool (offered only in the
     # orchestrator's main chat — the per-session gate lives in workbench
     # toolDefinitions).
