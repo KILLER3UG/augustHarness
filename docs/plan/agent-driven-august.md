@@ -709,3 +709,45 @@ Clean scratch profile + served LFM3-1.7B (vulkan). Verified LIVE:
   friendly injection, result caps, daemon TTL) are the ones the plan already
   records. The closest material is the untracked
   docs/research/august-harness-review/ series (MCode notes included).
+
+## Live QA & evidence pass (2026-11-18) — `ui-redesign` `after/` + `desktop-diet`
+
+The 19-shot `after/` suite was captured from the real Tauri shell on CDP `:9223`
+at 1440×900 and 1280×800; the inventory and measured geometry are recorded in
+[ui-spatial-redesign.md](ui-spatial-redesign.md). The installed runtime backend
+was synced from `backend-py/app` first — it predated the November 17 fixes.
+
+Live receipt-card click-through (real backend, no route mocking):
+- `docs/evidence/desktop-diet/09-receipt-card-rendered.png` and
+`10-receipt-card-after-undo.png`: a chat turn on the served LFM3-1.7B invoked
+`create_automation`, producing `Automation "Morning Check" · daily at 09:00`
+with Edit + Undo. Clicking Undo returned `Automation deleted — creation
+undone`, and `GET /api/automations` became `{"jobs":[]}` — the rollback really
+happened, not just a toast.
+- The Tauri backend supervisor restarted its process tree every ~2–3 minutes
+and killed the served model mid-turn. Both live turn verifications were
+therefore driven in the browser dev-server UI (`http://localhost:5173`)
+against the same real backend (Vite `/api` proxy → 8085), not the Tauri
+window. No API routes were mocked; the `after/` screenshots remain Tauri.
+
+Live 2-subagent fanout (real backend, LFM3-1.7B-Q8_0, Vulkan, no route mocking):
+- 8k: `11-fanout-8k-collapsed.png` / `11b-fanout-8k-expanded.png`.
+16k: `12-fanout-16k-collapsed.png` / `12b-fanout-16k-expanded.png` (all in
+`docs/evidence/desktop-diet/`). The 16k preset was applied from the standalone
+composer context pill; the pill read `16k` and the server row reported
+`ctx 16384 (prev 8192)`. Both windows spawned two workers and neither showed
+`Context size has been exceeded` or raw `[SUBAGENT_COMPLETE]` bubbles.
+- Honest limits: the 1.7B reasoning model spent its output budget on thinking,
+so neither leg produced a final assistant answer; the 16k workers ended
+`failed` (capped at one at a time, the model asked for four) and the expanded
+timeline showed thought/tool rows rather than two `done` subagent rows. The
+fanout machinery and the 8k overflow fix ran, but the "both workers completed"
+acceptance criterion is **not** verified by this pass.
+- The machine was not quiet: sibling workers and an augustTrading dev server
+were running, memory load reached 90%, and the warm-release loop was disabled
+for the pass with `PUT /api/config/wake-up {"warmModel":false}` (restored at
+teardown). The repo data profile's LocalModels provider was enabled for the
+pass (also restored).
+
+No new numbered plan part was created; this work ships under the `ui-redesign`
+slug and the closed Part series is untouched.

@@ -221,3 +221,29 @@ The following rules in [docs/agent/product.md](../agent/product.md) conflict wit
 6. **Settings route vs modal & `LOCAL_CTX_CHOICES` `64k` preset:**
    - *Observed in live app:* Settings is a full-screen route (`/settings/:section`) with 5 visible rail items (`General`, `Models & Local Runtime`, `Memory & Skills`, `Permissions & Workspace`, `App & Updates`), not a modal. Keeping it as a route (with `220px` rail width so labels don't truncate) matches `ChatLayout.tsx`.
    - *Question for coordinator:* Verify `LOCAL_CTX_CHOICES` in `frontend/desktop/src/api/api-client/local-models.ts` includes `65536` (`64k`) — screenshot `06` showed `4k 8k 16k 32k 64k`, confirming `64k` is already in `LOCAL_CTX_CHOICES`, and confirm whether `Access: Standard` maps to `guardMode='edit'` + `sandboxMode='workspace-write'` or `guardMode='ask'` + `sandboxMode='workspace-write'` by default.
+
+## 7. Completed `after/` evidence (live desktop QA, 2026-11-18)
+
+The full 19-shot suite now exists in `docs/evidence/ui-redesign/after/`, captured
+from the real Tauri desktop shell on CDP `:9223` (`npm run dev:vite` +
+`npm run tauri:dev:cdp`) at both required viewports. Before capture the AppData
+runtime backend was synced from `backend-py/app`, because the installed copy
+predated the November 17 worker/output fixes.
+
+- Empty state (`01`, `05`): calm greeting, the four monochrome starter chips,
+  and a two-row 760px pill with left (`[+]`, `augustHarness`, `Access: Standard`)
+  and right (`LocalModels · LFM3 1.7B Q8_0`, `8k`, Send) controls. Measured:
+  width 760px, radius 14px, surface `rgb(22,22,24)`, no `composer-footer-row`,
+  368px of clear space below the pill at 1440×900.
+- Thread states (`02`, `03`, `04`): one folded `activity-group` pill opening to
+  the `#121215` timeline; no raw `[SUBAGENT_COMPLETE]` / `● QUEUED` bubbles and
+  no floating wake-up toast or scroll-to-top button.
+- Composer popovers (`06`–`10`): actions, workspace, access, model, context.
+  The context popover measures 280px with presets `4k/8k/16k/32k/64k` and an
+  unclipped `Apply`; the model popover carries providers/models plus Effort and
+  Extended thinking and no workspace/access/context rows.
+- Sidebar/header (`11`–`14`): flat Pinned/Recent list with muted folder tags,
+  inline title edit, Bots & Runs with zero ConfirmDialog lockup, collapsed rail
+  with the titlebar expand control.
+- Settings (`15`–`19`): the five rail sections at 1440×900, labels untruncated.
+
