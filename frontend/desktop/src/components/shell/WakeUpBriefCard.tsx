@@ -1,9 +1,8 @@
 // WakeUpBriefCard — the "pick up where you left off" note (Phase 4).
 //
-// Rendered over the chat column in the same floating position as the
-// backend status pill. Normal mode: a short card with the brief text.
-// Quiet mode: a one-line chip that queues the brief instead of showing it —
-// both dismiss with one click, which also records the dismissal backend-side.
+// Rendered inline inside ChatEmptyState (no longer floating fixed over the
+// transcript). Normal mode shows the brief text in a quiet card; quiet mode
+// shows a single compact inline row. Dismiss records the dismissal backend-side.
 
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -18,18 +17,23 @@ export function WakeUpBriefCard({
 }) {
   if (brief.quiet) {
     return (
-      <div className="pointer-events-none fixed left-1/2 top-[3.75rem] z-[80] -translate-x-1/2">
-        <div className="pointer-events-auto inline-flex max-w-[92vw] items-center gap-2 rounded-full border border-border/60 bg-card/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
-          <span className="size-1.5 shrink-0 rounded-full bg-primary" aria-hidden />
-          <span className="whitespace-nowrap">Wake-up brief ready</span>
+      <div
+        className="w-full max-w-[47.5rem] rounded-xl border border-[var(--dt-line)] bg-[var(--dt-card)] px-3.5 py-2 text-left"
+        data-testid="wake-up-brief-card"
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="size-1.5 shrink-0 rounded-full bg-[var(--dt-primary)]" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-xs text-[var(--dt-fg-2)]">
+            Wake-up brief ready
+          </span>
           <Button
             variant="bare"
             size="icon-sm"
             onClick={onDismiss}
             aria-label="Dismiss the wake-up brief"
-            className="-mr-1 rounded-full text-muted-foreground hover:text-foreground"
+            className="-mr-1 shrink-0 rounded-md text-[var(--dt-fg-3)] hover:text-[var(--dt-fg-1)]"
           >
-            <X aria-hidden />
+            <X className="size-3.5" aria-hidden />
           </Button>
         </div>
       </div>
@@ -37,23 +41,24 @@ export function WakeUpBriefCard({
   }
 
   return (
-    <div className="pointer-events-none fixed left-1/2 top-[3.75rem] z-[80] -translate-x-1/2">
-      <div className="pointer-events-auto w-[min(92vw,460px)] rounded-xl border border-border/60 bg-card/95 p-3.5 text-left shadow-lg backdrop-blur">
-        <div className="flex items-start gap-2.5">
-          <span className="mt-1 size-1.5 shrink-0 rounded-full bg-primary" aria-hidden />
-          <p className="min-w-0 flex-1 whitespace-pre-line text-sm leading-snug text-foreground">
-            {brief.text}
-          </p>
-          <Button
-            variant="bare"
-            size="icon-sm"
-            onClick={onDismiss}
-            aria-label="Dismiss the wake-up brief"
-            className="-mr-1 -mt-0.5 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
-          >
-            <X aria-hidden />
-          </Button>
-        </div>
+    <div
+      className="w-full max-w-[47.5rem] rounded-xl border border-[var(--dt-line)] bg-[var(--dt-card)] px-4 py-3 text-left"
+      data-testid="wake-up-brief-card"
+    >
+      <div className="flex items-start gap-2.5">
+        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-[var(--dt-primary)]" aria-hidden />
+        <p className="min-w-0 flex-1 whitespace-pre-line text-sm leading-relaxed text-[var(--dt-fg-1)]">
+          {brief.text}
+        </p>
+        <Button
+          variant="bare"
+          size="icon-sm"
+          onClick={onDismiss}
+          aria-label="Dismiss the wake-up brief"
+          className="-mr-1 -mt-0.5 shrink-0 rounded-md text-[var(--dt-fg-3)] hover:text-[var(--dt-fg-1)]"
+        >
+          <X className="size-3.5" aria-hidden />
+        </Button>
       </div>
     </div>
   );
