@@ -712,42 +712,61 @@ Clean scratch profile + served LFM3-1.7B (vulkan). Verified LIVE:
 
 ## Live QA & evidence pass (2026-11-18) — `ui-redesign` `after/` + `desktop-diet`
 
-The 19-shot `after/` suite was captured from the real Tauri shell on CDP `:9223`
-at 1440×900 and 1280×800; the inventory and measured geometry are recorded in
+The `after/` suite was captured from the real Tauri shell on CDP `:9223` at
+1440×900 and 1280×800; the inventory and measured geometry are recorded in
 [ui-spatial-redesign.md](ui-spatial-redesign.md). The installed runtime backend
 was synced from `backend-py/app` first — it predated the November 17 fixes.
 
-Live receipt-card click-through (real backend, no route mocking):
+Re-verification after the polish fixes (`05932853`) re-captured `01`, `05`,
+`08`, `02`, `03`, `04`: `01`/`05` show the `Threads` tab active, zero
+`FontChooserToast`, and no `60/95` sidebar counter; `08` shows `Read-only`,
+`Standard`, and `Full access` all visible unclipped; `02`/`03`/`04` show the
+clean `#121215` timeline, the folded activity pill, and the dark monochrome
+theme.
+
+Live receipt-card click-through (real backend, no route mocking) — PASS:
 - `docs/evidence/desktop-diet/09-receipt-card-rendered.png` and
 `10-receipt-card-after-undo.png`: a chat turn on the served LFM3-1.7B invoked
-`create_automation`, producing `Automation "Morning Check" · daily at 09:00`
-with Edit + Undo. Clicking Undo returned `Automation deleted — creation
-undone`, and `GET /api/automations` became `{"jobs":[]}` — the rollback really
-happened, not just a toast.
+`create_automation`, rendering `Automation "Morning Check" · daily at 09:00`
+with `[Edit] [Undo]`. Clicking `Undo` raised the dark monochrome toast
+`Automation deleted — creation undone`, flipped the receipt card itself to
+`Automation "Morning Check" removed`, and `GET /api/automations` returned
+`{"jobs":[]}` — the rollback really happened, not just a toast.
 - The Tauri backend supervisor restarted its process tree every ~2–3 minutes
 and killed the served model mid-turn. Both live turn verifications were
 therefore driven in the browser dev-server UI (`http://localhost:5173`)
 against the same real backend (Vite `/api` proxy → 8085), not the Tauri
 window. No API routes were mocked; the `after/` screenshots remain Tauri.
 
-Live 2-subagent fanout (real backend, LFM3-1.7B-Q8_0, Vulkan, no route mocking):
+Local-model subagent alias fix (`backend-py/app/services/alias_mapping_service.py`):
+`_has_credentials` lacked an `is_loopback_base_url` check, so `subagent.py`
+rejected the keyless `LocalModels` provider and fell back to `'Opencode Zen'`,
+killing subagents in ~1s. The fix treats a loopback base URL as credentialed
+(matching `resolver._is_keyless_ok`). `npm run gates:backend` passed: `ruff`,
+`mypy` 397 files, `check:api`, and `e2e:smoke` 21/21.
+
+Live 2-subagent fanout (real backend, LFM3-1.7B-Q8_0, Vulkan, no route mocking)
+— partial pass:
 - 8k: `11-fanout-8k-collapsed.png` / `11b-fanout-8k-expanded.png`.
 16k: `12-fanout-16k-collapsed.png` / `12b-fanout-16k-expanded.png` (all in
 `docs/evidence/desktop-diet/`). The 16k preset was applied from the standalone
 composer context pill; the pill read `16k` and the server row reported
-`ctx 16384 (prev 8192)`. Both windows spawned two workers and neither showed
-`Context size has been exceeded` or raw `[SUBAGENT_COMPLETE]` bubbles.
-- Honest limits: the 1.7B reasoning model spent its output budget on thinking,
-so neither leg produced a final assistant answer; the 16k workers ended
-`failed` (capped at one at a time, the model asked for four) and the expanded
-timeline showed thought/tool rows rather than two `done` subagent rows. The
-fanout machinery and the 8k overflow fix ran, but the "both workers completed"
-acceptance criterion is **not** verified by this pass.
-- The machine was not quiet: sibling workers and an augustTrading dev server
-were running, memory load reached 90%, and the warm-release loop was disabled
-for the pass with `PUT /api/config/wake-up {"warmModel":false}` (restored at
-teardown). The repo data profile's LocalModels provider was enabled for the
-pass (also restored).
+`ctx 16384 (prev 8192)`. Zero `Alias fallback` warnings, zero
+`Context size has been exceeded` errors at 8k, and zero raw
+`[SUBAGENT_COMPLETE]` bubbles in either window.
+- At `16k` (with `augustHarness` bound, `Full access`, `Low` effort,
+`Extended thinking` off) `spawn_subagents` executed (`Ran 2 sub-agents —
+capped at 2 at a time`); `List files in tool_registrations` completed
+(`done` in 39s) while `Count .py files in routers` failed (1m05s), and the
+parent 1.7B turn overflowed after 16 rounds with job-poll errors (`no
+background command`). At `8k`, the 1.7B spent its output tokens on thinking
+before calling `spawn_subagents`. The fanout machinery and the 8k overflow
+fix ran, but the "both workers completed" acceptance criterion is **not**
+verified by this pass.
+- The warm-release loop was disabled for the pass with
+`PUT /api/config/wake-up {"warmModel":false}`; teardown restored
+`wakeUp.warmModel=true`, verified ports `5173`/`8085`/`9223` free, and found
+zero orphaned `llama-server` processes.
 
 No new numbered plan part was created; this work ships under the `ui-redesign`
 slug and the closed Part series is untouched.

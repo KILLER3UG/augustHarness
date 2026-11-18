@@ -228,20 +228,28 @@ The full 19-shot suite now exists in `docs/evidence/ui-redesign/after/`, capture
 from the real Tauri desktop shell on CDP `:9223` (`npm run dev:vite` +
 `npm run tauri:dev:cdp`) at both required viewports. Before capture the AppData
 runtime backend was synced from `backend-py/app`, because the installed copy
-predated the November 17 worker/output fixes.
+predated the November 17 worker/output fixes. After the polish fixes
+(`05932853`), shots `01`, `05`, `08`, `02`, `03`, `04` were re-captured and
+re-verified: `01`/`05` show the `Threads` tab active, zero `FontChooserToast`,
+and no `60/95` sidebar counter; `08` shows `Read-only`, `Standard`, and
+`Full access` all visible unclipped; `02`/`03`/`04` show the clean `#121215`
+timeline, the folded activity pill, and the dark monochrome theme.
 
 - Empty state (`01`, `05`): calm greeting, the four monochrome starter chips,
   and a two-row 760px pill with left (`[+]`, `augustHarness`, `Access: Standard`)
   and right (`LocalModels · LFM3 1.7B Q8_0`, `8k`, Send) controls. Measured:
   width 760px, radius 14px, surface `rgb(22,22,24)`, no `composer-footer-row`,
-  368px of clear space below the pill at 1440×900.
+  368px of clear space below the pill at 1440×900; `Threads` tab active, zero
+  `FontChooserToast`, no `60/95` sidebar counter.
 - Thread states (`02`, `03`, `04`): one folded `activity-group` pill opening to
-  the `#121215` timeline; no raw `[SUBAGENT_COMPLETE]` / `● QUEUED` bubbles and
-  no floating wake-up toast or scroll-to-top button.
+  the clean `#121215` timeline in the dark monochrome theme; no raw
+  `[SUBAGENT_COMPLETE]` / `● QUEUED` bubbles and no floating wake-up toast or
+  scroll-to-top button.
 - Composer popovers (`06`–`10`): actions, workspace, access, model, context.
   The context popover measures 280px with presets `4k/8k/16k/32k/64k` and an
   unclipped `Apply`; the model popover carries providers/models plus Effort and
-  Extended thinking and no workspace/access/context rows.
+  Extended thinking and no workspace/access/context rows; the access popover
+  (`08`) shows `Read-only`, `Standard`, and `Full access` all visible unclipped.
 - Sidebar/header (`11`–`14`): flat Pinned/Recent list with muted folder tags,
   inline title edit, Bots & Runs with zero ConfirmDialog lockup, collapsed rail
   with the titlebar expand control.
