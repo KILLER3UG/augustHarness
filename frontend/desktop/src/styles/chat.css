@@ -152,14 +152,8 @@ details[open] > summary .disclosure-chevron {
   display: none !important;
 }
 
-/* Effort slider in the composer model card, matched to the reference picker:
- * a fat pill track whose UNFILLED remainder is the muted ground, over a
- * green→teal→blue gradient that stays fixed to the FULL track width —
- * so "Low" shows only the gradient's green lead-in and "Max" reveals the
- * whole run, exactly like the reference at each stop. The white knob and the
- * small end-of-track marker complete it. The four effort levels are the
- * stops, so the native range keeps keyboard and screen-reader behavior; the
- * component sets --effort-fill from the selected index. */
+/* Effort slider in the composer model card: monochrome white fill up to
+ * --effort-fill over --dt-elevated, with a neutral stop dot and thumb. */
 .model-effort-slider {
   --effort-fill: 33%;
   -webkit-appearance: none;
@@ -167,15 +161,14 @@ details[open] > summary .disclosure-chevron {
   height: 14px;
   border-radius: 9999px;
   background:
-    radial-gradient(circle 2.5px at calc(100% - 11px) 50%, rgb(255 255 255 / 0.5) 0 2.5px, transparent 2.5px),
-    linear-gradient(to right, transparent var(--effort-fill), var(--dt-muted) var(--effort-fill)),
-    linear-gradient(90deg, #2ecc71 0%, #2bd6a3 40%, #37b7ff 100%);
+    radial-gradient(circle 2.5px at calc(100% - 11px) 50%, rgb(255 255 255 / 0.35) 0 2.5px, transparent 2.5px),
+    linear-gradient(to right, var(--dt-primary) var(--effort-fill), var(--dt-elevated) var(--effort-fill));
   outline: none;
   cursor: pointer;
 }
 
 .model-effort-slider:focus-visible {
-  box-shadow: 0 0 0 2px hsl(var(--dt-ring-hsl, 223 71% 49%) / 0.35);
+  box-shadow: 0 0 0 2px rgb(var(--dt-ring-rgb) / 0.25);
 }
 
 .model-effort-slider::-webkit-slider-thumb {
@@ -185,7 +178,7 @@ details[open] > summary .disclosure-chevron {
   height: 20px;
   border: 0;
   border-radius: 9999px;
-  background: #ffffff;
+  background: var(--dt-primary);
   box-shadow: 0 2px 6px rgb(0 0 0 / 0.45);
   cursor: pointer;
 }
@@ -194,9 +187,8 @@ details[open] > summary .disclosure-chevron {
   height: 14px;
   border-radius: 9999px;
   background:
-    radial-gradient(circle 2.5px at calc(100% - 11px) 50%, rgb(255 255 255 / 0.5) 0 2.5px, transparent 2.5px),
-    linear-gradient(to right, transparent var(--effort-fill), var(--dt-muted) var(--effort-fill)),
-    linear-gradient(90deg, #2ecc71 0%, #2bd6a3 40%, #37b7ff 100%);
+    radial-gradient(circle 2.5px at calc(100% - 11px) 50%, rgb(255 255 255 / 0.35) 0 2.5px, transparent 2.5px),
+    linear-gradient(to right, var(--dt-primary) var(--effort-fill), var(--dt-elevated) var(--effort-fill));
 }
 
 .model-effort-slider::-moz-range-thumb {
@@ -204,7 +196,7 @@ details[open] > summary .disclosure-chevron {
   height: 20px;
   border: 0;
   border-radius: 9999px;
-  background: #ffffff;
+  background: var(--dt-primary);
   box-shadow: 0 2px 6px rgb(0 0 0 / 0.45);
   cursor: pointer;
 }
@@ -259,7 +251,7 @@ details[open] > summary .disclosure-chevron {
   width: 3px;
   height: 3px;
   border-radius: 9999px;
-  background-color: var(--dt-warning);
+  background-color: var(--dt-fg-2);
   animation: dotPulse 1.4s infinite ease-in-out;
 }
 
@@ -454,7 +446,8 @@ details[open] > summary .disclosure-chevron {
   margin-top: 0.2rem;
 }
 
-.august-session-list input[aria-label="Search sessions"] {
+.august-session-list input[aria-label="Search sessions"],
+.august-session-list input[aria-label="Search threads"] {
   min-height: 2rem;
   border-radius: 0.55rem;
   background: color-mix(in srgb, var(--dt-background) 44%, transparent);
@@ -520,7 +513,7 @@ details[open] > summary .disclosure-chevron {
 .august-composer-slot,
 .august-empty-state-content,
 .august-transcript-column {
-  max-width: 48rem !important;
+  max-width: 47.5rem !important;
 }
 
 .august-message-list {
@@ -594,26 +587,21 @@ details[open] > summary .disclosure-chevron {
    on top of it. */
 .august-composer {
   background: var(--dt-card) !important;
-  border-color: transparent !important;
-  /* The reference's rounded PILL: fully rounded ends at the one-row height,
-     settling into a big-radius card as the input grows past two lines. */
-  border-radius: 1.625rem !important;
-  box-shadow: var(--elev-ring) !important;
+  border: 1px solid var(--dt-line) !important;
+  border-radius: 14px !important;
+  box-shadow: none !important;
+  overflow: visible;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .august-composer:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dt-border) 90%, transparent) !important;
+  border-color: var(--dt-line-strong) !important;
+  box-shadow: none !important;
 }
 
 .august-composer textarea {
-  /* Symmetric on purpose. This rule wins over the utility classes with
-     !important, and it used to read padding-top .5rem / padding-bottom .25rem
-     inside a 2.25rem minimum height — so one 1.25rem line sat 8px from the top
-     and 4px from the bottom of its own box, which is the "floating placeholder"
-     the composer showed. 8 + 20 + 8 is exactly 36px: the line is centred, and a
-     wrapped paragraph keeps the same rhythm as it grows. */
-  min-height: 2.25rem !important;
-  padding-block: 0.5rem !important;
+  min-height: 0 !important;
+  max-height: 240px !important;
+  padding: 14px 16px !important;
   font-size: 0.875rem;
 }
 
@@ -774,22 +762,6 @@ details[open] > summary .disclosure-chevron {
      screen. The setting itself stays in Settings → Appearance. */
   [data-testid='font-chooser-toast'] {
     display: none;
-  }
-
-  /* The composer footer: at 390 the project + model chips leave the
-     disclaimer a sliver of a line, so it wraps to its own row above them —
-     the mockup's note row under the card, in the same order. */
-  .composer-foot {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-
-  .composer-foot-note {
-    flex: 1 0 100%;
-  }
-
-  .composer-foot > div {
-    margin-left: auto;
   }
 }
 

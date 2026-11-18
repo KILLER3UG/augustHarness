@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarClock, Pause, Play, Square, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -138,11 +137,11 @@ export function AutomationsSection() {
         </ul>
       )}
       <ConfirmDialog
-        open={confirmState !== null}
-        title={confirmState?.title ?? ''}
-        message={confirmState?.message ?? ''}
-        confirmLabel={confirmState?.confirmLabel}
-        variant={confirmState?.variant}
+        open={confirmState.open}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmLabel={confirmState.confirmLabel}
+        variant={confirmState.variant}
         onConfirm={handleConfirm}
         onCancel={handleCancel}
       />

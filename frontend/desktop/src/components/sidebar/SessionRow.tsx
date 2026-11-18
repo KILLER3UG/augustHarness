@@ -7,12 +7,11 @@ import { motion } from "framer-motion";
 import {
   Pin,
   EllipsisVertical,
-  Folder as FolderIcon,
-  ChevronRight,
   Edit3,
   Trash2,
   Archive,
 } from "lucide-react";
+import { folderNameFromPath } from "@/api/folder";
 import { cn, timeAgo } from "@/lib/utils";
 import { sessionRow } from "@/lib/motion";
 import { MarqueeTitle } from "@/components/ui/MarqueeTitle";
@@ -20,7 +19,6 @@ import { Button } from "@/components/ui/button";
 import {
   clearSessionStatus,
   type Session,
-  type Folder,
   type SessionStatus,
 } from "@/store/sessions";
 
@@ -30,12 +28,10 @@ export interface SessionRowProps {
   active: boolean;
   pinned: boolean;
   status?: SessionStatus;
-  folders: Folder[];
   onClick: () => void;
   onTogglePin: () => void;
   onRename: (title: string) => void;
   onArchive: () => void;
-  onMoveToFolder: (folderId: string | null) => void;
   onDelete: () => void;
 }
 
@@ -76,16 +72,13 @@ function SessionRowInner({
   active,
   pinned,
   status,
-  folders,
   onClick,
   onTogglePin,
   onRename,
   onArchive,
-  onMoveToFolder,
   onDelete,
 }: SessionRowProps) {
   const [showMenu, setShowMenu] = useState(false);
-  const [folderOpen, setFolderOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(session.title);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -162,7 +155,6 @@ function SessionRowInner({
 
   useEffect(() => {
     if (!showMenu) {
-      setFolderOpen(false);
       return;
     }
 
@@ -269,9 +261,8 @@ function SessionRowInner({
     needsHandoff > 0 ? "Needs handoff" : STATUS_WORD[status ?? "idle"];
   const previewDotClass =
     needsHandoff > 0 ? "bg-warning" : STATUS_DOT[status ?? "idle"];
-  const previewFolder = session.folderId
-    ? folders.find((f) => f.id === session.folderId)?.name
-    : undefined;
+  const folderTag = session.workspacePath ? folderNameFromPath(session.workspacePath) : '';
+  const previewFolder = folderTag || undefined;
   const previewTime = timeAgo(session.startedAt);
   // Rows restored from an older localStorage shape can lack the counter (the
   // schema field is optional), and "0 messages" would then state a fact that
@@ -361,64 +352,6 @@ function SessionRowInner({
           Rename Chat
         </Button>
 
-        <div className="relative">
-          <Button variant="bare"
-            type="button"
-            role="menuitem"
-            onClick={() => setFolderOpen((v) => !v)}
-            className="w-full text-left px-2.5 py-1 hover:bg-white/5 flex items-center justify-between gap-1.5 text-foreground/90 transition"
-          >
-            <span className="flex items-center gap-1.5">
-              <FolderIcon className="size-3 text-muted-foreground" />
-              Move to Folder
-            </span>
-            <ChevronRight
-              className={cn(
-                "size-2.5 text-muted-foreground transition-transform",
-                folderOpen && "rotate-90",
-              )}
-            />
-          </Button>
-          {folderOpen && (
-            <div className="mt-0.5 mx-1 mb-1 max-h-40 overflow-y-auto rounded-md border border-border/40 bg-popover/95 py-1">
-              <Button variant="bare"
-                type="button"
-                onClick={() => {
-                  onMoveToFolder(null);
-                  closeMenu();
-                }}
-                className={cn(
-                  "block w-full text-left px-2.5 py-1 hover:bg-white/5 truncate transition",
-                  !session.folderId
-                    ? "text-primary font-medium"
-                    : "text-foreground/80",
-                )}
-              >
-                No Folder
-              </Button>
-              {folders.map((f) => (
-                <Button variant="bare"
-                  key={f.id}
-                  type="button"
-                  onClick={() => {
-                    onMoveToFolder(f.id);
-                    closeMenu();
-                  }}
-                  className={cn(
-                    "block w-full text-left px-2.5 py-1 hover:bg-white/5 truncate transition",
-                    session.folderId === f.id
-                      ? "text-primary font-medium"
-                      : "text-foreground/80",
-                  )}
-                  title={f.name}
-                >
-                  {f.name}
-                </Button>
-              ))}
-            </div>
-          )}
-        </div>
-
         <Button variant="bare"
           type="button"
           role="menuitem"
@@ -495,6 +428,15 @@ function SessionRowInner({
         <span className="thread-title session-list-title" data-testid="session-list-title">
           <MarqueeTitle text={session.title} className="w-full" />
         </span>
+        {folderTag ? (
+          <span
+            className="ml-auto max-w-[76px] shrink-0 truncate text-2xs text-tier-3 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
+            title={session.workspacePath || folderTag}
+            data-testid="session-row-folder-tag"
+          >
+            {folderTag}
+          </span>
+        ) : null}
         {needsHandoff > 0 ? (
           <span
             className="thread-needs"

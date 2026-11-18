@@ -47,11 +47,21 @@
     --dt-popover-foreground: #18181b;
     --dt-popover-foreground-hsl: 240 5.9% 10%;
     --dt-elevated: #f4f4f5;
+    --dt-elevated-rgb: 244 244 245;
+    --dt-pill-bg: #e4e4e7;
+    --dt-pill-bg-rgb: 228 228 231;
+    --dt-stop-bg: #27272a;
+    --dt-stop-bg-rgb: 39 39 42;
+    --dt-timeline-inset: #f4f4f5;
+    --dt-timeline-inset-rgb: 244 244 245;
+    --dt-receipt-bg: #f4f4f5;
+    --dt-receipt-bg-rgb: 244 244 245;
 
     /* Shell chrome — one titlebar height, one drawer-header height.
        The CSS classes that used to hardcode 2.85rem !important next to the
        h-10 utility claimed to own this and disagreed by 5.6px. */
-    --shell-titlebar-h: 56px;
+    --dt-header-h: 40px;
+    --shell-titlebar-h: 40px;
     --shell-drawer-header-h: 48px;
     --shell-inset-x: clamp(1rem, 3vw, 2rem);
     /* Editorial display face — the Signal Desk mockup's serif. System fonts
@@ -236,33 +246,40 @@
     /* Help native form controls (select/option) use dark system chrome on Windows */
     color-scheme: dark;
 
-    /* Surface palette — PURE MONOCHROME (owner ruling, 2026-11-17): the page
-     * is charcoal #0e0e10 (matching the native window background, so no boot
-     * flash), surfaces one step lighter, the rail darker, every text rung
-     * zinc neutral, and the single active colour is WHITE. The previous warm
-     * near-black ramp (#262624, hue ~45) and the terracotta accent are
-     * retired; borders are 1px rgba(255,255,255,0.08). */
-    --dt-background: #0e0e10;
-    --dt-background-hsl: 240 6.7% 5.9%;
-    --dt-foreground: #ffffff;
-    --dt-foreground-hsl: 0 0% 100%;
-    --dt-fg-1: #ffffff;
-    /* Ramp: white → light gray #d4d4d8 → mid gray #a1a1aa. */
-    --dt-fg-2: #d4d4d8;
-    --dt-fg-3: #a1a1aa;
+    /* Surface palette — PURE MONOCHROME (ui-spatial-redesign): the page
+     * is #0a0a0b, sidebar #111113, composer/cards #161618–#1f1f23, every text
+     * rung zinc neutral (#f4f4f5 / #a1a1aa / #71717a), the single active
+     * colour is WHITE, and borders are 1px rgba(255,255,255,0.08). */
+    --dt-background: #0a0a0b;
+    --dt-background-hsl: 240 5.3% 4.1%;
+    --dt-foreground: #f4f4f5;
+    --dt-foreground-hsl: 240 4.8% 95.9%;
+    --dt-fg-1: #f4f4f5;
+    /* Ramp: #f4f4f5 → #a1a1aa → #71717a. */
+    --dt-fg-2: #a1a1aa;
+    --dt-fg-3: #71717a;
     --dt-card: #161618;
-    --dt-card-hsl: 240 3.7% 8.8%;
-    --dt-card-foreground: #ffffff;
-    --dt-card-foreground-hsl: 0 0% 100%;
+    --dt-card-hsl: 240 4.3% 9.0%;
+    --dt-card-foreground: #f4f4f5;
+    --dt-card-foreground-hsl: 240 4.8% 95.9%;
     --dt-muted: #1c1c1f;
     --dt-muted-hsl: 240 4.3% 11.4%;
-    --dt-muted-foreground: #a1a1aa;
-    --dt-muted-foreground-hsl: 240 4.9% 65.9%;
-    --dt-popover: #1a1a1a;
-    --dt-popover-hsl: 0 0% 10.2%;
-    --dt-popover-foreground: #ffffff;
-    --dt-popover-foreground-hsl: 0 0% 100%;
-    --dt-elevated: #242424;
+    --dt-muted-foreground: #71717a;
+    --dt-muted-foreground-hsl: 240 3.8% 46.1%;
+    --dt-popover: #18181b;
+    --dt-popover-hsl: 240 5.9% 10%;
+    --dt-popover-foreground: #f4f4f5;
+    --dt-popover-foreground-hsl: 240 4.8% 95.9%;
+    --dt-elevated: #1f1f23;
+    --dt-elevated-rgb: 31 31 35;
+    --dt-pill-bg: #222226;
+    --dt-pill-bg-rgb: 34 34 38;
+    --dt-stop-bg: #27272a;
+    --dt-stop-bg-rgb: 39 39 42;
+    --dt-timeline-inset: #121215;
+    --dt-timeline-inset-rgb: 18 18 21;
+    --dt-receipt-bg: #141417;
+    --dt-receipt-bg-rgb: 20 20 23;
 
     /* Sunken chrome / scrim / hairline / paper / wash — see :root above. */
     --dt-surface-sunken: #0a0a0a;
@@ -295,8 +312,8 @@
     --dt-accent: #1e1e21;
     --dt-accent-foreground: #ffffff;
     /* 1px neutral hairline: rgba(255,255,255,0.08) over the page. */
-    --dt-border: #202023;
-    --dt-border-hsl: 240 4.9% 10.4%;
+    --dt-border: rgb(255 255 255 / 0.08);
+    --dt-border-hsl: 240 3.7% 15.9%;
     --dt-input: #242427;
     --dt-ring: #ffffff;
     --dt-secondary-rgb: 30 30 33;
@@ -338,21 +355,20 @@
     --dt-code-block-bg: #161618;
     --dt-code-block-fg: #e4e4e7;
 
-    /* Sidebar — one step DARKER than the page (the rail sits below the
-       transcript, not beside it). */
-    --dt-sidebar: #0a0a0a;
-    --dt-sidebar-foreground: #e4e4e7;
+    /* Sidebar — #111113, subtle separation above #0a0a0b page. */
+    --dt-sidebar: #111113;
+    --dt-sidebar-foreground: #f4f4f5;
     --dt-sidebar-primary: #ffffff;
     --dt-sidebar-primary-foreground: #09090b;
-    --dt-sidebar-accent: #1e1e21;
-    --dt-sidebar-accent-foreground: #ffffff;
-    --dt-sidebar-border: #1e1e21;
+    --dt-sidebar-accent: #1f1f23;
+    --dt-sidebar-accent-foreground: #f4f4f5;
+    --dt-sidebar-border: rgb(255 255 255 / 0.08);
     --dt-sidebar-ring: #ffffff;
-    --dt-sidebar-rgb: 10 10 10;
-    --dt-sidebar-foreground-rgb: 228 228 231;
+    --dt-sidebar-rgb: 17 17 19;
+    --dt-sidebar-foreground-rgb: 244 244 245;
     --dt-sidebar-primary-rgb: 255 255 255;
-    --dt-sidebar-accent-rgb: 30 30 33;
-    --dt-sidebar-border-rgb: 30 30 33;
+    --dt-sidebar-accent-rgb: 31 31 35;
+    --dt-sidebar-border-rgb: 36 36 39;
     --dt-sidebar-ring-rgb: 255 255 255;
 
     /* The ladder needs real alphas on charcoal: at `rgb(0 0 0 / 0.06)` a card
@@ -363,7 +379,7 @@
 
     /* A solid bubble, not a blend — see the `:root` note. One step LIGHTER
        than the page: the user's own message sits above the ground. */
-    --dt-user-bubble: #1e1e21;
+    --dt-user-bubble: #18181b;
   }
 
 	  /* Text-size selector overrides the root font-size (scales all rems) */

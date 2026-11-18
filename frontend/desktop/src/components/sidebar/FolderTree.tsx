@@ -1,74 +1,19 @@
-/* ── Folder tree — section labels, collapsible folders, Tasks group ── */
+/* ── Section — collapsible flat list section (Pinned / Recent) ──────── */
 
 import { useState } from "react";
-import {
-  Plus,
-  FolderPlus,
-  Folder as FolderIcon,
-  ChevronRight,
-  Edit3,
-  Trash2,
-  ArrowUpDown,
-} from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import type { Folder } from "@/store/sessions";
 
-/** The chat list's two view preferences, offered from ONE header control.
- *
- *  They used to be two different things: a bare icon that cycled the sort order
- *  on click (so which order you were in was only inferable by reading the list
- *  back), and `august-sidebar-date-groups`, a preference with no control at all
- *  — nothing in the repo ever wrote that key, so grouping by date was reachable
- *  only by editing localStorage by hand. A menu names both, shows which is
- *  active, and is the writer for both keys.
- *
- *  The date-group half of that pair is gone (2026-10-17): it restated a
- *  recency order the rows already carried, and what replaced it —
- *  group-by-project — is a fact the rows do not carry. */
-export interface ChatViewOptions {
-  sortBy: 'updated' | 'name';
-  onSortChange: (next: 'updated' | 'name') => void;
-  /** Group each pool (a folder, and the unfiled Tasks pool) by the workspace a
-   *  chat runs in, with a project header. Replaced date grouping, which
-   *  restated a recency order the rows already carried. Unlike date grouping
-   *  this is meaningful under BOTH sort orders, so it is never disabled. */
-  groupProjects: boolean;
-  onGroupProjectsChange: (next: boolean) => void;
-}
-
-/** Section header for PINNED / PROJECTS with optional folder create actions.
- *
- *  The label row is COLLAPSIBLE — the reference rail renders each section as
- *  a small "Pinned ▾" row that folds its list away. Collapse state is
- *  deliberately session-local (not persisted): a rail that comes back exactly
- *  as you left it is the folders' job (those persist), while a section you
- *  folded for one glance re-opening on the next launch is the safer default. */
 export function Section({
   title,
   count,
   empty,
-  onNewFolder,
-  onUploadFolder,
-  viewOptions,
   children,
 }: {
   title: string;
   count: number;
   empty?: string;
-  onNewFolder?: () => void;
-  onUploadFolder?: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  viewOptions?: ChatViewOptions;
   children?: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -87,254 +32,15 @@ export function Section({
             className={cn('section-head-chev', !collapsed && 'is-open')}
             aria-hidden
           />
-          <span className="section-head-label">
-          {/* Count removed, and the label is sentence case with normal
-              tracking. Measured off the Claude reference at 2.4x, the section
-              header reads `Chats and tasks` — sentence case, muted, with NO
-              number beside it; both hold in this markup.
-
-              What this comment used to add — "the two icons on the right
-              (magnifier, sort) are kept; they are in the reference" — never
-              matched the tree: this header has no magnifier (search is a
-              separate textbox in `SessionList`), and it renders three optional
-              controls — the chat view menu (sort order + project grouping),
-              `Open Workspace Folder` and `Create Sidebar Folder`. The last two
-              are the only door to those capabilities, so they were left alone
-              and the prose was corrected instead. If the reference's two-icon
-              header is the target, that is a removal decision for the owner,
-              not a documentation fix.
-
-              The duplicate total this section once rendered (`CHATS AND TASKS
-              39` containing `Tasks 39`) is gone here; the nested `Tasks` lane
-              header still exists, but in `SessionList.tsx`, with its own
-              `New chat in Tasks` / `Delete all tasks` controls. */}
-          {title}
-        </span>
+          <span className="section-head-label">{title}</span>
         </Button>
-        {(title === "Sessions" || title === "Recents" || title === "Projects" || title === "Chats and tasks") && (
-          <div className="section-actions">
-            {viewOptions && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="section-action"
-                    title="Sort and group chats" aria-label="Sort and group chats"
-                  >
-                    <ArrowUpDown className="size-3" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-52">
-                  <DropdownMenuLabel>Sort chats</DropdownMenuLabel>
-                  <DropdownMenuRadioGroup
-                    value={viewOptions.sortBy}
-                    onValueChange={(next) => viewOptions.onSortChange(next as 'updated' | 'name')}
-                  >
-                    <DropdownMenuRadioItem value="updated">Newest first</DropdownMenuRadioItem>
-                    <DropdownMenuRadioItem value="name">Name (A–Z)</DropdownMenuRadioItem>
-                  </DropdownMenuRadioGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuCheckboxItem
-                    checked={viewOptions.groupProjects}
-                    onCheckedChange={(next) => viewOptions.onGroupProjectsChange(next === true)}
-                  >
-                    Group by project
-                  </DropdownMenuCheckboxItem>
-                  {/* "Newest" is last activity now, not creation: `Session`
-                      carries `updatedAt` from the session SoT, so a chat you
-                      replied to a minute ago leads even if it was opened last
-                      week. Say so — the old copy promised the opposite. */}
-                  <p className="px-2 pt-1 pb-0.5 text-2xs leading-snug text-muted-foreground">
-                    “Newest first” orders by last activity. Chats that are
-                    working now sit at the top of their folder.
-                  </p>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-            {onUploadFolder && (
-              <button
-                onClick={onUploadFolder}
-                className="section-action"
-                title="Open Workspace Folder" aria-label="Open Workspace Folder"
-              >
-                <FolderPlus className="size-3" />
-              </button>
-            )}
-            {onNewFolder && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onNewFolder();
-                }}
-                className="section-action"
-                title="Create Sidebar Folder"
-              >
-                <Plus className="size-3" />
-              </button>
-            )}
-          </div>
-        )}
       </div>
       {!collapsed &&
         (count === 0 && title === "Pinned" ? (
-          <p className="section-empty">
-            {empty ?? "No items"}
-          </p>
+          <p className="section-empty">{empty ?? "No items"}</p>
         ) : (
           <div className="space-y-px">{children}</div>
         ))}
-    </div>
-  );
-}
-
-export interface FolderHeaderProps {
-  folder: Folder;
-  count: number;
-  /** Whether a chat in this folder is currently working or streaming. */
-  hasActiveSession?: boolean;
-  onToggleCollapse: () => void;
-  onNewSession: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-}
-
-/** Collapsible folder row with new-session, rename, and delete on hover. */
-export function FolderHeader({
-  folder,
-  count,
-  hasActiveSession = false,
-  onToggleCollapse,
-  onNewSession,
-  onRename,
-  onDelete,
-}: FolderHeaderProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  return (
-    <div
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      className="august-project-row project-head group"
-      onClick={onToggleCollapse}
-    >
-      <div className="project-head-main">
-        <span
-          className={cn(
-            "project-chev",
-            folder.isCollapsed ? "rotate-0" : "rotate-90",
-          )}
-        >
-          <ChevronRight className="size-3" />
-        </span>
-        <FolderIcon className="project-folder" strokeWidth={1.7} aria-hidden />
-        <span className="project-name">
-          {folder.name}
-        </span>
-        {hasActiveSession ? (
-          <span
-            role="img"
-            className="project-live"
-            title="A chat in this project is active"
-            aria-label="A chat in this project is active"
-            data-testid={`folder-active-${folder.id}`}
-          />
-        ) : null}
-        {count > 0 && <span className="project-count">{count}</span>}
-      </div>
-      <div
-        className={cn("project-actions", folder.workspacePath || isHovered ? "is-open" : "")}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={onNewSession}
-          className={cn(
-            "p-0.5 hover:bg-white/[0.06] rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70",
-            folder.workspacePath && "text-sidebar-foreground/55",
-          )}
-          title={`New chat in ${folder.name}`}
-          aria-label={`New chat in ${folder.name}`}
-        >
-          <Plus className="size-2.5" />
-        </button>
-        <button
-          onClick={onRename}
-          className="p-0.5 hover:bg-white/[0.06] rounded text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
-          title="Rename Folder" aria-label="Rename Folder"
-        >
-          <Edit3 className="size-2.5" />
-        </button>
-        <button
-          onClick={onDelete}
-          className="p-0.5 hover:bg-white/[0.06] rounded text-destructive/70 hover:text-destructive"
-          title="Delete Folder" aria-label="Delete Folder"
-        >
-          <Trash2 className="size-2.5" />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** Collapsible header for sessions that are not in any folder ("Tasks").
- *  No folder icon — just the collapse chevron and the name. The group binds no
- *  directory, so it names none. */
-export function UncategorizedHeader({
-  count,
-  isCollapsed,
-  onToggleCollapse,
-  onNewSession,
-  onDelete,
-}: {
-  count: number;
-  isCollapsed: boolean;
-  onToggleCollapse: () => void;
-  onNewSession?: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div
-      className="august-other-chats-row project-head group"
-      onClick={onToggleCollapse}
-    >
-      <div className="project-head-main">
-        <span className={cn("project-chev", isCollapsed ? "rotate-0" : "rotate-90")}>
-          <ChevronRight className="size-3" />
-        </span>
-        <span className="project-name">Tasks</span>
-        {/* Count removed. This row is nested INSIDE `Chats and tasks`, so the
-            number beside it was the same total the section header already
-            showed one line up. */}
-      </div>
-      <div className="flex items-center gap-0.5 shrink-0">
-        {onNewSession && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onNewSession();
-            }}
-            className="p-0.5 rounded text-sidebar-foreground/40 hover:bg-white/[0.06] hover:text-sidebar-foreground/70"
-            title="New chat in Tasks"
-            aria-label="New chat in Tasks"
-          >
-            <Plus className="size-2.5" />
-          </button>
-        )}
-        {count > 0 && (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete();
-            }}
-            className="p-0.5 rounded text-destructive/70 hover:bg-white/[0.06] hover:text-destructive"
-            title="Delete all tasks"
-            aria-label="Delete all tasks"
-          >
-            <Trash2 className="size-2.5" />
-          </button>
-        )}
-      </div>
     </div>
   );
 }
