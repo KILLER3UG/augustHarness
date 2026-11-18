@@ -66,9 +66,18 @@ def _normalize(value: object) -> str | None:
 
 
 def _has_credentials(provider: dict[str, object]) -> bool:
-    """Check if a provider has API credentials configured."""
+    """Check if a provider has API credentials configured.
+
+    A loopback base URL needs no credential — the same rule that makes a
+    keyless local provider available in ``resolver._is_keyless_ok`` — so a
+    local llama-server provider resolves directly instead of falling back
+    to an unrelated cloud provider.
+    """
+    from app.providers.api_format import is_loopback_base_url
     from app.providers.clients import getClient
 
+    if is_loopback_base_url(provider.get('baseUrl')):
+        return True
     client = getClient(provider)
     if client is None:
         return False
