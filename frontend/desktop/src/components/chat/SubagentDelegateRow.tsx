@@ -120,9 +120,11 @@ export function SubagentDelegateRow({
       ? 'cancelled'
       : partial
         ? 'partial'
-        : running
+        : status === 'running'
           ? 'running'
-          : 'queued';
+          : status === 'pending'
+            ? 'queued'
+            : 'done';
 
   // One header, used by both branches: with a transcript the line toggles the
   // inline timeline, without one it opens the drawer. Same anatomy either way,
@@ -141,7 +143,7 @@ export function SubagentDelegateRow({
         {task || role}
       </span>
       <span className="subagent-status inline-flex items-center gap-1.5" data-state={statusWord}>
-        <AgentStateDot state={agentDotState(status) ?? 'queued'} />
+        <AgentStateDot state={agentDotState(status) ?? (running ? 'working' : 'unconfirmed')} />
         {statusWord}
       </span>
     </>

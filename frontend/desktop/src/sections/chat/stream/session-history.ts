@@ -308,6 +308,9 @@ export function reconcileHistory(remote: ChatMessage[], injected: ChatMessage[])
   const merged = [...remote];
   const used = new Set<number>();
   for (const message of injected) {
+    // Drop persisted local subagent completion envelopes so they cannot
+    // reappear across reloads after mapRemoteMessages already filtered them.
+    if (message.role === 'user' && parseSubagentReceipt(message.content ?? '')) continue;
     let index = merged.findIndex((m, i) => !used.has(i) && m.id === message.id);
     if (index < 0 && message.queued) {
       const queuedAt = timestamp(message.timestamp);
