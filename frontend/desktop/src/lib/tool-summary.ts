@@ -82,7 +82,11 @@ export function countSharedFiles(tools: readonly ProducedToolEntry[]): number {
   return produced.size;
 }
 
-export function summarizeToolRun(tools: readonly ToolEntry[]): string {
+function capitalizeClause(clause: string): string {
+  return clause ? clause.charAt(0).toUpperCase() + clause.slice(1) : clause;
+}
+
+function collectToolClauses(tools: readonly ToolEntry[]): string[] {
   const counts = new Map<ToolBucket, number>();
   for (const t of tools) {
     const bucket = classifyTool(t.name);
@@ -111,7 +115,50 @@ export function summarizeToolRun(tools: readonly ToolEntry[]): string {
     const n = counts.get('edit');
     if (n) parts.push(phrase('edit', n));
   }
+  return parts;
+}
+
+export function summarizeToolRun(tools: readonly ToolEntry[]): string {
+  const parts = collectToolClauses(tools);
   if (parts.length === 0) return 'Ran a tool';
-  const joined = parts.join(', ');
-  return joined.charAt(0).toUpperCase() + joined.slice(1);
+  return parts.map(capitalizeClause).join(' · ');
+}
+
+export interface TurnActivitySummaryInput {
+  tools: readonly ToolEntry[];
+  settledSubagents?: number;
+  thoughtCount?: number;
+  noticeCount?: number;
+  running?: boolean;
+}
+
+/**
+ * Single ·-separated pill label for all folded work in a turn (tool calls,
+ * settled sub-agent runs, thinking-only or notice-only turns).
+ */
+export function summarizeTurnActivity({
+  tools,
+  settledSubagents = 0,
+  thoughtCount = 0,
+  noticeCount = 0,
+  running = false,
+}: TurnActivitySummaryInput): string {
+  const parts = collectToolClauses(tools);
+  if (settledSubagents > 0) {
+    parts.push(
+      settledSubagents === 1
+        ? 'ran a sub-agent'
+        : `ran ${settledSubagents} sub-agents`,
+    );
+  }
+  if (parts.length === 0) {
+    if (thoughtCount > 0) {
+      return running ? 'Thinking…' : 'Thought';
+    }
+    if (noticeCount > 0) {
+      return noticeCount === 1 ? '1 status notice' : `${noticeCount} status notices`;
+    }
+    return running ? 'Working…' : 'Activity';
+  }
+  return parts.map(capitalizeClause).join(' · ');
 }

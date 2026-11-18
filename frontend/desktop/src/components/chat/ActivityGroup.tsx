@@ -19,10 +19,9 @@
  * rather than as a stack of separate rows that happen to be adjacent. */
 
 import { Children, useId, type ReactNode } from 'react';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, ChevronDown } from 'lucide-react';
 import { cn, fmtElapsed } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { SignalIcon } from '@/components/ui/SignalIcon';
 
 export function ActivityGroup({
   summary,
@@ -34,7 +33,7 @@ export function ActivityGroup({
   groupKey,
   children,
 }: {
-  /** The phrase for the whole run — "Ran 4 commands, read a file". */
+  /** The phrase for the whole run — "Read 3 files · Ran 2 sub-agents". */
   summary: string;
   /** Total time for the run, in ms. Hidden under a second: a sub-second
    *  duration reads as noise, and the reference shows whole seconds. */
@@ -51,9 +50,8 @@ export function ActivityGroup({
 }) {
   // The collapsed group is the state a screen reader navigates, so the trigger
   // has to resolve to a region that exists in BOTH states — the pairing
-  // DisclosureRow owns. Measured in the running app this row advertised
-  // `aria-expanded` with nothing behind it. The region wrapper is always
-  // mounted (empty while closed); the rows still mount lazily.
+  // DisclosureRow owns. The region wrapper stays mounted (empty while closed)
+  // while the timeline body mounts lazily on expand.
   const uid = useId();
   const triggerId = `${uid}-group-trigger`;
   const regionId = `${uid}-group-region`;
@@ -63,7 +61,7 @@ export function ActivityGroup({
 
   return (
     <div
-      className="ledger row-enter"
+      className="my-1 flex flex-col items-start"
       data-slot="activity-group"
       data-group-key={groupKey}
       data-open={expanded}
@@ -71,35 +69,76 @@ export function ActivityGroup({
       <Button
         variant="bare"
         type="button"
-        className="ledger-head"
+        className={cn(
+          'inline-flex max-w-full items-center gap-2 rounded-full border border-[var(--dt-line)] bg-[var(--dt-pill-bg)] px-3 py-1 text-xs font-medium text-[var(--dt-fg-2)] transition-colors hover:border-[var(--dt-line-strong)] hover:text-[var(--dt-fg-1)]',
+          failed && 'border-danger/40',
+        )}
         onClick={() => onToggle(!expanded)}
         id={triggerId}
         aria-expanded={expanded}
         aria-controls={regionId}
         data-testid="activity-group-head"
       >
-        <span className={cn('ledger-pulse', !running && 'ledger-pulse--idle')} aria-hidden />
-        <strong data-testid="activity-group-summary">{summary}</strong>
+        <span
+          className={cn(
+            'size-1.5 shrink-0 rounded-full',
+            failed
+              ? 'bg-danger'
+              : running
+                ? 'animate-pulse bg-[var(--dt-primary)]'
+                : 'bg-[var(--dt-fg-3)]',
+          )}
+          aria-hidden
+        />
+        <span
+          className="min-w-0 truncate font-medium text-[var(--dt-fg-1)]"
+          data-testid="activity-group-summary"
+        >
+          {summary}
+        </span>
         {failed && (
-          <span className="ledger-failed" data-testid="activity-group-failed">
+          <span
+            className="inline-flex shrink-0 items-center gap-1 text-2xs font-medium text-danger-fg"
+            data-testid="activity-group-failed"
+          >
             <AlertCircle className="size-3" aria-hidden />
             failed
           </span>
         )}
-        <span className="ledger-meta">
-          {elapsed ? <span data-testid="activity-group-elapsed">{elapsed}</span> : null}
-        </span>
-        <SignalIcon name="chev" className="chev" />
+        {elapsed ? (
+          <span
+            className="shrink-0 font-mono text-2xs tabular-nums text-[var(--dt-fg-3)]"
+            data-testid="activity-group-elapsed"
+          >
+            {elapsed}
+          </span>
+        ) : null}
+        <ChevronDown
+          className={cn(
+            'size-3.5 shrink-0 text-[var(--dt-fg-3)] transition-transform duration-150',
+            expanded && 'rotate-180',
+          )}
+          aria-hidden
+        />
       </Button>
 
-      <div id={regionId} role="region" aria-labelledby={triggerId}>
+      <div id={regionId} role="region" aria-labelledby={triggerId} className="w-full">
         {expanded && rows.length > 0 ? (
-          <div className="ledger-body" data-testid="activity-group-body">
-            {rows.map((row, i) => (
-              <div key={i} className="ledger-row-wrap">
-                {row}
-              </div>
-            ))}
+          <div
+            className="mt-2 rounded-xl border border-[var(--dt-line)] bg-[var(--dt-timeline-inset)] px-3.5 py-2.5"
+            data-testid="activity-group-body"
+          >
+            <div className="relative flex flex-col gap-2 pl-5 before:pointer-events-none before:absolute before:bottom-1.5 before:left-2 before:top-1.5 before:w-px before:bg-[var(--dt-line)]">
+              {rows.map((row, i) => (
+                <div key={i} className="relative min-w-0">
+                  <span
+                    className="pointer-events-none absolute -left-3.5 top-2.5 size-1.5 rounded-full bg-[var(--dt-fg-3)] opacity-60"
+                    aria-hidden
+                  />
+                  {row}
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
       </div>

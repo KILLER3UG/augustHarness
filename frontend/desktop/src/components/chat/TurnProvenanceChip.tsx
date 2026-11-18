@@ -53,23 +53,24 @@ function ProvenanceCard({
 
   return (
     <div className="min-w-0" data-testid="turn-provenance-chip">
-      <div className="memory-card" data-open={open} data-slot="memory-card">
+      <div className="flex flex-col items-start" data-open={open}>
         <Button
           variant="bare"
           type="button"
           id={headId}
-          className="memory-card-head"
+          className="inline-flex max-w-full items-center gap-1.5 py-0.5 text-xs font-normal text-[var(--dt-fg-3)] transition-colors hover:text-[var(--dt-fg-2)]"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
           aria-controls={bodyId}
         >
           {hasMemory ? (
-            <Brain className="size-3.5 shrink-0" aria-hidden />
+            <Brain className="size-3.5 shrink-0 opacity-75" aria-hidden />
           ) : (
-            <SquareLibrary className="size-3.5 shrink-0" aria-hidden />
+            <SquareLibrary className="size-3.5 shrink-0 opacity-75" aria-hidden />
           )}
-          <strong>{label}</strong>
-          <span className="memory-card-count">
+          <span>{label}</span>
+          <span className="text-[var(--dt-fg-3)]">
+            ·{' '}
             {facts.length > 0 && (
               <span data-testid="provenance-facts">
                 {facts.length} fact{facts.length === 1 ? '' : 's'}
@@ -82,51 +83,57 @@ function ProvenanceCard({
               </span>
             )}
           </span>
-          <ChevronDown className="memory-card-chevron size-3" aria-hidden />
+          <ChevronDown
+            className={cn(
+              'size-3 shrink-0 transition-transform duration-150',
+              open && 'rotate-180',
+            )}
+            aria-hidden
+          />
         </Button>
-        {/* The region stays mounted and `hidden` in the closed state — the
-            same pattern ThinkingDisclosure uses, so the trigger advertises a
-            real region in BOTH states rather than a body that only exists
-            while open. */}
         <div
-          className="memory-card-body"
+          className="mt-1 w-full border-l border-[var(--dt-line)] pl-3 py-0.5 text-2xs text-[var(--dt-fg-3)]"
           id={bodyId}
           role="region"
           aria-labelledby={headId}
           hidden={!open}
           data-testid="turn-provenance-detail"
         >
-          {hasMemory && (
-            <>
-              <p className="memory-card-note !mt-0">Injected into this turn&apos;s prompt</p>
-              {facts.map((f) => (
-                <div key={f} className="memory-card-entry">
-                  <span className="memory-card-key">{f}.md</span>
-                </div>
-              ))}
-            </>
-          )}
-          {hasSkills && (
-            <>
-              <p className={cn('memory-card-note', hasMemory && '!mt-1.5')}>
-                {hasMemory ? 'Skills loaded alongside' : 'Loaded into this turn'}
-              </p>
-              {skills.map((s) => (
-                <div key={s} className="memory-card-entry">
-                  <SquareLibrary className="size-3 self-center" aria-hidden />
-                  <span className="memory-card-key">{s}</span>
-                </div>
-              ))}
-            </>
-          )}
+          {open ? (
+            <div className="flex flex-col gap-0.5">
+              {hasMemory && (
+                <>
+                  <p className="text-[var(--dt-fg-3)]">Injected into this turn&apos;s prompt</p>
+                  {facts.map((f) => (
+                    <div key={f} className="font-mono text-[var(--dt-fg-2)]">
+                      {f}.md
+                    </div>
+                  ))}
+                </>
+              )}
+              {hasSkills && (
+                <>
+                  <p className={cn('text-[var(--dt-fg-3)]', hasMemory && 'mt-1.5')}>
+                    {hasMemory ? 'Skills loaded alongside' : 'Loaded into this turn'}
+                  </p>
+                  {skills.map((s) => (
+                    <div key={s} className="flex items-center gap-1.5 text-[var(--dt-fg-2)]">
+                      <SquareLibrary className="size-3 shrink-0 opacity-75" aria-hidden />
+                      <span className="font-mono">{s}</span>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
       {families.length > 0 && (
         <p
-          className="mt-1 inline-flex items-center gap-1 text-2xs text-warning/90"
+          className="mt-1 inline-flex items-center gap-1 text-2xs text-warning-fg"
           data-testid="provenance-errors"
         >
-          <AlertTriangle className="size-3" aria-hidden />
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
           {families.length} failure famil{families.length === 1 ? 'y' : 'ies'} hit this turn:{' '}
           <span className="font-mono">{families.join(', ')}</span>
         </p>

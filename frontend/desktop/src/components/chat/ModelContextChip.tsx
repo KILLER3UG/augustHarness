@@ -1,23 +1,20 @@
-import { useId, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, Undo2, Waypoints } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { setLlamaServerContext } from '@/api/api-client/local-models';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { resolveActiveSession, useSessionsStore } from '@/store/sessions';
 import type { ChatMessage } from '@/types/chat';
 
 /**
- * ModelContextChip — the receipt for a context-length change the ORCHESTRATOR
- * made on this turn (`set_model_context`).
+ * ModelContextChip — single horizontal receipt row for a context-length
+ * change the orchestrator made on this turn (`set_model_context`).
  *
- * Shape follows BotReceiptChip exactly: one quiet bordered card, collapsed by
- * default, body carries the detail plus the undo. Undo is the same change back
- * to the previous length — the API restarts the server with it, so the undo
- * also waits through a reload; the toast and the Local Models tab show it.
- *
- * `effectiveCtx` may differ from `to` when the model could not load at the
- * requested size and fell back — the card names that rather than pretending
- * the requested window is running.
+ * Edit opens the composer's context menu when the active chat uses a local
+ * model, or navigates to Model Providers settings otherwise. Undo rolls the
+ * server back to `from` via `setLlamaServerContext`.
  */
 
 type ContextReceipt = {
@@ -63,6 +60,14 @@ function kTokens(n: number): string {
 
 export function ModelContextChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
+  const { sessionId } = useParams<{ sessionId?: string }>();
+  const sessions = useSessionsStore((s) => s.sessions);
+  const activeSession = useMemo(
+    () => resolveActiveSession(sessions, sessionId ?? null),
+    [sessions, sessionId],
+  );
+
   const receipt = useMemo(() => {
     for (const tool of tools ?? []) {
       const hit = parseReceipt(tool.summary, 'model_context_changed');
@@ -81,69 +86,70 @@ export function ModelContextChip({ tools }: { tools?: ChatMessage['tools'] }) {
       toast.error(`Undo failed: ${err instanceof Error ? err.message : String(err)}`),
   });
 
-  const [open, setOpen] = useState(false);
-  const uid = useId();
-  const headId = `ctx-receipt-head-${uid}`;
-  const bodyId = `ctx-receipt-body-${uid}`;
-
   if (!receipt || receipt.changed === false) return null;
 
   const fellBack = receipt.effectiveCtx !== receipt.to;
+  const summaryText = `Context ${kTokens(receipt.from)} → ${kTokens(receipt.to)} · ${receipt.name}${
+    fellBack ? ` (loaded ${kTokens(receipt.effectiveCtx)})` : ''
+  }`;
+  const isLocalActive =
+    activeSession?.provider === 'LocalModels' ||
+    activeSession?.workbenchProvider === 'LocalModels';
+
+  const handleEdit = () => {
+    if (isLocalActive) {
+      window.dispatchEvent(
+        new CustomEvent('august:open-context-menu', {
+          detail: { serverId: receipt.serverId },
+        }),
+      );
+      return;
+    }
+    void navigate('/settings/model-providers');
+  };
 
   return (
     <div
-      className="memory-card w-fit min-w-0 max-w-full"
-      data-open={open}
+      className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
       data-slot="model-context-receipt"
       data-testid="model-context-receipt"
     >
-      <Button
-        variant="bare"
-        type="button"
-        id={headId}
-        className="memory-card-head"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={bodyId}
-      >
-        <Waypoints className="memory-card-chevron size-3 shrink-0" aria-hidden />
-        <strong>
-          Context {kTokens(receipt.from)} → {kTokens(receipt.to)}
-          {fellBack ? ` · loaded ${kTokens(receipt.effectiveCtx)}` : ''}
-        </strong>
-        <ChevronDown className="memory-card-chevron size-3" aria-hidden />
-      </Button>
-      <div
-        className="memory-card-body"
-        id={bodyId}
-        role="region"
-        aria-labelledby={headId}
-        hidden={!open}
-      >
-        <div className="memory-card-entry">
-          <span className="memory-card-key">{receipt.name}</span>
-          <span className="text-muted-foreground">
-            {' '}
-            · {fellBack
-              ? `${kTokens(receipt.to)} failed to load — running ${kTokens(receipt.effectiveCtx)}`
-              : 'reloaded with the new window'}
-          </span>
-        </div>
-        {receipt.warning && (
-          <div className="memory-card-entry text-muted-foreground">{receipt.warning}</div>
+      <span
+        className={cn(
+          'size-1.5 shrink-0 rounded-full',
+          fellBack ? 'bg-warning' : 'bg-success',
         )}
-        <div className="mt-1.5">
-          <Button
-            type="button"
-            variant="bare"
-            onClick={() => receipt && undo.mutate(receipt)}
-            disabled={undo.isPending}
-            className="inline-flex items-center gap-1 text-2xs text-primary hover:underline"
-            data-testid="model-context-undo"
-          >
-            <Undo2 className="size-3" aria-hidden /> Back to {kTokens(receipt.from)}
-          </Button>
-        </div>
+        aria-hidden
+      />
+      <span
+        className="min-w-0 flex-1 truncate text-[var(--dt-fg-1)]"
+        title={receipt.warning ? `${summaryText} — ${receipt.warning}` : summaryText}
+      >
+        {summaryText}
+      </span>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={handleEdit}
+          className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+          data-testid="model-context-edit"
+        >
+          Edit
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => undo.mutate(receipt)}
+          disabled={undo.isPending}
+          className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+          title={`Back to ${kTokens(receipt.from)}`}
+          data-testid="model-context-undo"
+        >
+          Undo
+        </Button>
       </div>
     </div>
   );
