@@ -1,18 +1,10 @@
-import { useState, useEffect, useMemo } from "react";
-import { PromptDialog } from '@/components/overlays/PromptDialog';
-import { useLocation } from "react-router-dom";
-import { Pencil, Copy, ExternalLink } from "lucide-react";
-import { toast } from "sonner";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { BookOpen, Layers } from "lucide-react";
 import { isTauri } from "@/lib/tauri-detect";
-import { revealInFolder } from "@/lib/tauri-shell";
 import { renameSession, useSessionsStore } from "@/store/sessions";
 import { routeLabelFor } from "@/lib/route-labels";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu";
+import { useBackgroundTasksStore } from "@/store/background-tasks";
 import { RightDrawerDropdown } from "./RightDrawerLauncher";
 import { BackgroundJobsButton } from "./BackgroundJobsButton";
 import { MarqueeTitle } from "@/components/ui/MarqueeTitle";
@@ -20,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { SignalIcon } from "@/components/ui/SignalIcon";
 import { useSessionStream } from '@/sections/chat/hooks/useSessionStream';
 import { collectArtifacts } from '@/lib/artifacts';
+import { cn } from '@/lib/utils';
 import type { Session } from "@/store/sessions";
 
 interface ChatTitlebarProps {
@@ -38,14 +31,20 @@ export function ChatTitlebar({
   workersBadge = 0,
 }: ChatTitlebarProps) {
   const [isMaximized, setIsMaximized] = useState(false);
-  // Rename goes through PromptDialog — window.prompt is a silent no-op in
-  // some Tauri webviews and unstyled next to every other dialog.
-  const [renameOpen, setRenameOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
+
   const location = useLocation();
+  const navigate = useNavigate();
   const stream = useSessionStream(session?.id ?? null);
   const artifactsCount = useMemo(
     () => collectArtifacts(stream?.messages ?? []).length,
     [stream?.messages],
+  );
+  const hasActiveJobs = useBackgroundTasksStore((s) =>
+    s.tasks.some((t) => t.status === 'queued' || t.status === 'running'),
   );
 
   const sessionStatus = useSessionsStore((state) =>
@@ -56,20 +55,50 @@ export function ChatTitlebar({
     sessionStatus === 'working' ||
     sessionStatus === 'awaiting';
 
-  /* Route-aware title (2026-09-16 UI scan B2): the bar used to render
-   * `session?.title ?? "New chat"` on EVERY route, so Board/Runs/History/
-   * Settings all wore a stale chat title (and Tauri inherits this label as
-   * the OS window title). Session titles stay only on chat routes.
-   *
-   * The rules live in lib/route-labels now, because the phone topbar prints
-   * the same title: `/Settings/general` has to read "Settings · General" on
-   * both chromes, and a second copy of this table is how one of them ends up
-   * saying "August". */
+  const isChatRoute =
+    location.pathname === '/' || location.pathname.startsWith('/c/');
+  const onArtifactsRoute = location.pathname === '/artifacts';
+  const onDocsRoute = location.pathname === '/docs';
+
   const barTitle = useMemo(
     () => routeLabelFor(location.pathname, session?.title),
     [location.pathname, session?.title],
   );
 
+  // Exit inline editing when switching sessions or leaving chat routes.
+  useEffect(() => {
+    setEditing(false);
+  }, [session?.id, location.pathname]);
+
+  const startEditing = () => {
+    if (!session || !isChatRoute) return;
+    cancelledRef.current = false;
+    setDraft(session.title ?? '');
+    setEditing(true);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+
+  const commitEdit = () => {
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      setEditing(false);
+      return;
+    }
+    const trimmed = draft.trim();
+    if (session && trimmed && trimmed !== session.title) {
+      renameSession(session.id, trimmed);
+    }
+    setEditing(false);
+  };
+
+  const cancelEdit = () => {
+    cancelledRef.current = true;
+    setDraft(session?.title ?? '');
+    setEditing(false);
+  };
 
   // ── Window controls (Tauri only) ──
   useEffect(() => {
@@ -81,9 +110,6 @@ export function ChatTitlebar({
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         const win = getCurrentWindow();
         setIsMaximized(await win.isMaximized());
-        // External maximize (Win+Up, drag-to-edge, double-click on the drag
-        // region) never routes through this component's toggle, so the
-        // restore glyph stayed stale (2026-10-03 audit A1 §2).
         unlisten = await win.onResized(async () => {
           if (disposed) return;
           try {
@@ -128,102 +154,133 @@ export function ChatTitlebar({
     <header data-tauri-drag-region className="titlebar">
       <div className="titlebar-left" data-tauri-drag-region>
         {sidebarCollapsed && (
-          <Button variant="bare"
+          <Button
+            variant="bare"
             type="button"
             onClick={onToggleSidebar}
             className="icon-button"
             title="Show sidebar"
             aria-label="Show sidebar"
+            data-testid="titlebar-expand-sidebar"
           >
             <SignalIcon name="panel" />
           </Button>
         )}
 
-        {live && (
-          <span className="live-pill">
-            <span className="live-dot" />
-            Live
-          </span>
+        {isChatRoute && session ? (
+          editing ? (
+            <input
+              ref={inputRef}
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitEdit();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  cancelEdit();
+                }
+              }}
+              onBlur={commitEdit}
+              aria-label="Thread title"
+              data-testid="titlebar-title-input"
+              className="titlebar-title-input h-7 w-full max-w-[420px] rounded-md border border-hairline-strong bg-elevated px-2 text-xs font-medium text-tier-1 outline-none"
+            />
+          ) : (
+            <Button
+              variant="bare"
+              type="button"
+              onClick={startEditing}
+              className="titlebar-title-btn flex min-w-0 max-w-[420px] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs font-medium text-tier-1 hover:bg-accent/50"
+              title="Click to rename thread"
+              aria-label={`Thread title: ${barTitle}. Click to rename`}
+              data-testid="titlebar-session-trigger"
+            >
+              {live && (
+                <span
+                  className="size-1.5 shrink-0 rounded-full bg-primary animate-pulse"
+                  aria-hidden="true"
+                />
+              )}
+              <MarqueeTitle text={barTitle} data-testid="session-bar-title" className="min-w-0 flex-1" />
+            </Button>
+          )
+        ) : (
+          <div className="flex min-w-0 max-w-[420px] items-center gap-1.5 px-1.5">
+            <h1 className="min-w-0 truncate text-xs font-medium text-tier-1" data-testid="session-bar-title">
+              {barTitle}
+            </h1>
+          </div>
         )}
       </div>
 
-      {/* The reference centers the chat title over the transcript, flanked by
-          the navigation cluster (left) and actions (right). A middle flex
-          column that centers its content gives that geometry without an
-          absolute overlay: the title truncates against the column instead of
-          colliding with the actions at narrow widths, and the drag region
-          rides the wrapper while the dropdown trigger stays interactive
-          inside it. The workspace breadcrumb is gone (Part D diet): the
-          folder chip in the composer already names the workspace, and the
-          session menu below still carries the workspace actions. */}
-      <div className="titlebar-center" data-tauri-drag-region>
-        <div className="crumbs">
-          {session ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="bare"
-                  type="button"
-                  className="crumb-title"
-                  title="Session menu"
-                  aria-label="Session menu"
-                  data-testid="titlebar-session-trigger"
-                >
-                  <strong>
-                    <MarqueeTitle text={barTitle} data-testid="session-bar-title" className="w-full" />
-                  </strong>
-                  <SignalIcon name="chev" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="center" className="min-w-48">
-                <DropdownMenuItem onClick={() => setRenameOpen(true)}>
-                  <Pencil className="size-3 mr-2" /> Rename chat…
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    void revealInFolder(session.workspacePath || '');
-                  }}
-                  disabled={!session.workspacePath}
-                >
-                  <ExternalLink className="size-3 mr-2" /> Open workspace folder
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    if (!session.workspacePath) return;
-                    void navigator.clipboard.writeText(session.workspacePath);
-                    toast.success('Workspace path copied');
-                  }}
-                  disabled={!session.workspacePath}
-                >
-                  <Copy className="size-3 mr-2" /> Copy workspace path
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <strong className="crumb-title-static">
-              <MarqueeTitle text={barTitle} data-testid="session-bar-title" className="w-full" />
-            </strong>
-          )}
-        </div>
-      </div>
-
       <div className="titlebar-actions">
-        {/* The global door to the background job tray. It renders nothing when
-            there is no job, so the chrome stays quiet. */}
-        <BackgroundJobsButton />
+        {hasActiveJobs && <BackgroundJobsButton />}
+
+        <Button
+          variant="bare"
+          type="button"
+          size="icon-sm"
+          onClick={() => {
+            void navigate(onArtifactsRoute ? (session ? `/c/${session.id}` : '/') : '/artifacts');
+          }}
+          className={cn(
+            'relative size-7 rounded-md transition-colors',
+            artifactsCount > 0 || onArtifactsRoute
+              ? 'bg-elevated text-tier-1'
+              : 'text-tier-3 hover:bg-accent/60 hover:text-tier-1',
+          )}
+          title={artifactsCount > 0 ? `Artifacts (${artifactsCount})` : 'Artifacts'}
+          aria-label={artifactsCount > 0 ? `Artifacts (${artifactsCount} files)` : 'Artifacts'}
+          aria-current={onArtifactsRoute ? 'page' : undefined}
+          data-testid="titlebar-artifacts-button"
+        >
+          <Layers className="size-3.5" aria-hidden="true" />
+          {artifactsCount > 0 && (
+            <span
+              className="absolute right-1 top-1 size-1.5 rounded-full bg-primary"
+              aria-hidden="true"
+              data-testid="titlebar-artifacts-dot"
+            />
+          )}
+        </Button>
+
+        <Button
+          variant="bare"
+          type="button"
+          size="icon-sm"
+          onClick={() => {
+            void navigate(onDocsRoute ? (session ? `/c/${session.id}` : '/') : '/docs');
+          }}
+          className={cn(
+            'size-7 rounded-md transition-colors',
+            onDocsRoute
+              ? 'bg-elevated text-tier-1'
+              : 'text-tier-3 hover:bg-accent/60 hover:text-tier-1',
+          )}
+          title="Docs"
+          aria-label="Docs"
+          aria-current={onDocsRoute ? 'page' : undefined}
+          data-testid="titlebar-docs-button"
+        >
+          <BookOpen className="size-3.5" aria-hidden="true" />
+        </Button>
+
         <RightDrawerDropdown
           drawerOpen={rightDrawerOpen}
           workersBadge={workersBadge}
           artifactsCount={artifactsCount}
         />
 
-        {/* Windows-style title bar buttons — Tauri only (dead no-ops in the
-            mobile WebView). */}
         {isTauri && (
           <div className="window-controls">
             <Button variant="bare" onClick={() => { void handleMinimize(); }} aria-label="Minimize">
               <SignalIcon name="window-min" />
             </Button>
-            <Button variant="bare"
+            <Button
+              variant="bare"
               onClick={() => { void handleToggleMaximize(); }}
               aria-label={isMaximized ? 'Restore' : 'Maximize'}
             >
@@ -235,20 +292,6 @@ export function ChatTitlebar({
           </div>
         )}
       </div>
-      {session && (
-        <PromptDialog
-          open={renameOpen}
-          title="Rename chat"
-          label="Chat name"
-          initialValue={session.title ?? ''}
-          confirmLabel="Rename"
-          onSubmit={(title) => {
-            if (title !== session.title) renameSession(session.id, title);
-            setRenameOpen(false);
-          }}
-          onCancel={() => setRenameOpen(false)}
-        />
-      )}
     </header>
   );
 }

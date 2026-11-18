@@ -41,8 +41,6 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SignalSprite } from "@/components/ui/SignalIcon";
 import { folderNameFromPath } from '@/api/folder';
 import { routeLabelFor } from '@/lib/route-labels';
-import { useWakeUpBrief } from '@/lib/useWakeUpBrief';
-import { WakeUpBriefCard } from '@/components/shell/WakeUpBriefCard';
 
 const SESSIONS_COLLAPSED_KEY = "august-sessions-collapsed";
 
@@ -58,7 +56,6 @@ export function ChatLayout() {
   // Never restore an empty open drawer from localStorage — sections are not
   // persisted, so a stale "open" flag left the Workbench shell blank.
   const [showRightSidebar, setShowRightSidebar] = useState(false);
-  const { brief: wakeUpBrief, dismiss: dismissWakeUpBrief } = useWakeUpBrief();
   const sessions = useSessionsStore((s) => s.sessions);
   const rightDrawer = useRightDrawer();
   const queryClient = useQueryClient();
@@ -615,12 +612,6 @@ export function ChatLayout() {
               rightDrawerOpen={showRightSidebar}
               onToggleSidebar={() => setCollapsed((c) => !c)}
               workersBadge={workersBadge}
-            />
-          )}
-          {wakeUpBrief && (
-            <WakeUpBriefCard
-              brief={wakeUpBrief}
-              onDismiss={() => void dismissWakeUpBrief()}
             />
           )}
           <div className="august-content-area workspace-body">

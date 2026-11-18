@@ -359,7 +359,7 @@ export function WorkspaceShell({
 
   return (
     <div className={SETTINGS_PAGE_CLASS} data-testid="settings-page">
-      <aside className={SETTINGS_RAIL_CLASS} aria-label="Settings sections">
+      <aside className={cn(SETTINGS_RAIL_CLASS, 'w-[220px]')} aria-label="Settings sections">
         {/* The reference capture puts the way out at the top of the rail, above
             search: a labelled pill, not a bare chevron. */}
         <div className="px-3 pt-3">
