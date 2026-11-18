@@ -59,7 +59,9 @@ function announceLocalModelStatus(ev: RealtimeEvent): void {
   const name = String(ev.name || 'local model');
   const detail = String(ev.detail || '');
   void import('sonner').then(({ toast }) => {
-    if (status === 'ctx-changing' || status === 'ctx-fallback') {
+    if (status === 'ctx-changing') {
+      toast.message(`${name}: ${detail}`);
+    } else if (status === 'ctx-fallback') {
       toast.warning(`${name}: ${detail}`);
     } else if (status === 'loading') {
       toast.info(`${name}: loading model…`);

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -63,6 +63,7 @@ export function ModelContextChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId?: string }>();
   const sessions = useSessionsStore((s) => s.sessions);
+  const [undone, setUndone] = useState(false);
   const activeSession = useMemo(
     () => resolveActiveSession(sessions, sessionId ?? null),
     [sessions, sessionId],
@@ -79,6 +80,7 @@ export function ModelContextChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const undo = useMutation({
     mutationFn: (r: ContextReceipt) => setLlamaServerContext(r.serverId, r.from),
     onSuccess: (_data, r) => {
+      setUndone(true);
       toast.success(`${r.name} back to ${kTokens(r.from)} context — reloading`);
       void qc.invalidateQueries({ queryKey: ['llama-servers'] });
     },
@@ -107,6 +109,34 @@ export function ModelContextChip({ tools }: { tools?: ChatMessage['tools'] }) {
     }
     void navigate('/settings/model-providers');
   };
+
+  if (undone) {
+    return (
+      <div
+        className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
+        data-slot="model-context-receipt"
+        data-undone="true"
+        data-testid="model-context-undone-chip"
+      >
+        <span className="size-1.5 shrink-0 rounded-full bg-[var(--dt-fg-3)]" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[var(--dt-fg-2)]">
+          Context reverted to {kTokens(receipt.from)} · {receipt.name}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={handleEdit}
+            className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+            data-testid="model-context-edit"
+          >
+            Edit
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

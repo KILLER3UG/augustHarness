@@ -58,18 +58,6 @@ const STORAGE = (() => {
 const GROUP_RENDER_CAP = 60;
 const capped = (list: Session[]): Session[] => list.slice(0, GROUP_RENDER_CAP);
 
-function ShownOfTotal({ shown, total }: { shown: number; total: number }) {
-  if (shown >= total) return null;
-  return (
-    <p
-      className="px-2 pb-0.5 text-2xs tabular-nums text-sidebar-foreground/35"
-      data-testid="group-shown-of-total"
-    >
-      {shown}/{total}
-    </p>
-  );
-}
-
 interface SessionRowHandlers {
   onClick: () => void;
   onTogglePin: () => void;
@@ -437,7 +425,6 @@ export function SessionList({
                 count={visiblePinned.length}
                 empty={searching ? 'No pinned thread matches' : undefined}
               >
-                <ShownOfTotal shown={visiblePinned.length} total={pinned.length} />
                 <LayoutGroup id="pinned-sessions">
                   <AnimatePresence initial={false} mode="popLayout">
                     {visiblePinned.map((s) => (
@@ -456,7 +443,6 @@ export function SessionList({
             )}
 
             <Section title="Recent" count={visibleRecent.length}>
-              <ShownOfTotal shown={visibleRecent.length} total={filteredRecent.length} />
               <AnimatePresence initial={false} mode="popLayout">
                 {visibleRecent.map((s) => (
                   <SessionRow

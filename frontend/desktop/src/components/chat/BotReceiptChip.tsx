@@ -69,10 +69,12 @@ export function BotReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const [editing, setEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [savedTitle, setSavedTitle] = useState<string | null>(null);
+  const [undone, setUndone] = useState(false);
 
   const retire = useMutation({
     mutationFn: (agentId: string) => deleteBot(agentId),
     onSuccess: () => {
+      setUndone(true);
       toast.success('Bot retired');
       void qc.invalidateQueries({ queryKey: ['bots'] });
     },
@@ -110,6 +112,21 @@ export function BotReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
   if (!created) return null;
 
   const displayName = savedTitle || created.name;
+  if (undone) {
+    return (
+      <div
+        className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
+        data-slot="bot-receipt"
+        data-undone="true"
+        data-testid="bot-undone-chip"
+      >
+        <span className="size-1.5 shrink-0 rounded-full bg-[var(--dt-fg-3)]" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[var(--dt-fg-2)]">
+          Bot &quot;{displayName}&quot; retired
+        </span>
+      </div>
+    );
+  }
   const shown = created.permissions ?? [];
   const dropped = created.droppedPermissions ?? [];
   const detailParts: string[] = [];

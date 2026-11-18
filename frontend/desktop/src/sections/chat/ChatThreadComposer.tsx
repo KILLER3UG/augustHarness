@@ -41,7 +41,6 @@ import { ComposerAttachmentChips } from './composer/ComposerAttachmentChips';
 import { ComposerMentionsDropdown } from './composer/ComposerMentionsDropdown';
 import { ComposerCommandsDropdown } from './composer/ComposerCommandsDropdown';
 import { ComposerToolbar } from './composer/ComposerToolbar';
-import { FontChooserToast } from './composer/FontChooserToast';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { useFocusedSubagent } from '@/components/chat/focused-subagent';
@@ -544,8 +543,6 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
           items={queuedMessages}
         />
       )}
-
-      <FontChooserToast />
 
       <div
         className={cn(

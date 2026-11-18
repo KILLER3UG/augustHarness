@@ -254,7 +254,7 @@ export function AccessPill({
           aria-label="Access"
           data-composer-popover=""
           data-testid="agent-mode-menu"
-          className="absolute bottom-full left-0 z-50 mb-2 w-[316px] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
+          className="absolute bottom-full left-0 z-50 mb-2 max-h-[min(24rem,calc(100vh-14rem))] w-[316px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
         >
           <div className="py-1">
             <Button
@@ -266,7 +266,7 @@ export function AccessPill({
               data-testid="agent-mode-row"
               data-mode="read-only"
               className={cn(
-                'flex w-full items-start gap-2.5 rounded-none px-3 py-2 text-left transition-colors hover:bg-[var(--dt-elevated)]',
+                'flex w-full items-start gap-2.5 rounded-none px-3 py-1 text-left transition-colors hover:bg-[var(--dt-elevated)]',
                 isReadOnly && 'bg-[var(--dt-elevated)]',
               )}
             >
@@ -295,7 +295,7 @@ export function AccessPill({
               data-testid="agent-mode-row"
               data-mode="standard"
               className={cn(
-                'flex w-full items-start gap-2.5 rounded-none px-3 py-2 text-left transition-colors hover:bg-[var(--dt-elevated)]',
+                'flex w-full items-start gap-2.5 rounded-none px-3 py-1 text-left transition-colors hover:bg-[var(--dt-elevated)]',
                 isStandard && 'bg-[var(--dt-elevated)]',
               )}
             >
@@ -326,7 +326,7 @@ export function AccessPill({
               data-testid="agent-mode-row"
               data-mode="full"
               className={cn(
-                'flex w-full items-start gap-2.5 rounded-none px-3 py-2 text-left transition-colors hover:bg-destructive/10',
+                'flex w-full items-start gap-2.5 rounded-none px-3 py-1 text-left transition-colors hover:bg-destructive/10',
                 isFull && 'bg-destructive/10',
               )}
             >
@@ -349,7 +349,7 @@ export function AccessPill({
             </Button>
           </div>
 
-          <div className="space-y-2.5 border-t border-[var(--dt-line)] px-3 py-2.5">
+          <div className="space-y-2 border-t border-[var(--dt-line)] px-3 py-1.5">
             {isStandard && (
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -442,7 +442,7 @@ export function AccessPill({
                       className={cn(
                         'inline-flex h-7 items-center justify-start gap-1.5 rounded-md px-2 text-2xs font-medium transition-colors',
                         selected
-                          ? 'bg-[var(--dt-primary)] text-[var(--dt-primary-foreground)]'
+                          ? 'bg-[var(--dt-elevated)] text-[var(--dt-fg-1)] border border-[var(--dt-line-strong)]'
                           : 'text-[var(--dt-fg-3)] hover:text-[var(--dt-fg-1)]',
                       )}
                     >

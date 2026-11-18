@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -47,6 +47,7 @@ function parseReceipt(summary: string | undefined, kinds: string[]): AutomationR
 export function AutomationReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [undone, setUndone] = useState(false);
   const created = useMemo(
     () => parseReceiptLast(tools, ['automation_created']),
     [tools],
@@ -63,6 +64,7 @@ export function AutomationReceiptChip({ tools }: { tools?: ChatMessage['tools'] 
   const undo = useMutation({
     mutationFn: (jobId: string) => deleteAutomation(jobId),
     onSuccess: () => {
+      setUndone(true);
       toast.success('Automation deleted — creation undone');
       void qc.invalidateQueries({ queryKey: ['automations'] });
     },
@@ -87,6 +89,21 @@ export function AutomationReceiptChip({ tools }: { tools?: ChatMessage['tools'] 
   if (!created && !updated) return null;
 
   const entry: AutomationReceipt = (created ?? updated) as AutomationReceipt;
+  if (undone) {
+    return (
+      <div
+        className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
+        data-slot="automation-receipt"
+        data-undone="true"
+        data-testid="automation-undone-chip"
+      >
+        <span className="size-1.5 shrink-0 rounded-full bg-[var(--dt-fg-3)]" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[var(--dt-fg-2)]">
+          Automation &quot;{entry.name}&quot; removed
+        </span>
+      </div>
+    );
+  }
   const detailParts: string[] = [];
   if (entry.schedule) detailParts.push(entry.schedule);
   if (updated?.updated?.length) detailParts.push(`changed: ${updated.updated.join(', ')}`);
