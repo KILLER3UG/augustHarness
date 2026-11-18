@@ -9,7 +9,6 @@ import { resolveWorkbenchSessionId } from './stream/session-id-map';
 import { cn } from '@/lib/utils';
 import { motion } from 'framer-motion';
 import { messagePop, userMessagePop } from '@/lib/motion';
-import { ScrollToTopButton } from '@/components/chat/ScrollToTopButton';
 import { WorkingIndicator } from '@/components/chat/WorkingIndicator';
 import { useSessionTodoRows } from '@/store/liveActivity';
 import { MessageTimestampTicker } from '@/components/chat/MessageTimestamp';
@@ -36,7 +35,6 @@ export function ChatThreadMessagePane({
   revertingIndex,
   modelPickerActive,
   onDismissModelPicker,
-  scrolledFromTop,
   scrollRef,
   onRevert,
   onEdit,
@@ -75,7 +73,8 @@ export function ChatThreadMessagePane({
   revertingIndex: number | null;
   modelPickerActive: boolean;
   onDismissModelPicker: () => void;
-  scrolledFromTop: boolean;
+  /** Deprecated: kept optional for callers such as DesignRoute until removed there. */
+  scrolledFromTop?: boolean;
   scrollRef: RefObject<HTMLDivElement | null>;
   onRevert: (index: number) => void;
   onEdit: (index: number, text: string) => void;
@@ -342,17 +341,6 @@ export function ChatThreadMessagePane({
         </div>
         {/* Last in flow so the browser anchors here as the transcript grows. */}
         <div className="chat-scroll-anchor" aria-hidden />
-      </div>
-
-      {/* Viewport-fixed chrome — sticky inside the scroller sat at content end,
-          so the jump-to-top control unmounted exactly when it became visible.
-          The jump-to-bottom button now lives in the composer card (see
-          ChatThreadComposer) so it can straddle the composer's top border. */}
-      <div className="chat-scroll-chrome pointer-events-none absolute bottom-4 right-3 z-30 flex flex-col gap-2 items-center">
-        <ScrollToTopButton
-          scrollParentRef={scrollRef}
-          visible={scrolledFromTop}
-        />
       </div>
       </div>
 

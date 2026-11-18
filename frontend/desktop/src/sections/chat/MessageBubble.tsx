@@ -19,6 +19,7 @@ import { CompactionNoticeCard } from './message/CompactionNoticeCard';
 import { UserMessageBubble } from './message/UserMessageBubble';
 import { AssistantMessageContent } from './message/AssistantMessageContent';
 import { ChatAttachmentService } from './services/ChatAttachmentService';
+import { parseSubagentReceipt } from './subagent-receipt';
 import { useVerboseMode } from '@/lib/verbose-mode';
 
 export { ToolCallCard } from './message/ToolCallCard';
@@ -161,6 +162,10 @@ function MessageBubbleInner({
     setEditText('');
   };
 
+  if (isUser && parseSubagentReceipt(message.content ?? '')) {
+    return null;
+  }
+
   if (message.role === 'tool') {
     const toolKey = message.tool?.name ?? 'legacy';
     return (
@@ -259,7 +264,7 @@ function MessageBubbleInner({
       threshold?: number;
     };
     return (
-      <div className="flex justify-start w-full max-w-3xl">
+      <div className="flex justify-start w-full max-w-[47.5rem]">
         <CompactionNoticeCard
           info={{
             // Passed through, not defaulted. A replayed transcript card whose frame
