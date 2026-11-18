@@ -1,27 +1,17 @@
-import { useId, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Bot, ChevronDown, Undo2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { deleteBot } from '@/api/api-client/bots';
+import { deleteBot, ensureBotChat, updateBotUiMeta } from '@/api/api-client/bots';
 import { Button } from '@/components/ui/button';
 import type { ChatMessage } from '@/types/chat';
 
 /**
- * BotReceiptChip — the receipt for a bot the ORCHESTRATOR created on this turn.
+ * BotReceiptChip — single horizontal receipt row for a bot the orchestrator
+ * created or retired on this turn.
  *
- * The principle this serves: every capability gets a minimal UI surface (view,
- * edit, undo), but creating and operating it is agent-driven by default. The
- * agent creates a bot through `create_bot`; the human does not fill a form. The
- * card is the record of what was made — name, role, permissions — with an edit
- * door and an undo.
- *
- * Shape follows MemorySaveChip exactly: one quiet bordered card, collapsed by
- * default, body carries the detail plus the action. It reads the turn's own
- * tool summaries, so a turn that created no bot renders nothing.
- *
- * Undo is `retire_bot` — the mirror of creation. It removes the record and
- * cascades its private data; the chat history stays in the session list, which
- * is why this says "retire" rather than "delete".
+ * Edit opens a compact inline rename row (`updateBotUiMeta`) with an Open chat
+ * link to the bot's canonical session; Undo retires the bot via `deleteBot`.
  */
 
 type BotReceipt = {
@@ -59,6 +49,7 @@ function parseReceipt(summary: string | undefined, kind: string): BotReceipt | n
 
 export function BotReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const created = useMemo(() => {
     for (const tool of tools ?? []) {
       const hit = parseReceipt(tool.summary, 'bot_created');
@@ -75,6 +66,10 @@ export function BotReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
     return null;
   }, [tools]);
 
+  const [editing, setEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [savedTitle, setSavedTitle] = useState<string | null>(null);
+
   const retire = useMutation({
     mutationFn: (agentId: string) => deleteBot(agentId),
     onSuccess: () => {
@@ -85,89 +80,137 @@ export function BotReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
       toast.error(`Retire failed: ${err instanceof Error ? err.message : String(err)}`),
   });
 
-  const [open, setOpen] = useState(false);
-  const uid = useId();
-  const headId = `bot-receipt-head-${uid}`;
-  const bodyId = `bot-receipt-body-${uid}`;
+  const rename = useMutation({
+    mutationFn: ({ agentId, title }: { agentId: string; title: string }) =>
+      updateBotUiMeta(agentId, { title }),
+    onSuccess: (_bot, vars) => {
+      setSavedTitle(vars.title);
+      setEditing(false);
+      toast.success('Bot updated');
+      void qc.invalidateQueries({ queryKey: ['bots'] });
+    },
+    onError: (err) =>
+      toast.error(`Update failed: ${err instanceof Error ? err.message : String(err)}`),
+  });
 
-  // A retire receipt stands on its own: nothing was created this turn, so the
-  // card reports what went away rather than offering to undo it again.
   if (!created && retired) {
     return (
       <div
-        className="memory-card w-fit min-w-0 max-w-full"
+        className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
         data-slot="bot-receipt"
         data-testid="bot-retired-chip"
       >
-        <div className="memory-card-head">
-          <Bot className="size-3 shrink-0" aria-hidden />
-          <strong>Retired {retired.name}</strong>
-        </div>
+        <span className="size-1.5 shrink-0 rounded-full bg-[var(--dt-fg-3)]" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[var(--dt-fg-2)]">
+          Bot &ldquo;{retired.name}&rdquo; retired
+        </span>
       </div>
     );
   }
   if (!created) return null;
 
+  const displayName = savedTitle || created.name;
   const shown = created.permissions ?? [];
   const dropped = created.droppedPermissions ?? [];
+  const detailParts: string[] = [];
+  if (created.role) detailParts.push(created.role);
+  if (shown.length > 0) {
+    detailParts.push(
+      shown.length === 1 && shown[0] === 'all' ? 'all tools' : shown.join(', '),
+    );
+  }
+  if (dropped.length > 0) detailParts.push(`not granted: ${dropped.join(', ')}`);
+
+  const openBotChat = async () => {
+    if (created.canonicalChatId) {
+      void navigate(`/c/${created.canonicalChatId}`);
+      return;
+    }
+    try {
+      const chat = await ensureBotChat(created.agentId);
+      void navigate(`/c/${chat.sessionId}`);
+    } catch (err) {
+      toast.error(`Could not open chat: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   return (
     <div
-      className="memory-card w-fit min-w-0 max-w-full"
-      data-open={open}
+      className="flex w-full min-w-0 flex-col gap-1.5"
       data-slot="bot-receipt"
       data-testid="bot-receipt-chip"
     >
-      <Button
-        variant="bare"
-        type="button"
-        id={headId}
-        className="memory-card-head"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={bodyId}
-      >
-        <Bot className="memory-card-chevron size-3 shrink-0" aria-hidden />
-        <strong>Bot ready</strong>
-        <ChevronDown className="memory-card-chevron size-3" aria-hidden />
-      </Button>
-      <div
-        className="memory-card-body"
-        id={bodyId}
-        role="region"
-        aria-labelledby={headId}
-        hidden={!open}
-      >
-        <div className="memory-card-entry">
-          <span className="memory-card-key">{created.name}</span>
-          {created.role ? <span className="text-muted-foreground"> · {created.role}</span> : null}
-        </div>
-        {shown.length > 0 && (
-          <div className="memory-card-entry text-muted-foreground">
-            {shown.length === 1 && shown[0] === 'all' ? 'all tools' : shown.join(', ')}
-          </div>
-        )}
-        {/* Named, not swallowed: a tool the agent asked for but could not have
-            is the ceiling doing its job, and hiding it would make the receipt
-            a lie about what the bot can do. */}
-        {dropped.length > 0 && (
-          <div className="memory-card-entry text-muted-foreground">
-            not granted: {dropped.join(', ')}
-          </div>
-        )}
-        <div className="mt-1.5">
+      <div className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs">
+        <span className="size-1.5 shrink-0 rounded-full bg-success" aria-hidden />
+        <span
+          className="min-w-0 flex-1 truncate text-[var(--dt-fg-1)]"
+          title={detailParts.length > 0 ? `${displayName} · ${detailParts.join(' · ')}` : displayName}
+        >
+          <span>Bot &ldquo;{displayName}&rdquo; ready</span>
+          {created.role ? (
+            <span className="text-[var(--dt-fg-3)]"> · {created.role}</span>
+          ) : null}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             type="button"
-            variant="bare"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              if (!editing) setTitleDraft(displayName);
+              setEditing((v) => !v);
+            }}
+            className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+            data-testid="bot-receipt-edit"
+          >
+            Edit
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
             onClick={() => retire.mutate(created.agentId)}
             disabled={retire.isPending}
-            className="inline-flex items-center gap-1 text-2xs text-primary hover:underline"
+            className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+            title="Retire this bot"
             data-testid="bot-receipt-retire"
           >
-            <Undo2 className="size-3" aria-hidden /> Retire this bot
+            Undo
           </Button>
         </div>
       </div>
+      {editing && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-1.5 text-xs">
+          <input
+            type="text"
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            aria-label="Bot display title"
+            className="h-7 min-w-0 flex-1 rounded-md border border-[var(--dt-line)] bg-[var(--dt-card)] px-2 text-xs text-[var(--dt-fg-1)] outline-none focus:border-[var(--dt-line-strong)]"
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={!titleDraft.trim() || rename.isPending}
+            onClick={() =>
+              rename.mutate({ agentId: created.agentId, title: titleDraft.trim() })
+            }
+            className="h-7 px-2 text-2xs"
+          >
+            Save
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void openBotChat()}
+            className="h-7 px-2 text-2xs text-[var(--dt-fg-2)]"
+          >
+            Open chat
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

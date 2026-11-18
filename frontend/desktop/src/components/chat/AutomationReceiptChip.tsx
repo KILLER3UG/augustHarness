@@ -1,19 +1,17 @@
-import { useId, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, ChevronDown, Undo2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { deleteAutomation } from '@/api/api-client/automations';
 import { Button } from '@/components/ui/button';
 import type { ChatMessage } from '@/types/chat';
 
 /**
- * AutomationReceiptChip — the receipt for an automation the ORCHESTRATOR
- * created, changed or deleted on this turn (the Part D GAP tools).
+ * AutomationReceiptChip — single horizontal receipt row for an automation the
+ * orchestrator created, updated, or deleted on this turn.
  *
- * Same grammar as BotReceiptChip: one quiet bordered card reading the turn's
- * own tool summaries; undo is the human API door (deleteAutomation), not a
- * tool call. A deleted receipt reports what went away; an updated receipt
- * names the fields that changed.
+ * Edit navigates to `/runs` (where AutomationsSection lives); Undo deletes a
+ * created automation via `deleteAutomation`.
  */
 
 type AutomationReceipt = {
@@ -48,6 +46,7 @@ function parseReceipt(summary: string | undefined, kinds: string[]): AutomationR
 
 export function AutomationReceiptChip({ tools }: { tools?: ChatMessage['tools'] }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const created = useMemo(
     () => parseReceiptLast(tools, ['automation_created']),
     [tools],
@@ -71,92 +70,72 @@ export function AutomationReceiptChip({ tools }: { tools?: ChatMessage['tools'] 
       toast.error(`Undo failed: ${err instanceof Error ? err.message : String(err)}`),
   });
 
-  const [open, setOpen] = useState(false);
-  const uid = useId();
-  const headId = `automation-receipt-head-${uid}`;
-  const bodyId = `automation-receipt-body-${uid}`;
-
-  // A deleted receipt stands on its own: nothing to undo — say what went away.
   if (deleted && !created && !updated) {
     return (
       <div
-        className="memory-card w-fit min-w-0 max-w-full"
+        className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
         data-slot="automation-receipt"
         data-testid="automation-deleted-chip"
       >
-        <div className="memory-card-head">
-          <CalendarClock className="size-3 shrink-0" aria-hidden />
-          <strong>Deleted {deleted.name}</strong>
-        </div>
+        <span className="size-1.5 shrink-0 rounded-full bg-[var(--dt-fg-3)]" aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[var(--dt-fg-2)]">
+          Automation &ldquo;{deleted.name}&rdquo; deleted
+        </span>
       </div>
     );
   }
   if (!created && !updated) return null;
 
-  const head = created ? 'Automation ready' : 'Automation updated';
   const entry: AutomationReceipt = (created ?? updated) as AutomationReceipt;
+  const detailParts: string[] = [];
+  if (entry.schedule) detailParts.push(entry.schedule);
+  if (updated?.updated?.length) detailParts.push(`changed: ${updated.updated.join(', ')}`);
+  if (entry.nextRunAt) detailParts.push(`next run ${entry.nextRunAt}`);
 
   return (
     <div
-      className="memory-card w-fit min-w-0 max-w-full"
-      data-open={open}
+      className="flex w-full min-w-0 items-center gap-2.5 rounded-[10px] border border-[var(--dt-line)] bg-[var(--dt-receipt-bg)] px-3 py-2 text-xs"
       data-slot="automation-receipt"
       data-testid="automation-receipt-chip"
     >
-      <Button
-        variant="bare"
-        type="button"
-        id={headId}
-        className="memory-card-head"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-controls={bodyId}
+      <span className="size-1.5 shrink-0 rounded-full bg-success" aria-hidden />
+      <span
+        className="min-w-0 flex-1 truncate text-[var(--dt-fg-1)]"
+        title={detailParts.length > 0 ? `${entry.name} · ${detailParts.join(' · ')}` : entry.name}
       >
-        <CalendarClock className="memory-card-chevron size-3 shrink-0" aria-hidden />
-        <strong>{head}</strong>
-        <ChevronDown className="memory-card-chevron size-3" aria-hidden />
-      </Button>
-      <div
-        className="memory-card-body"
-        id={bodyId}
-        role="region"
-        aria-labelledby={headId}
-        hidden={!open}
-      >
-        <div className="memory-card-entry">
-          <span className="memory-card-key">{entry.name}</span>
-          {entry.schedule ? (
-            <span className="text-muted-foreground"> · {entry.schedule}</span>
-          ) : null}
-        </div>
-        {updated?.updated?.length ? (
-          <div className="memory-card-entry text-muted-foreground">
-            changed: {updated.updated.join(', ')}
-          </div>
+        <span>
+          {created
+            ? `Automation "${entry.name}"`
+            : `Automation "${entry.name}" updated`}
+        </span>
+        {entry.schedule ? (
+          <span className="text-[var(--dt-fg-3)]"> · {entry.schedule}</span>
         ) : null}
-        {entry.agentId ? (
-          <div className="memory-card-entry text-muted-foreground">
-            delivers to the bound bot's chat
-          </div>
-        ) : null}
-        {entry.nextRunAt ? (
-          <div className="memory-card-entry text-muted-foreground">
-            next run {entry.nextRunAt}
-          </div>
-        ) : null}
+      </span>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => void navigate('/runs')}
+          className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+          data-testid="automation-receipt-edit"
+        >
+          Edit
+        </Button>
         {created && (
-          <div className="mt-1.5">
-            <Button
-              type="button"
-              variant="bare"
-              onClick={() => undo.mutate(created.jobId)}
-              disabled={undo.isPending}
-              className="inline-flex items-center gap-1 text-2xs text-primary hover:underline"
-              data-testid="automation-receipt-undo"
-            >
-              <Undo2 className="size-3" aria-hidden /> Undo (delete this automation)
-            </Button>
-          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => undo.mutate(created.jobId)}
+            disabled={undo.isPending}
+            className="h-6 px-2 text-2xs text-[var(--dt-fg-2)] hover:text-[var(--dt-fg-1)]"
+            title="Undo (delete this automation)"
+            data-testid="automation-receipt-undo"
+          >
+            Undo
+          </Button>
         )}
       </div>
     </div>

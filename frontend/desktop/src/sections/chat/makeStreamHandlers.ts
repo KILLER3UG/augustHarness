@@ -67,6 +67,7 @@ import { toast } from 'sonner';
 import { useArenaStore } from './arena/arena-store';
 import { isDebateSession, debateTurnDone } from './debate/debate-store';
 import { makeSubagentEventHandlers } from './stream/apply-subagent-event';
+import { parseSubagentReceipt } from './subagent-receipt';
 
 export interface MakeStreamHandlersOptions {
   sessionId: string;
@@ -1040,6 +1041,9 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       if (!data?.messageId || !data?.sessionId) return;
       const queueUiId = resolveUiSessionId(data.sessionId);
       removeQueuedMessage(queueUiId, data.messageId);
+      // Backend emits [SUBAGENT_COMPLETE …] receipts as user-injected turns so the
+      // coordinator LLM resumes with results; never surface them as chat bubbles.
+      if (parseSubagentReceipt(data.text ?? '')) return;
       const injected: ChatMessage = {
         id: `qm-${data.messageId}`,
         role: 'user',
