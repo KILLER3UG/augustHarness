@@ -34,6 +34,8 @@ export type ComposerDropdownApi = {
   setShowCommandsDropdown: (open: boolean) => void;
 };
 
+export type ComposerPillPopover = 'actions' | 'workspace' | 'access' | 'model' | 'context';
+
 export type AnchorPos = { top: number; left: number };
 
 function useFixedAnchor(
@@ -97,7 +99,18 @@ export function useComposerPopovers({
   sessionId,
   workbenchSessionId,
 }: UseComposerPopoversArgs) {
-  const [showComposerActionsDropdown, setShowComposerActionsDropdown] = useState(false);
+  const [activePopover, setActivePopover] = useState<ComposerPillPopover | null>(null);
+  const showComposerActionsDropdown = activePopover === 'actions';
+  const setShowComposerActionsDropdown = useCallback(
+    (next: SetStateAction<boolean>) => {
+      setActivePopover((prev) => {
+        const current = prev === 'actions';
+        const resolved = typeof next === 'function' ? next(current) : next;
+        return resolved ? 'actions' : current ? null : prev;
+      });
+    },
+    [],
+  );
   const [showToolsDropdown, setShowToolsDropdown] = useState(false);
   const [showCommandsDropdown, setShowCommandsDropdown] = useState(false);
   const [highlightedCommandIndex, setHighlightedCommandIndex] = useState(0);
@@ -277,15 +290,41 @@ export function useComposerPopovers({
   }, [mentionQuery, skillMentions, mcpMentions, fileMentions, conversationMentions, harnessMentions, botMentions]);
 
   const closeAllPopovers = useCallback(() => {
-    setShowComposerActionsDropdown(false);
+    setActivePopover(null);
     setShowToolsDropdown(false);
     setShowCommandsDropdown(false);
     setMentionQuery(null);
   }, []);
 
+  const setPillPopoverOpen = useCallback(
+    (kind: ComposerPillPopover, open: boolean) => {
+      if (open) {
+        setShowToolsDropdown(false);
+        setShowCommandsDropdown(false);
+        setMentionQuery(null);
+        setActivePopover(kind);
+      } else {
+        setActivePopover((prev) => (prev === kind ? null : prev));
+      }
+    },
+    [],
+  );
+
+  // External triggers: sidebar Projects shortcut and receipt-card context edit.
+  useEffect(() => {
+    const onOpenProject = () => setPillPopoverOpen('workspace', true);
+    const onOpenContext = () => setPillPopoverOpen('context', true);
+    window.addEventListener('august:open-project-picker', onOpenProject);
+    window.addEventListener('august:open-context-menu', onOpenContext);
+    return () => {
+      window.removeEventListener('august:open-project-picker', onOpenProject);
+      window.removeEventListener('august:open-context-menu', onOpenContext);
+    };
+  }, [setPillPopoverOpen]);
+
   useEffect(() => {
     const anyOpen =
-      showComposerActionsDropdown ||
+      activePopover !== null ||
       showToolsDropdown ||
       showCommandsDropdown ||
       showMentionsDropdown;
@@ -296,11 +335,12 @@ export function useComposerPopovers({
         return;
       }
       const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-composer-trigger]')) return;
       if (target?.closest?.('[data-composer-popover]')) return;
       closeAllPopovers();
     };
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
         closeAllPopovers();
       }
     };
@@ -311,7 +351,7 @@ export function useComposerPopovers({
       document.removeEventListener('keydown', onKey);
     };
   }, [
-    showComposerActionsDropdown,
+    activePopover,
     showToolsDropdown,
     showCommandsDropdown,
     showMentionsDropdown,
@@ -424,7 +464,7 @@ export function useComposerPopovers({
     setMentionQuery('');
     setMentionStart(input.length);
     setShowCommandsDropdown(false);
-    setShowComposerActionsDropdown(false);
+    setActivePopover(null);
     loadSkillsIfEmpty();
   }, [input.length, loadSkillsIfEmpty]);
 
@@ -514,14 +554,24 @@ export function useComposerPopovers({
         e.preventDefault();
         void send();
       }
-      // Esc while streaming stops generation (queue is preserved); with no
-      // dropdown open Esc is otherwise a no-op in the composer.
-      if (e.key === 'Escape' && streaming && stop) {
-        e.preventDefault();
-        stop();
+      // Esc closes an open popover first; while streaming with no popover open
+      // it stops generation (queue is preserved).
+      if (e.key === 'Escape') {
+        if (activePopover !== null || showToolsDropdown) {
+          e.preventDefault();
+          closeAllPopovers();
+          return;
+        }
+        if (streaming && stop) {
+          e.preventDefault();
+          stop();
+        }
       }
     },
     [
+      activePopover,
+      showToolsDropdown,
+      closeAllPopovers,
       showMentionsDropdown,
       mentionItems,
       highlightedMentionIndex,
@@ -545,6 +595,7 @@ export function useComposerPopovers({
         setShowCommandsDropdown(true);
         setShowToolsDropdown(false);
         setMentionQuery(null);
+        setActivePopover(null);
         return;
       }
       if (showCommandsDropdown && !value.startsWith('/')) {
@@ -558,6 +609,7 @@ export function useComposerPopovers({
         setMentionStart(at.start);
         setShowToolsDropdown(false);
         setShowCommandsDropdown(false);
+        setActivePopover(null);
       } else if (mentionQuery !== null) {
         setMentionQuery(null);
       }
@@ -617,6 +669,10 @@ export function useComposerPopovers({
   return {
     composerRootRef,
     composerActionsTriggerRef,
+    activePopover,
+    setActivePopover,
+    setPillPopoverOpen,
+    closeAllPopovers,
     showComposerActionsDropdown,
     setShowComposerActionsDropdown,
     showToolsDropdown,

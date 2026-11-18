@@ -3,13 +3,11 @@
 /* model/effort menu, send / mid-run steer, stop.                          */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { WorkbenchSession } from '@/types/workbench';
 import type { ChatMessage, FileAttachment } from '@/types/chat';
-import {
-  WorkbenchModeSelector,
-  type WorkbenchGuardMode,
-} from '@/components/chat/WorkbenchModeSelector';
+import type { WorkbenchGuardMode } from '@/components/chat/WorkbenchModeSelector';
 import {
   normalizeSandboxMode,
   type WorkbenchSandboxMode,
@@ -30,11 +28,11 @@ import { Markdown } from './ChatMarkdown';
 import { ScrollToBottomButton } from '@/components/chat/ScrollToBottomButton';
 import type { ModelItem } from './model-display';
 import type { SessionUsageState } from './hooks/useChatUsage';
-/* `EffortLevel` is back for the footer's muted word after the model name. Only
- * the `setEffort` half of the old model row's props is still gone — the state
- * itself remains in ChatThread and is still sent with every turn. */
 import type { EffortLevel } from './hooks/useChatSend';
 import { ModelEffortMenu } from './composer/ModelEffortMenu';
+import { WorkspacePill } from './composer/WorkspacePill';
+import { AccessPill } from './composer/AccessPill';
+import { ContextLengthMenu } from './composer/ContextLengthMenu';
 import {
   useComposerPopovers,
   type ComposerDropdownApi,
@@ -44,7 +42,6 @@ import { ComposerMentionsDropdown } from './composer/ComposerMentionsDropdown';
 import { ComposerCommandsDropdown } from './composer/ComposerCommandsDropdown';
 import { ComposerToolbar } from './composer/ComposerToolbar';
 import { FontChooserToast } from './composer/FontChooserToast';
-import { ComposerWorkspaceChips } from './composer/ComposerWorkspaceChips';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { useFocusedSubagent } from '@/components/chat/focused-subagent';
@@ -348,31 +345,92 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
     resizeTextarea();
   }, [input, resizeTextarea]);
 
-  /* The permission level is the one composer control that decides whether a
-     command or a file edit pauses for the user, so it lives on the footer line
-     where it can be read at a glance — not two levels inside the `+` menu. */
-  const handleGuardModeChange = (mode: WorkbenchGuardMode) => {
-    setWorkbenchMode(mode);
-    localStorage.setItem('august_last_workbench_guard_mode', mode);
-    if (mode === 'full' && workbenchSession) {
-      setWorkbenchSession({
-        ...workbenchSession,
-        plan: null,
-        approved: false,
-        approvedAt: null,
-        guardMode: 'full',
-        agentId: 'build',
+  const [sandboxModeLocal, setSandboxModeLocal] = useState<WorkbenchSandboxMode>(() => {
+    try {
+      return normalizeSandboxMode(localStorage.getItem('august_last_sandbox_mode'));
+    } catch {
+      return 'workspace-write';
+    }
+  });
+  const sandboxMode = workbenchSession?.sandboxMode
+    ? normalizeSandboxMode(workbenchSession.sandboxMode)
+    : sandboxModeLocal;
+
+  const applyAccessChange = (next: {
+    guard?: WorkbenchGuardMode;
+    sandbox?: WorkbenchSandboxMode;
+  }) => {
+    const wbId = workbenchSession?.id;
+    let network: boolean | undefined;
+    if (next.sandbox) {
+      setSandboxModeLocal(next.sandbox);
+      localStorage.setItem('august_last_sandbox_mode', next.sandbox);
+      try {
+        if (
+          next.sandbox === 'workspace-write' &&
+          localStorage.getItem('august_sandbox_network_default') === '1'
+        ) {
+          network = true;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (next.guard) {
+      setWorkbenchMode(next.guard);
+      localStorage.setItem('august_last_workbench_guard_mode', next.guard);
+    }
+    setWorkbenchSession((prev) => {
+      if (!prev) return prev;
+      let updated = prev;
+      if (next.guard) {
+        updated =
+          next.guard === 'full'
+            ? {
+                ...updated,
+                plan: null,
+                approved: false,
+                approvedAt: null,
+                guardMode: 'full',
+                agentId: 'build',
+              }
+            : {
+                ...updated,
+                guardMode: next.guard,
+                agentId: next.guard === 'plan' ? 'plan' : 'build',
+              };
+      }
+      if (next.sandbox) {
+        updated = {
+          ...updated,
+          sandboxMode: next.sandbox,
+          sandboxNetwork:
+            next.sandbox === 'danger-full-access'
+              ? true
+              : network ?? updated.sandboxNetwork,
+        };
+      }
+      return updated;
+    });
+    if (wbId) {
+      const sync = async () => {
+        let latest: WorkbenchSession | null = null;
+        if (next.guard) {
+          latest = await setWorkbenchGuardMode(wbId, next.guard);
+        }
+        if (next.sandbox) {
+          latest = await setWorkbenchSandboxMode(wbId, next.sandbox, network);
+        }
+        if (latest) setWorkbenchSession(latest);
+      };
+      void sync().catch((error) => {
+        console.warn('[ChatThread] Failed to persist access mode:', error);
       });
     }
-    if (workbenchSession?.id) {
-      void setWorkbenchGuardMode(workbenchSession.id, mode)
-        .then((updated) => {
-          if (updated) setWorkbenchSession(updated);
-        })
-        .catch((error) => {
-          console.warn('[ChatThread] Failed to persist guard mode:', error);
-        });
-    }
+  };
+
+  const handleGuardModeChange = (mode: WorkbenchGuardMode) => {
+    applyAccessChange({ guard: mode });
   };
 
   const persistHarnessMode = (next: HarnessAgentMode) => {
@@ -399,37 +457,15 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
     apply(workbenchSession.id);
   };
 
-  const sandboxMode = normalizeSandboxMode(workbenchSession?.sandboxMode);
   const handleSandboxChange = (mode: WorkbenchSandboxMode) => {
-    localStorage.setItem('august_last_sandbox_mode', mode);
-    let network: boolean | undefined;
-    try {
-      if (mode === 'workspace-write' && localStorage.getItem('august_sandbox_network_default') === '1') {
-        network = true;
-      }
-    } catch {
-      /* ignore */
-    }
-    if (workbenchSession) {
-      setWorkbenchSession({
-        ...workbenchSession,
-        sandboxMode: mode,
-        sandboxNetwork: mode === 'danger-full-access' ? true : network ?? workbenchSession.sandboxNetwork,
-      });
-    }
-    if (workbenchSession?.id) {
-      void setWorkbenchSandboxMode(workbenchSession.id, mode, network)
-        .then((updated) => {
-          if (updated) setWorkbenchSession(updated);
-        })
-        .catch((error) => {
-          console.warn('[ChatThread] Failed to persist sandbox mode:', error);
-        });
-    }
+    applyAccessChange({ sandbox: mode });
   };
 
   return (
-    <div className="august-composer-shell relative pb-3" ref={popovers.composerRootRef}>
+    <div
+      className="august-composer-shell relative mx-auto w-full max-w-[47.5rem] pb-3"
+      ref={popovers.composerRootRef}
+    >
       <input
         type="file"
         ref={fileInputRef}
@@ -487,14 +523,15 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
             Offline — {offlineCount} message{offlineCount === 1 ? '' : 's'} queued; sending when
             the backend returns.
           </span>
-          <button
+          <Button
             type="button"
+            variant="bare"
             onClick={onFlushOffline}
             className="rounded bg-warning/20 px-2 py-0.5 hover:bg-warning/30"
             data-testid="offline-flush-now"
           >
             Send now
-          </button>
+          </Button>
         </div>
       ) : null}
 
@@ -512,13 +549,9 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
 
       <div
         className={cn(
-          'august-composer composer relative w-full min-w-0 overflow-visible',
+          'august-composer relative w-full min-w-0 overflow-visible rounded-[14px] border border-[var(--dt-line)] bg-[var(--dt-card)] transition-colors focus-within:border-[var(--dt-line-strong)]',
         )}
       >
-        {/* Jump-to-bottom, centered and straddling the card's top border.
-            The button lives here (not in the message pane's corner) so the
-            border is a stable anchor even when the rows above the card —
-            stream-link banner, queue pills, task progress — change height. */}
         <div className="pointer-events-none absolute inset-x-0 -top-3 z-20 flex justify-center">
           <ScrollToBottomButton
             visible={scrolledFromBottom}
@@ -526,38 +559,10 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
             showNewContentPill={showNewContentPill}
           />
         </div>
-        <>
-          {/* Folder + branch context row — only on a fresh session (empty
-              transcript), where the workspace choice is still open. Once the
-              chat has messages the binding is fixed; the titlebar chips stay
-              as the read-only context. */}
-            <ComposerAttachmentChips
-              attachments={attachments}
-              onRemove={removeAttachment}
-            />
 
-            {sendKind === 'steer' || sendKind === 'continue' ? (
-              <div
-                className="px-4 pt-2 text-2xs text-muted-foreground"
-                data-testid="composer-harness-chip"
-              >
-                {sendKind === 'steer'
-                  ? `Steering ${focusedSubagent?.workstream || focusedSubagent?.title || 'worker'} (live)`
-                  : `Will continue ${continueName || focusedSubagent?.workstream || 'workstream'}`}
-                {ghostNext && sendKind === 'continue' ? ` · ${ghostNext}` : ''}
-              </div>
-            ) : null}
-        </>
-
-        {/* The composer ROW: the `+`, the input, the one primary action. The
-            input lives INSIDE it because the reference's card is one row — an
-            input with a control strip bolted underneath it is two rows, and two
-            rows is what made August's composer read as a control panel. */}
         <ComposerToolbar
           sessionId={sessionId}
           loadedSessionId={loadedSessionId}
-          /* The project decision rides the footer beside the model/effort
-             chip, not a separate row inside the message card. */
           input={input}
           attachmentsCount={readyAttachmentsCount ?? attachments.length}
           attachmentsReading={attachmentsReading}
@@ -573,152 +578,130 @@ export function ChatThreadComposer(props: ChatThreadComposerProps) {
           actionsPos={popovers.composerActionsPos}
           actionsTriggerRef={popovers.composerActionsTriggerRef}
           onToggleActions={() => {
-            popovers.setShowComposerActionsDropdown((value) => !value);
-            popovers.setShowToolsDropdown(false);
-            popovers.setShowCommandsDropdown(false);
+            popovers.setPillPopoverOpen(
+              'actions',
+              popovers.activePopover !== 'actions',
+            );
           }}
           onAttach={() => {
             fileInputRef.current?.click();
             popovers.setShowComposerActionsDropdown(false);
           }}
           onMention={popovers.openMentionPicker}
-          onCamera={attachFiles ? () => {
-            popovers.setShowComposerActionsDropdown(false);
-            setCameraOpen((value) => !value);
-          } : undefined}
+          onCamera={
+            attachFiles
+              ? () => {
+                  popovers.setShowComposerActionsDropdown(false);
+                  setCameraOpen((value) => !value);
+                }
+              : undefined
+          }
           cameraOpen={cameraOpen}
           cameraPos={popovers.composerActionsPos}
           onCameraClose={() => setCameraOpen(false)}
           onCameraCapture={handleCameraCapture}
           onAskParallel={() => setArenaOpen(true)}
           onStartDebate={() => setDebateOpen(true)}
+          leftExtras={
+            <>
+              <WorkspacePill
+                sessionId={sessionId}
+                workbenchSessionId={workbenchSession?.id || activeWorkbenchSessionId || null}
+                workspacePath={workspacePath}
+                open={popovers.activePopover === 'workspace'}
+                onOpenChange={(next) => popovers.setPillPopoverOpen('workspace', next)}
+              />
+              <AccessPill
+                guardMode={workbenchMode}
+                onGuardChange={handleGuardModeChange}
+                sandboxMode={sandboxMode}
+                onSandboxChange={handleSandboxChange}
+                onAccessChange={applyAccessChange}
+                harnessMode={harnessMode}
+                onHarnessChange={persistHarnessMode}
+                open={popovers.activePopover === 'access'}
+                onOpenChange={(next) => popovers.setPillPopoverOpen('access', next)}
+              />
+            </>
+          }
+          rightExtras={
+            <>
+              <ModelEffortMenu
+                visibleModels={visibleModels}
+                selected={selectedModel}
+                onSelect={onSelectModel}
+                onEditModels={onEditModels}
+                effort={effort}
+                onEffortChange={onEffortChange}
+                thinkingEnabled={thinkingEnabled}
+                onThinkingChange={onThinkingChange}
+                open={popovers.activePopover === 'model'}
+                onOpenChange={(next) => popovers.setPillPopoverOpen('model', next)}
+              />
+              <ContextLengthMenu
+                selectedModel={selectedModel}
+                open={popovers.activePopover === 'context'}
+                onOpenChange={(next) => popovers.setPillPopoverOpen('context', next)}
+              />
+            </>
+          }
         >
-            <textarea
-              ref={taRef}
-              value={input}
-              onChange={(e) => {
-                popovers.handleInputChange(e.target.value);
-              }}
-              onKeyDown={popovers.onKey}
-              onPaste={handleComposerPaste}
-              aria-label="Chat message"
-              placeholder={
-                streaming
-                  ? 'Keep typing to queue follow-up changes'
-                  : focusedSubagent
-                    ? focusedSubagent.running === false && focusedSubagent.workstream
-                      ? ghostNext || `Continue ${focusedSubagent.workstream}…`
-                      : `Steer ${focusedSubagent.title} (next round)`
-                    : continueName
-                      ? ghostNext || `Continue workstream ${continueName}…`
-                      : harnessMode === 'orchestrator'
-                        ? 'Plan the next wave — or open Dispatch from +'
-                        : 'Write a message…'
-              }
-              rows={1}
-              /* Symmetric padding, and that is the whole fix. The old `pt-2
-                 pb-0.5` made one line 30px of content inside a 36px minimum
-                 height, so the 6px of slack all landed under the text and the
-                 placeholder sat high in its own row — the "floating" look. With
-                 8px above and below, one line is exactly 36px and centred, and
-                 a wrapped paragraph keeps the same rhythm as it grows.
-                 `block` is the second half of the same fix: a textarea is an
-                 inline-block, so its cell kept the ~7px baseline descender
-                 under it (a 41px input measured 48px) — invisible slack that
-                 landed below the text and made the card's two paddings read
-                 unequal even when they were not. */
-              className="block w-full resize-none bg-transparent px-1 py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground/70"
-              style={{ minHeight: '36px', maxHeight: '240px' }}
-            />
-        </ComposerToolbar>
+          <ComposerAttachmentChips
+            attachments={attachments}
+            onRemove={removeAttachment}
+          />
 
-        {showPreview && input.trim() && (
-          <div
-            className="border-t border-border bg-muted/5 max-h-[240px] overflow-y-auto px-4 py-2 text-foreground/90"
-            aria-label="Message preview"
-            data-testid="composer-preview"
-          >
-            <div className="text-2xs uppercase tracking-wider text-muted-foreground/70 mb-1.5 font-semibold">
-              Preview
+          {sendKind === 'steer' || sendKind === 'continue' ? (
+            <div
+              className="px-4 pt-2 text-2xs text-[var(--dt-fg-3)]"
+              data-testid="composer-harness-chip"
+            >
+              {sendKind === 'steer'
+                ? `Steering ${focusedSubagent?.workstream || focusedSubagent?.title || 'worker'} (live)`
+                : `Will continue ${continueName || focusedSubagent?.workstream || 'workstream'}`}
+              {ghostNext && sendKind === 'continue' ? ` · ${ghostNext}` : ''}
             </div>
-            <Markdown content={input} />
-          </div>
-        )}
-      </div>
+          ) : null}
 
-      {/* Footer line under the card: disclaimer left, model + effort right,
-          and the context percentage at the far right of the row.
+          <textarea
+            ref={taRef}
+            value={input}
+            onChange={(e) => {
+              popovers.handleInputChange(e.target.value);
+            }}
+            onKeyDown={popovers.onKey}
+            onPaste={handleComposerPaste}
+            aria-label="Chat message"
+            placeholder={
+              streaming
+                ? 'Keep typing to queue follow-up changes'
+                : focusedSubagent
+                  ? focusedSubagent.running === false && focusedSubagent.workstream
+                    ? ghostNext || `Continue ${focusedSubagent.workstream}…`
+                    : `Steer ${focusedSubagent.title} (next round)`
+                  : continueName
+                    ? ghostNext || `Continue workstream ${continueName}…`
+                    : harnessMode === 'orchestrator'
+                      ? 'Plan the next wave — or open Dispatch from +'
+                      : 'Write a message, or tell August what to do...'
+            }
+            rows={1}
+            className="block max-h-[240px] min-h-0 w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-5 outline-none placeholder:text-[var(--dt-fg-3)]"
+          />
 
-          This renders `ModelEffortMenu`, whose own header already says it:
-          "Claude draws this as plain text on its footer line — model at normal
-          weight, effort lighter." It is borderless, border-pill-free, and was
-          built for this exact slot.
-
-          It was left unrendered when the composer model row was removed, which
-          removed the LAST way to change the model: `open_model_picker` and the
-          palette item went with it, and `useChatModels.selectModel` had no
-          caller. Restoring only the *text* made it worse — it rendered
-          `qwen3.8-flash medium` as inert copy, so the model was both visible
-          and unchangeable.
-
-          The only deviation from the reference is the chevron, which is hidden
-          at rest and shown on hover/focus: the reference screenshot is a
-          non-hovered state, but a control with no affordance at all is worse.
-
-          The percentage goes at the END of this line — the reference puts it
-          there ("Below the card, a single row: `+`, then a bordered model pill
-          … and right-aligned a context percentage `3%`"), so it is the last
-          thing in the row rather than part of the model cluster.
-
-          The number is the LIVE one: the backend measures the turn's context
-          occupancy server-side and ships it on the per-turn
-          `contextPressure` event, which `store/contextLive.ts` keeps per
-          session. It is deliberately NOT the persisted session-usage figure
-          the cost chip reads — that poll is an aggregate over the session and
-          its denominator was the hardcoded 128k fallback whenever a model
-          carried no contextWindow of its own. The two readouts measure
-          different things (money spent vs. window occupied), so they never
-          contradict each other; and because the live number is keyed per
-          session, switching chats cannot leave the previous session's
-          percentage on screen.
-
-          Before a session's first turn there is no measurement, and the
-          readout renders nothing at all rather than a confident `0%`. */}
-      {/* Part D diet — the footer carries ONE control: the model + context
-          selector. The mode and workspace chips moved INSIDE that menu (they
-          are turn configuration, not per-message controls), which is how the
-          default-visible chat controls land at ≤6. */}
-      <div
-        className="composer-foot mt-1.5 flex items-center justify-end gap-3 px-1 select-none"
-        data-testid="composer-footer-row"
-      >
-        <ModelEffortMenu
-          visibleModels={visibleModels}
-          selected={selectedModel}
-          onSelect={onSelectModel}
-          onEditModels={onEditModels}
-          effort={effort}
-          onEffortChange={onEffortChange}
-          thinkingEnabled={thinkingEnabled}
-          onThinkingChange={onThinkingChange}
-          workspaceControl={
-            <ComposerWorkspaceChips
-              sessionId={sessionId}
-              workbenchSessionId={workbenchSession?.id || activeWorkbenchSessionId || null}
-              workspacePath={workspacePath}
-            />
-          }
-          modeControl={
-            <WorkbenchModeSelector
-              selectedMode={workbenchMode}
-              onChange={handleGuardModeChange}
-              sandboxMode={sandboxMode}
-              onSandboxChange={handleSandboxChange}
-              harnessMode={normalizeHarnessMode(workbenchSession?.agentMode)}
-              onHarnessChange={persistHarnessMode}
-            />
-          }
-        />
+          {showPreview && input.trim() && (
+            <div
+              className="max-h-[240px] overflow-y-auto border-t border-[var(--dt-line)] bg-[var(--dt-background)]/40 px-4 py-2 text-[var(--dt-fg-1)]"
+              aria-label="Message preview"
+              data-testid="composer-preview"
+            >
+              <div className="mb-1.5 text-2xs font-semibold uppercase tracking-wider text-[var(--dt-fg-3)]">
+                Preview
+              </div>
+              <Markdown content={input} />
+            </div>
+          )}
+        </ComposerToolbar>
       </div>
 
       {debateOpen ? (

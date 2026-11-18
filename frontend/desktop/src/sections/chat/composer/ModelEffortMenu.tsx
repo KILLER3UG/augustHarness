@@ -1,44 +1,30 @@
 /* ── Combined model + effort menu ─────────────────────────────────────── */
-/* Two-card picker, matching the reference:
+/* Two-card picker:
  *
  *   ┌──────────────────────────────┐ ┌──────────────────┐
  *   │ provider mark  Provider  API >│ │ OpenCode GO  API ✓│
- *   │ Models                       │ │ OpenCode ZEN API  │
- *   │   model id          Vision ✓ │ │ …                 │
- *   │ Effort  Max          Ctrl+T   │ │ New provider API  │
- *   │   ─────────────●             │ │ ───────────────── │
- *   │                              │ │ Manage models     │
- *   └──────────────────────────────┘ └──────────────────┘
+ *   │ Search models                │ │ OpenCode ZEN API  │
+ *   │ Models                       │ │ …                 │
+ *   │   model id                 ✓ │ │ New provider API  │
+ *   │ ──────────────────────────── │ │ ───────────────── │
+ *   │ Effort  Medium        Ctrl+T │ │ Manage models     │
+ *   │   ●───────────────────────── │ └──────────────────┘
+ *   │ Extended thinking       [  ] │
+ *   └──────────────────────────────┘
  *
- * The left card is the active provider's model list plus the effort slider.
- * The right card is the provider rail, opened from the header chevron. The
- * old single-list-with-inline-provider-headers layout is gone: the reference
- * separates the two decisions, so the provider rail can stay open while the
- * model list changes underneath it.
- *
- * The model list intentionally shows the raw id (as the reference does) and
- * no price/wire/context metadata; those remain in the expanded model settings
- * and in each row's title. The effort pane (the small chip beside the model
- * chip) keeps the extended-thinking switch; the slider in the model card is
- * the same effort state.
- */
+ * Primary content is providers + models only; Effort (monochrome) and
+ * Extended thinking sit in a compact secondary footer under a hairline.
+ * Workspace, Access, and local Context controls live on their own pills. */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronDown, ChevronRight, Download, Loader2, Search, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { Check, ChevronDown, ChevronRight, Download, Search, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { chipTrigger, menuFlyout, menuPanel } from '@/lib/motion';
 import { groupModelsByProvider, modelMatchesQuery } from '@/components/model/modelList';
-import {
-  listLlamaServers,
-  setLlamaServerContext,
-  LOCAL_CTX_CHOICES,
-} from '@/api/api-client/local-models';
 import type { ModelItem } from '../model-display';
 import { modelDisplayParts } from '../model-display';
 import type { EffortLevel } from '../hooks/useChatSend';
@@ -54,7 +40,9 @@ const EFFORT_OPTIONS: {
   { value: 'max', label: 'Max', triggerLabel: 'Max' },
 ];
 
-/** Chip label: `Provider · Model`, kept from the composer's existing contract. */
+const EFFORT_FILL_CLASS =
+  '[&[data-effort="low"]]:[--effort-fill:0%] [&[data-effort="medium"]]:[--effort-fill:33%] [&[data-effort="high"]]:[--effort-fill:67%] [&[data-effort="max"]]:[--effort-fill:100%]';
+
 function chipVariant(model: ModelItem, tag: string): string {
   if (!tag) return '';
   const colon = tag.indexOf(':');
@@ -62,7 +50,7 @@ function chipVariant(model: ModelItem, tag: string): string {
   return /[/:]/.test(model.id) ? '' : tag;
 }
 
-export function chipModelLabel(model: ModelItem | null): string {
+function chipModelLabel(model: ModelItem | null): string {
   if (!model) return 'Model';
   const { name, tag } = modelRowLabel(model);
   const variant = chipVariant(model, tag);
@@ -71,7 +59,6 @@ export function chipModelLabel(model: ModelItem | null): string {
   return raw.length > 34 ? `${raw.slice(0, 32)}…` : raw;
 }
 
-/** Row label for the trigger chip; the panel itself prints the raw id. */
 function modelRowLabel(model: ModelItem): { name: string; tag: string } {
   if (model.name && model.name !== model.id) return { name: model.name, tag: '' };
   const parts = modelDisplayParts(model.id || model.name);
@@ -79,34 +66,21 @@ function modelRowLabel(model: ModelItem): { name: string; tag: string } {
   return { name: parts.name, tag };
 }
 
-
-/** Composer-anchored panels: positioned by their BOTTOM edge (CSS bottom +
- *  clamped maxHeight) so short lists hug the chip instead of floating far
- *  above it. The provider rail is positioned by its TOP edge after the model
- *  card has rendered, so it can extend below it like the reference. */
 type PanelPos = { left: number; bottom: number; maxHeight: number };
 type ProviderPos = { left: number; top: number; maxHeight: number };
 
 const MODELS_PANEL_W = 304;
-const MODELS_PANEL_H = 520;
+const MODELS_PANEL_H = 420;
 const MODELS_PANEL_MIN_H = 216;
 const PROVIDER_PANEL_W = 184;
-/** Gap between the panel's bottom edge and the trigger chip. */
 const PANEL_GAP = 8;
-/** Viewport margin kept clear above/below a panel. */
 const VIEWPORT_MARGIN = 8;
-/** Never shrink below this — the list scrolls internally instead. */
 const MIN_PANEL_H = 96;
 
 function clampLeft(left: number, w: number): number {
   return Math.max(VIEWPORT_MARGIN, Math.min(left, window.innerWidth - w - VIEWPORT_MARGIN));
 }
 
-/**
- * Bottom-edge anchoring (Zed/Cursor style): the panel's bottom edge sits
- * PANEL_GAP above the chip's top and the panel grows upward only as far
- * as the viewport allows.
- */
 function anchorAbove(chipTop: number, idealH: number): { bottom: number; maxHeight: number } {
   const wantedBottomEdge = chipTop - PANEL_GAP;
   const bottomEdge = Math.max(
@@ -123,7 +97,7 @@ function ProviderMark({ provider }: { provider: string }) {
   const initial = provider.trim().charAt(0).toUpperCase() || 'P';
   return (
     <span
-      className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border border-border/60 bg-muted/50 text-[0.625rem] font-semibold leading-none text-foreground/75"
+      className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border border-[var(--dt-line)] bg-[var(--dt-elevated)] text-[0.625rem] font-semibold leading-none text-[var(--dt-fg-2)]"
       aria-hidden
     >
       {initial}
@@ -133,7 +107,7 @@ function ProviderMark({ provider }: { provider: string }) {
 
 function ApiBadge() {
   return (
-    <span className="shrink-0 rounded-[3px] border border-border/60 px-1 py-[1px] text-[0.5rem] font-medium uppercase tracking-[0.06em] leading-3 text-muted-foreground/70">
+    <span className="shrink-0 rounded-[3px] border border-[var(--dt-line)] px-1 py-[1px] text-[0.5rem] font-medium uppercase tracking-[0.06em] leading-3 text-[var(--dt-fg-3)]">
       API
     </span>
   );
@@ -149,27 +123,31 @@ function ThinkingSwitch({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="bare"
       role="switch"
       aria-checked={checked}
+      aria-label="Extended thinking"
       disabled={disabled}
       onClick={(e) => {
         e.stopPropagation();
         if (!disabled) onChange(!checked);
       }}
       className={cn(
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50',
-        checked ? 'bg-primary' : 'bg-muted-foreground/25',
+        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-ring/40',
+        checked ? 'bg-[var(--dt-primary)]' : 'bg-[var(--dt-elevated)]',
       )}
     >
       <span
         className={cn(
-          'inline-block size-4 transform rounded-full bg-white shadow transition',
-          checked ? 'translate-x-4' : 'translate-x-0.5',
+          'inline-block size-3.5 transform rounded-full shadow transition-transform',
+          checked
+            ? 'translate-x-[18px] bg-[var(--dt-primary-foreground)]'
+            : 'translate-x-0.5 bg-[var(--dt-fg-2)]',
         )}
       />
-    </button>
+    </Button>
   );
 }
 
@@ -183,8 +161,8 @@ export function ModelEffortMenu({
   onEffortChange,
   thinkingEnabled,
   onThinkingChange,
-  workspaceControl,
-  modeControl,
+  open,
+  onOpenChange,
 }: {
   visibleModels: ModelItem[];
   loading?: boolean;
@@ -195,13 +173,20 @@ export function ModelEffortMenu({
   onEffortChange: (v: EffortLevel) => void;
   thinkingEnabled: boolean;
   onThinkingChange: (v: boolean) => void;
-  /** Part D diet — the workspace and mode chips render as ROWS inside this
-   *  menu instead of as separate always-visible composer controls. */
-  workspaceControl?: ReactNode;
-  modeControl?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  // One pane now: the effort chip was removed, so the picker is open or closed.
-  const [pane, setPane] = useState<'models' | null>(null);
+  const [localPane, setLocalPane] = useState<'models' | null>(null);
+  const isControlled = open !== undefined;
+  const pane: 'models' | null = isControlled ? (open ? 'models' : null) : localPane;
+  const setPane = useCallback(
+    (next: 'models' | null) => {
+      if (isControlled) onOpenChange?.(next === 'models');
+      else setLocalPane(next);
+    },
+    [isControlled, onOpenChange],
+  );
+
   const [modelsPos, setModelsPos] = useState<PanelPos | null>(null);
   const [providerPos, setProviderPos] = useState<ProviderPos | null>(null);
   const [showProviders, setShowProviders] = useState(false);
@@ -212,82 +197,15 @@ export function ModelEffortMenu({
   const modelsPanelRef = useRef<HTMLDivElement>(null);
   const providerPanelRef = useRef<HTMLDivElement>(null);
 
-  // Local-model context control: the served model's window is a user setting
-  // (owner decision), so the picker offers it where the model is chosen — and
-  // only there, since a cloud provider has no window to set.
-  const qc = useQueryClient();
-  const serversQ = useQuery({
-    queryKey: ['llama-servers'],
-    queryFn: listLlamaServers,
-    enabled: pane === 'models',
-    refetchInterval: (q) =>
-      (q.state.data?.servers ?? []).some((s) => s.status === 'starting') ? 2000 : 15_000,
-  });
-  // The row stays mounted whatever the server is doing: after an apply the
-  // server flips to `starting` for the whole reload, and a ready-only lookup
-  // unmounted the presets mid-interaction — the control vanished under the
-  // cursor and nothing could be clicked until the model finished loading.
-  // One local model is served at a time, so the single row (ready preferred)
-  // IS the selected model's server.
-  const localServerRow = useMemo(() => {
-    const servers = serversQ.data?.servers ?? [];
-    const active = activeProvider || selected?.provider || '';
-    if (active !== 'LocalModels') return null;
-    return (
-      servers.find((s) => s.status === 'ready') ??
-      servers.find((s) => s.status === 'starting') ??
-      servers[0] ??
-      null
-    );
-  }, [serversQ.data, activeProvider, selected?.provider]);
-  const readyLocalServer =
-    localServerRow && localServerRow.status === 'ready' ? localServerRow : null;
-  const [customCtx, setCustomCtx] = useState('');
-
-  const applyCtx = useCallback(
-    (ctx: number) => {
-      const row = localServerRow;
-      if (!row) {
-        toast.error('No local model is served — start one in Settings → Local Models first.');
-        return;
-      }
-      if (row.status !== 'ready') {
-        toast.info(`${row.name} is still ${row.status} — the context control unlocks when it is ready.`);
-        return;
-      }
-      if (row.ctxSize === ctx) {
-        toast.info(`${row.name} is already at ${Math.round(ctx / 1024)}k context.`);
-        return;
-      }
-      setLlamaServerContext(row.id, ctx)
-        .then((res) => {
-          if (res.warning) toast.warning(res.warning);
-          else toast.success(`${row.name} → ${Math.round(ctx / 1024)}k context — loading…`);
-          void qc.invalidateQueries({ queryKey: ['llama-servers'] });
-          void qc.invalidateQueries({ queryKey: ['models'] });
-        })
-        .catch((err: unknown) =>
-          toast.error(err instanceof Error ? err.message : 'Context change failed'),
-        );
-    },
-    [localServerRow, qc],
-  );
-
   const groups = useMemo(() => groupModelsByProvider(visibleModels), [visibleModels]);
   const activeGroup =
     groups.find((g) => g.provider === activeProvider) ?? groups[0] ?? null;
   const activeProviderName = activeGroup?.provider ?? '';
-  // Preserve the provider's own model order in this picker. The shared
-  // grouper sorts (pinned/free/name) for the settings surfaces; the reference
-  // keeps the catalog order here.
   const activeModels = useMemo(
     () => visibleModels.filter((m) => m.provider === activeProviderName),
     [activeProviderName, visibleModels],
   );
   const searching = query.trim().length > 0;
-  // Search is cross-provider: the model id the user types may live under a
-  // provider whose rail is not the active one. The results keep the catalog's
-  // order and show the provider on the row.
   const searchResults = useMemo(
     () => (searching ? visibleModels.filter((m) => modelMatchesQuery(m, query)) : []),
     [query, searching, visibleModels],
@@ -317,12 +235,23 @@ export function ModelEffortMenu({
     setShowProviders(false);
     setQuery('');
     setPane('models');
-  }, [groups, pane, selected]);
+  }, [groups, pane, selected, setPane]);
+
+  // Seed provider selection when opened externally.
+  useEffect(() => {
+    if (pane === 'models' && !activeProvider) {
+      const preferred =
+        selected && groups.some((g) => g.provider === selected.provider)
+          ? selected.provider
+          : groups[0]?.provider ?? '';
+      setActiveProvider(preferred);
+    }
+  }, [activeProvider, groups, pane, selected]);
 
   const navigate = useNavigate();
   const closeAll = useCallback(() => {
     setPane(null);
-  }, []);
+  }, [setPane]);
 
   const toggleProviders = useCallback(() => {
     if (!showProviders) {
@@ -333,7 +262,7 @@ export function ModelEffortMenu({
         return { ...prev, left: Math.max(VIEWPORT_MARGIN, Math.min(prev.left, maxLeft)) };
       });
     }
-    setShowProviders((open) => !open);
+    setShowProviders((openState) => !openState);
   }, [showProviders]);
 
   const isNavigateTarget = (el: HTMLElement): boolean => {
@@ -388,8 +317,6 @@ export function ModelEffortMenu({
     }
   };
 
-  // Position the left panel when it opens. The provider rail is measured after
-  // this card renders, so its top can line up with the card's top edge.
   useEffect(() => {
     if (!pane) {
       setModelsPos(null);
@@ -398,18 +325,13 @@ export function ModelEffortMenu({
       setQuery('');
       return;
     }
-    if (pane === 'models') {
-      const el = modelChipRef.current;
-      if (el) {
-        const r = el.getBoundingClientRect();
-        setModelsPos({
-          left: clampLeft(r.right - MODELS_PANEL_W, MODELS_PANEL_W),
-          ...anchorAbove(r.top, MODELS_PANEL_H),
-        });
-      }
-    } else {
-      setModelsPos(null);
-      setProviderPos(null);
+    const el = modelChipRef.current;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setModelsPos({
+        left: clampLeft(r.right - MODELS_PANEL_W, MODELS_PANEL_W),
+        ...anchorAbove(r.top, MODELS_PANEL_H),
+      });
     }
   }, [pane]);
 
@@ -433,7 +355,6 @@ export function ModelEffortMenu({
     });
   }, [activeGroup?.provider, pane, showProviders]);
 
-  // Focus the opened panel and restore the chip on close.
   const hasOpenedRef = useRef(false);
   useEffect(() => {
     if (pane) {
@@ -446,10 +367,11 @@ export function ModelEffortMenu({
     modelChipRef.current?.focus();
   }, [pane, modelsPos]);
 
+  // Standalone outside-click & Escape fallback only when uncontrolled.
   useEffect(() => {
-    if (!pane) return;
+    if (isControlled || !pane) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') closeAll();
+      if (e.key === 'Escape' && !e.defaultPrevented) closeAll();
     };
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
@@ -464,7 +386,7 @@ export function ModelEffortMenu({
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [pane, closeAll]);
+  }, [isControlled, pane, closeAll]);
 
   const modelRow = (m: ModelItem, showProvider = false) => {
     const isSelected = selected?.id === m.id && selected?.provider === m.provider;
@@ -484,7 +406,7 @@ export function ModelEffortMenu({
         data-testid="model-option"
         title={meta}
         aria-label={`${m.id}${isSelected ? ', selected' : ''}`}
-        className="group flex min-h-8 w-full cursor-pointer items-center gap-1.5 px-3 py-1.5 text-left text-[0.8125rem] text-foreground/90 transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
+        className="group flex min-h-8 w-full cursor-pointer items-center gap-1.5 px-3 py-1.5 text-left text-[0.8125rem] text-[var(--dt-fg-1)] transition-colors hover:bg-[var(--dt-elevated)] focus-visible:bg-[var(--dt-elevated)] focus-visible:outline-none"
         onClick={() => {
           onSelect(m);
           closeAll();
@@ -499,11 +421,11 @@ export function ModelEffortMenu({
       >
         <span className="min-w-0 flex-1 truncate">{m.id || m.name}</span>
         {showProvider ? (
-          <span className="max-w-[34%] shrink-0 truncate text-2xs text-muted-foreground/60">
+          <span className="max-w-[34%] shrink-0 truncate text-2xs text-[var(--dt-fg-3)]">
             {m.provider}
           </span>
         ) : null}
-        {isSelected ? <Check className="size-3.5 shrink-0 text-foreground/80" /> : null}
+        {isSelected ? <Check className="size-3.5 shrink-0 text-[var(--dt-fg-1)]" /> : null}
       </div>
     );
   };
@@ -511,24 +433,25 @@ export function ModelEffortMenu({
   const providerRow = (provider: string) => {
     const isActive = provider === activeProviderName;
     return (
-      <button
+      <Button
         key={provider}
         type="button"
+        variant="bare"
         role="menuitemradio"
         aria-checked={isActive}
         data-testid={`provider-group-${provider}`}
         onClick={() => setActiveProvider(provider)}
         className={cn(
-          'flex h-8 w-full items-center gap-2 px-3 text-left text-[0.8125rem] transition-colors',
+          'flex h-8 w-full items-center gap-2 rounded-none px-3 text-left text-[0.8125rem] transition-colors',
           isActive
-            ? 'text-foreground'
-            : 'text-muted-foreground/85 hover:bg-muted/40 hover:text-foreground',
+            ? 'bg-[var(--dt-elevated)] text-[var(--dt-fg-1)]'
+            : 'text-[var(--dt-fg-2)] hover:bg-[var(--dt-elevated)] hover:text-[var(--dt-fg-1)]',
         )}
       >
         <span className="min-w-0 flex-1 truncate">{provider}</span>
         <ApiBadge />
-        {isActive ? <Check className="size-3.5 shrink-0 text-foreground/80" /> : null}
-      </button>
+        {isActive ? <Check className="size-3.5 shrink-0 text-[var(--dt-fg-1)]" /> : null}
+      </Button>
     );
   };
 
@@ -537,41 +460,23 @@ export function ModelEffortMenu({
 
   return (
     <>
-      <div className="inline-flex min-w-0 shrink-0 items-center gap-1" data-testid="model-effort-control">
-        {/* The context chip of the visual spec: a local model's window sits
-            beside the model name — clickable, and it opens the same menu where
-            the presets live. A cloud model has no window, so no chip. */}
-        {selected?.provider === 'LocalModels' && selected.contextWindow > 0 && (
-          <Button
-            type="button"
-            variant="bare"
-            onClick={openModels}
-            title={`Context length ${selected.contextWindow.toLocaleString()} tokens — click to change`}
-            aria-label={`Context length ${Math.round(selected.contextWindow / 1024)}k tokens — open the model menu to change it`}
-            data-testid="model-context-chip"
-            className="inline-flex h-6 shrink-0 items-center rounded-md px-1.5 py-0.5 text-[0.75rem] text-muted-foreground/85 transition-colors duration-200 hover:bg-muted/50 hover:text-foreground"
-          >
-            {Math.round(selected.contextWindow / 1024)}k
-          </Button>
-        )}
+      <div className="inline-flex min-w-0 shrink-0 items-center" data-testid="model-effort-control">
         <motion.button
           ref={modelChipRef}
           type="button"
+          data-composer-trigger=""
           {...chipTrigger}
           onClick={openModels}
           className={cn(
-            'group relative inline-flex h-6 max-w-[220px] cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.75rem] text-foreground/85 outline-none transition-colors duration-200 hover:bg-muted/50 hover:text-foreground',
+            'group relative inline-flex h-7 max-w-[210px] cursor-pointer items-center gap-1.5 rounded-full bg-[var(--dt-pill-bg,var(--dt-elevated))] px-2.5 text-xs text-[var(--dt-fg-2)] outline-none transition-colors duration-200 hover:text-[var(--dt-fg-1)]',
+            modelsOpen && 'text-[var(--dt-fg-1)]',
           )}
           title={selected ? `${selected.provider}/${selected.id}` : 'Select model'}
           aria-expanded={pane === 'models'}
           aria-haspopup="dialog"
           data-testid="model-chip"
         >
-          <span className="min-w-0 truncate font-medium">{chipModelLabel(selected)}</span>
-          {/* Visible at rest. The chevron was opacity-0 until hover, so the chip
-              read as a label rather than a control and nothing invited the
-              click — the affordance only appeared on the element you had to
-              hover to discover. */}
+          <span className="min-w-0 flex-1 truncate font-medium">{chipModelLabel(selected)}</span>
           <ChevronDown
             className={cn(
               'size-3 shrink-0 opacity-60 transition-transform duration-200',
@@ -588,12 +493,13 @@ export function ModelEffortMenu({
               <motion.div
                 key="models-panel"
                 ref={modelsPanelRef}
+                data-composer-popover=""
                 {...menuPanel}
                 role="menu"
                 aria-label="Model and effort"
                 tabIndex={-1}
                 onKeyDown={onPanelKeyDown}
-                className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-border/60 bg-popover shadow-2xl"
+                className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
                 style={{
                   bottom: modelsPos.bottom,
                   left: modelsPos.left,
@@ -603,35 +509,32 @@ export function ModelEffortMenu({
                 }}
                 data-testid="model-effort-menu"
               >
-                {/* The whole header is the control, not just the chevron. It
-                    used to be a div with a 20px button holding the arrow, so
-                    the provider name — the one thing you look at to know what
-                    you're about to change — did nothing when you clicked it. */}
-                <button
+                <Button
                   type="button"
+                  variant="bare"
                   onClick={toggleProviders}
                   aria-label={`Change provider — currently ${activeProviderName || 'no provider'}`}
                   aria-expanded={showProviders}
                   aria-controls="model-provider-panel"
                   data-testid="model-provider-toggle"
-                  className="flex h-11 w-full shrink-0 items-center gap-2 border-b border-border/40 px-3 text-left transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+                  className="flex h-10 w-full shrink-0 items-center gap-2 rounded-none border-b border-[var(--dt-line)] px-3 text-left transition-colors hover:bg-[var(--dt-elevated)] focus-visible:bg-[var(--dt-elevated)]"
                 >
                   <ProviderMark provider={activeProviderName} />
-                  <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-semibold leading-5 text-foreground">
+                  <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-semibold leading-5 text-[var(--dt-fg-1)]">
                     {activeProviderName || 'Provider'}
                   </span>
                   <ApiBadge />
                   <ChevronRight
                     className={cn(
-                      'size-3.5 shrink-0 text-muted-foreground transition-transform duration-200',
+                      'size-3.5 shrink-0 text-[var(--dt-fg-3)] transition-transform duration-200',
                       showProviders && 'rotate-90',
                     )}
                   />
-                </button>
+                </Button>
 
                 <div className="shrink-0 px-2 pb-1 pt-1.5">
-                  <div className="flex items-center gap-1.5 rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 transition-colors focus-within:border-primary/40">
-                    <Search className="size-3 shrink-0 text-muted-foreground" />
+                  <div className="flex items-center gap-1.5 rounded-md border border-[var(--dt-line)] bg-[var(--dt-background)] px-2 py-1.5 transition-colors focus-within:border-[var(--dt-line-strong)]">
+                    <Search className="size-3 shrink-0 text-[var(--dt-fg-3)]" />
                     <input
                       type="text"
                       value={query}
@@ -639,29 +542,29 @@ export function ModelEffortMenu({
                       onKeyDown={(e) => {
                         if (e.key === 'Escape' && query) {
                           e.preventDefault();
-                          e.stopPropagation();
                           setQuery('');
                         }
                       }}
                       placeholder="Search models"
                       aria-label="Search models by name, ID or provider"
                       data-testid="model-search"
-                      className="min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground outline-none placeholder:text-muted-foreground"
+                      className="min-w-0 flex-1 bg-transparent text-[0.8125rem] text-[var(--dt-fg-1)] outline-none placeholder:text-[var(--dt-fg-3)]"
                     />
                     {query ? (
-                      <button
+                      <Button
                         type="button"
+                        variant="bare"
                         onClick={() => setQuery('')}
                         aria-label="Clear model search"
-                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                        className="shrink-0 text-[var(--dt-fg-3)] hover:text-[var(--dt-fg-1)]"
                       >
                         <X className="size-3" />
-                      </button>
+                      </Button>
                     ) : null}
                   </div>
                 </div>
 
-                <div className="shrink-0 px-3 pb-1 pt-1 text-[0.625rem] font-medium leading-4 text-muted-foreground/70">
+                <div className="shrink-0 px-3 pb-1 pt-1 text-[0.625rem] font-medium leading-4 text-[var(--dt-fg-3)]">
                   {searching ? 'Search results' : 'Models'}
                 </div>
 
@@ -675,7 +578,7 @@ export function ModelEffortMenu({
                     )
                   ) : (
                     <>
-                      <div className="px-3 py-2 text-[0.8125rem] text-muted-foreground/70">
+                      <div className="px-3 py-2 text-[0.8125rem] text-[var(--dt-fg-3)]">
                         {loading
                           ? 'Loading…'
                           : searching
@@ -703,22 +606,25 @@ export function ModelEffortMenu({
                   )}
                 </div>
 
-                <div className="shrink-0 border-t border-border/40 px-3 pb-2.5 pt-2">
+                <div className="shrink-0 border-t border-[var(--dt-line)] px-3 pb-2.5 pt-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-baseline gap-1.5">
-                      <span className="text-[0.6875rem] leading-4 text-muted-foreground">Effort</span>
-                      <span className="text-[0.75rem] font-semibold leading-4 text-foreground">
+                      <span className="text-[0.6875rem] leading-4 text-[var(--dt-fg-3)]">
+                        Effort
+                      </span>
+                      <span className="text-[0.75rem] font-semibold leading-4 text-[var(--dt-fg-1)]">
                         {effortOpt.triggerLabel}
                       </span>
                     </div>
-                    <button
+                    <Button
                       type="button"
+                      variant="bare"
                       onClick={cycleEffort}
-                      title="Cycle effort (Ctrl+T while this menu is open)"
-                      className="rounded-[4px] border border-border/60 px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
+                      title="Cycle effort while this menu is open"
+                      className="rounded-[4px] border border-[var(--dt-line)] px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 text-[var(--dt-fg-3)] transition-colors hover:text-[var(--dt-fg-1)]"
                     >
                       Ctrl+T
-                    </button>
+                    </Button>
                   </div>
                   <input
                     type="range"
@@ -726,128 +632,19 @@ export function ModelEffortMenu({
                     max={EFFORT_OPTIONS.length - 1}
                     step={1}
                     value={effortIndex}
+                    data-effort={effort}
                     aria-label="Effort"
                     aria-valuetext={effortOpt.label}
-                    /* The stylesheet clips its fixed gradient at this stop —
-                       the knob position and the colored fill must agree. */
-                    style={{ '--effort-fill': `${Math.round((effortIndex / (EFFORT_OPTIONS.length - 1)) * 100)}%` } as React.CSSProperties}
                     onChange={(e) => {
                       const next = EFFORT_OPTIONS[Number(e.target.value)];
                       if (next) onEffortChange(next.value);
                     }}
-                    className="model-effort-slider mt-2 w-full"
+                    className={cn('model-effort-slider mt-2 w-full', EFFORT_FILL_CLASS)}
                   />
-                  {/* The extended-thinking switch lived in its own effort
-                      popover. That popover is gone — the effort row IS the
-                      control now — so the switch moves in beside it rather
-                      than becoming unreachable. */}
-                  <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2">
-                    <span className="text-2xs text-muted-foreground">Extended thinking</span>
+                  <div className="mt-2 flex items-center justify-between gap-2 border-t border-[var(--dt-line)] pt-2">
+                    <span className="text-2xs text-[var(--dt-fg-2)]">Extended thinking</span>
                     <ThinkingSwitch checked={thinkingEnabled} onChange={onThinkingChange} />
                   </div>
-                  {/* Part D diet — the workspace and permission-mode chips are
-                      rows of this menu, not separate composer controls. Their
-                      own popovers portal above this panel, so a click inside
-                      them closes this menu with the change applied. */}
-                  {workspaceControl && (
-                    <div
-                      className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
-                      data-testid="model-workspace-row"
-                    >
-                      {workspaceControl}
-                    </div>
-                  )}
-                  {modeControl && (
-                    <div
-                      className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
-                      data-testid="model-mode-row"
-                    >
-                      {modeControl}
-                    </div>
-                  )}
-                  {/* A served local model's window is a user setting: presets
-                      plus a custom value, applied by a clean reload. The row
-                      survives the reload (disabled + spinner while the server
-                      is not ready) — a ready-only render unmounted it
-                      mid-interaction. Cloud providers render nothing here —
-                      there is no window to set. */}
-                  {localServerRow && (
-                    <div
-                      className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-2"
-                      data-testid="model-context-row"
-                    >
-                      <span className="text-2xs text-muted-foreground">Context</span>
-                      <div className="flex items-center gap-1">
-                        {LOCAL_CTX_CHOICES.map((c) => (
-                          <Button
-                            key={c}
-                            type="button"
-                            variant="bare"
-                            onClick={() => applyCtx(c)}
-                            disabled={!readyLocalServer}
-                            title={
-                              readyLocalServer
-                                ? `Set context to ${Math.round(c / 1024)}k tokens`
-                                : `${localServerRow.name} is ${localServerRow.status}`
-                            }
-                            aria-pressed={readyLocalServer?.ctxSize === c}
-                            className={cn(
-                              'rounded-[4px] border px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 transition-colors disabled:opacity-50',
-                              readyLocalServer?.ctxSize === c
-                                ? 'border-primary/50 bg-primary/10 text-primary'
-                                : 'border-border/60 text-muted-foreground/70 hover:text-foreground',
-                            )}
-                          >
-                            {Math.round(c / 1024)}k
-                          </Button>
-                        ))}
-                        <input
-                          type="number"
-                          min={1024}
-                          step={1024}
-                          disabled={!readyLocalServer}
-                          value={customCtx}
-                          onChange={(e) => setCustomCtx(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              const n = Number(customCtx);
-                              if (Number.isFinite(n) && n >= 1024) {
-                                applyCtx(n);
-                                setCustomCtx('');
-                              }
-                            }
-                          }}
-                          placeholder={String(localServerRow.ctxSize)}
-                          aria-label="Custom context size in tokens"
-                          className="h-5 w-14 rounded-[4px] border border-border/60 bg-transparent px-1 text-[0.5625rem] leading-3 text-foreground/85 outline-none placeholder:text-muted-foreground/50 disabled:opacity-50"
-                        />
-                        <Button
-                          type="button"
-                          variant="bare"
-                          onClick={() => {
-                            const n = Number(customCtx);
-                            if (Number.isFinite(n) && n >= 1024) {
-                              applyCtx(n);
-                              setCustomCtx('');
-                            } else {
-                              toast.error('Enter a context size of 1024 or more.');
-                            }
-                          }}
-                          disabled={!readyLocalServer || !customCtx}
-                          title="Apply the custom context size"
-                          aria-label="Apply custom context size"
-                          data-testid="model-context-apply"
-                          className="rounded-[4px] border border-border/60 px-1.5 py-0.5 text-[0.5625rem] font-medium leading-3 text-muted-foreground/80 transition-colors hover:text-foreground disabled:opacity-50"
-                        >
-                          Apply
-                        </Button>
-                        {localServerRow.status === 'starting' && (
-                          <Loader2 className="size-3 animate-spin text-muted-foreground" />
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
               </motion.div>
             )}
@@ -856,13 +653,14 @@ export function ModelEffortMenu({
               <motion.div
                 key="provider-panel"
                 ref={providerPanelRef}
+                data-composer-popover=""
                 {...menuFlyout}
                 id="model-provider-panel"
                 role="menu"
                 aria-label="Providers"
                 tabIndex={-1}
                 onKeyDown={onPanelKeyDown}
-                className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-border/60 bg-popover shadow-2xl"
+                className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
                 style={{
                   left: providerPos.left,
                   top: providerPos.top,
@@ -875,38 +673,40 @@ export function ModelEffortMenu({
                   {groups.length > 0 ? (
                     groups.map((g) => providerRow(g.provider))
                   ) : (
-                    <div className="px-3 py-2 text-[0.8125rem] text-muted-foreground/70">
+                    <div className="px-3 py-2 text-[0.8125rem] text-[var(--dt-fg-3)]">
                       No providers.
                     </div>
                   )}
                   {onEditModels ? (
-                    <button
+                    <Button
                       type="button"
+                      variant="bare"
                       onClick={() => {
                         closeAll();
                         onEditModels();
                       }}
                       data-testid="new-provider"
-                      className="flex h-8 w-full items-center gap-2 px-3 text-left text-[0.8125rem] text-muted-foreground/85 transition-colors hover:bg-muted/40 hover:text-foreground"
+                      className="flex h-8 w-full items-center gap-2 rounded-none px-3 text-left text-[0.8125rem] text-[var(--dt-fg-2)] transition-colors hover:bg-[var(--dt-elevated)] hover:text-[var(--dt-fg-1)]"
                     >
                       <span className="min-w-0 flex-1 truncate">New provider</span>
                       <ApiBadge />
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
                 {onEditModels ? (
-                  <div className="shrink-0 border-t border-border/40 p-1">
-                    <button
+                  <div className="shrink-0 border-t border-[var(--dt-line)] p-1">
+                    <Button
                       type="button"
+                      variant="bare"
                       onClick={() => {
                         closeAll();
                         onEditModels();
                       }}
                       data-testid="manage-models"
-                      className="w-full rounded-md px-2.5 py-2 text-left text-[0.8125rem] text-foreground/90 transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
+                      className="w-full rounded-md px-2.5 py-2 text-left text-[0.8125rem] text-[var(--dt-fg-1)] transition-colors hover:bg-[var(--dt-elevated)] focus-visible:bg-[var(--dt-elevated)]"
                     >
                       Manage models
-                    </button>
+                    </Button>
                   </div>
                 ) : null}
               </motion.div>
