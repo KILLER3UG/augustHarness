@@ -287,11 +287,27 @@ def relieveSmallWindowContext(
     the window, archive the unpruned transcript and apply the projection
     prune with a window-scaled protection budget. Pairing-safe (slots are
     rewritten in place, never dropped) and idempotent.
+
+    While a fanout is live the threshold drops to 50%: llama-server's unified
+    KV is one pool shared by parent and workers, and the parent's reply budget
+    (4096 floor) plus a worker's ~3.5k must still fit beside the parent's
+    prompt. 65% of 16k left no room for them (measured 2026-11-19).
     """
     if not (0 < int(contextWindow) <= 16384):
         return messages
     before = _tokens(messages)
-    if before < int(contextWindow * 0.65):
+    fraction = 0.65
+    try:
+        from app.services.harness_jobs import list_jobs
+
+        sid = as_str(getattr(session, 'id', '') or '')
+        if sid and any(
+            str(j.get('status') or '') == 'running' for j in list_jobs(sid, limit=5)
+        ):
+            fraction = 0.5
+    except Exception:
+        logger.debug('fanout pressure check failed', exc_info=True)
+    if before < int(contextWindow * fraction):
         return messages
     try:
         from app.services.transcript_archive import archive_messages

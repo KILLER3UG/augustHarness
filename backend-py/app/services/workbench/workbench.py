@@ -4591,7 +4591,14 @@ async def _sendWorkbenchMessageStreamImpl(
                         _isContextOverflowError(response)
                         and not overflowReducedThisRound
                         and not _isCancelled()
-                        and not attemptEmittedContent
+                        # Text-only veto: a reasoning model streams `thinking`
+                        # before every overflow, so counting thinking as
+                        # emitted content vetoed the rescue on exactly the
+                        # models that need it. Thinking is not an answer — the
+                        # loopback boundary strips prior reasoning anyway, and
+                        # a retry adds a second thinking block, not a second
+                        # reply. Transient retries below still veto on content.
+                        and not attemptEmittedText
                         and retryAttempt < retryPolicy['maxRetries']
                     ):
                         overflowReducedThisRound = True
@@ -6476,6 +6483,24 @@ async def _sendWorkbenchMessageStreamImpl(
                 await asyncio.get_running_loop().run_in_executor(None, _stepSnap)
             except Exception:
                 logger.debug('shadow-git step snapshot failed', exc_info=True)
+        # A background fanout on a small-window loopback must yield the turn
+        # instead of looping on: llama-server's unified KV is ONE pool shared
+        # by every slot, and the parent's prompt+generation beside a single
+        # worker already exceeds a 16k pool (measured 9022 + 7363 > 16384).
+        # No amount of parent-side pruning fits both; the completions arrive
+        # as queued messages and the auto-turn synthesizes once lanes settle.
+        if _turnLoopbackSmall and not cancelledMidRound:
+            for _tr in toolResults:
+                _trContent = str(_tr.get('content') or '')
+                if (
+                    '"fanoutId"' in _trContent
+                    and re.search(r'"background"\s*:\s*true', _trContent)
+                    and re.search(r'"status"\s*:\s*"started"', _trContent)
+                ):
+                    turnEndReason = 'awaiting-subagents'
+                    break
+        if turnEndReason == 'awaiting-subagents':
+            break
         if planSubmittedThisRound:
             turnEndReason = 'awaiting-input'
             break

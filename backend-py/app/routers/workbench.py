@@ -283,6 +283,31 @@ async def _startSubagentAutoTurn(sessionId: str) -> None:
     existing = _activeStreams.get(sessionId)
     if existing is not None and not existing.done():
         return  # a turn is live — its next loop boundary drains the queue
+    # Small-window loopback: llama-server's unified KV is one shared pool, so
+    # a synthesis turn beside a still-live worker overflows it (measured
+    # 9022 + 7363 > 16384). Hold the wake until every dispatched job has
+    # settled; the fanout watcher bounds how long that can take. Re-arm via
+    # call_later — scheduleSubagentAutoTurn would dedupe against THIS wake,
+    # which is still running, and the retry would never be scheduled.
+    try:
+        from app.services.harness_jobs import list_jobs
+        from app.services.workbench.loop.surface import _modelCapabilityProfile
+
+        profile = _modelCapabilityProfile(session)
+        if (
+            profile.get('loopback') is True
+            and 0 < as_int(profile.get('context_window'), 0) <= 16384
+            and any(
+                str(j.get('status') or '') == 'running'
+                for j in list_jobs(sessionId, limit=10)
+            )
+        ):
+            asyncio.get_running_loop().call_later(
+                _AUTO_TURN_COALESCE_S, scheduleSubagentAutoTurn, sessionId
+            )
+            return
+    except Exception:
+        logger.debug('auto-turn fanout deferral check failed', exc_info=True)
     consecutive = int(getattr(session, '_autoTurnsSinceUser', 0) or 0)
     if consecutive >= _AUTO_TURN_MAX_CONSECUTIVE:
         # The runaway guard is doing its job, but returning silently made a
