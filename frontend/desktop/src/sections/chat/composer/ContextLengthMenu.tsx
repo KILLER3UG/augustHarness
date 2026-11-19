@@ -10,6 +10,7 @@ import { ChevronDown, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useMenuFit } from './useComposerPopovers';
 import {
   LOCAL_CTX_CHOICES,
   listLlamaServers,
@@ -54,6 +55,8 @@ export function ContextLengthMenu({
 
   const [customCtx, setCustomCtx] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const fit = useMenuFit(isOpen, rootRef, menuRef);
   const qc = useQueryClient();
 
   const serversQ = useQuery({
@@ -183,11 +186,15 @@ export function ContextLengthMenu({
 
       {isOpen && (
         <div
+          ref={menuRef}
           role="dialog"
           aria-label="Context length"
           data-composer-popover=""
           data-testid="model-context-menu"
-          className="absolute bottom-full right-0 z-50 mb-2 w-[280px] max-w-[calc(100vw-2rem)] rounded-xl border border-[var(--dt-line)] bg-popover p-3 shadow-2xl"
+          className={cn(
+            'absolute right-0 z-50 w-[280px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--dt-line)] bg-popover p-3 shadow-2xl',
+            fit?.side === 'bottom' ? 'top-full mt-2' : 'bottom-full mb-2',
+          )}
         >
           <div className="flex items-center justify-between gap-2 pb-2">
             <span className="text-xs font-semibold text-[var(--dt-fg-1)]">Context length</span>

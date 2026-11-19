@@ -23,6 +23,7 @@ import { api } from '@/api/client';
 import { folderNameFromPath, openFolderViaTauri } from '@/api/folder';
 import { revealInFolder } from '@/lib/tauri-shell';
 import { cn, workspaceBaseName } from '@/lib/utils';
+import { useMenuFit } from './useComposerPopovers';
 import { useWorkspacesStore } from '@/store/workspaces';
 
 export interface WorkspacePillProps {
@@ -57,6 +58,8 @@ export function WorkspacePill({
   const [picking, setPicking] = useState(false);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const fit = useMenuFit(isOpen, rootRef, menuRef);
   const queryClient = useQueryClient();
 
   const workspaces = useWorkspacesStore((s) => s.workspaces);
@@ -220,10 +223,14 @@ export function WorkspacePill({
 
       {isOpen && (
         <div
+          ref={menuRef}
           role="menu"
           data-composer-popover=""
           data-testid="composer-folder-menu"
-          className="absolute bottom-full left-0 z-50 mb-2 flex max-h-[420px] w-[304px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
+          className={cn(
+            'absolute left-0 z-50 flex w-[304px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl',
+            fit?.side === 'bottom' ? 'top-full mt-2' : 'bottom-full mb-2',
+          )}
         >
           <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--dt-line)] px-3">
             <Folder className="size-3.5 shrink-0 text-[var(--dt-fg-3)]" aria-hidden />

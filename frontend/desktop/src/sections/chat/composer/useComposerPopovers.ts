@@ -5,6 +5,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,6 +36,41 @@ export type ComposerDropdownApi = {
 };
 
 export type ComposerPillPopover = 'actions' | 'workspace' | 'access' | 'model' | 'context';
+
+export interface MenuFit {
+  side: 'top' | 'bottom';
+}
+
+/** Cap a pill menu to the roomier side of its trigger so short windows scroll, not clip. */
+export function useMenuFit(
+  open: boolean,
+  anchorRef: RefObject<HTMLElement | null>,
+  menuRef: RefObject<HTMLElement | null>,
+): MenuFit | null {
+  const [fit, setFit] = useState<MenuFit | null>(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      setFit(null);
+      return;
+    }
+    const measure = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const above = r.top - 48 - 8; // 48 clears the in-webview titlebar
+      const below = window.innerHeight - r.bottom - 12;
+      const side: MenuFit['side'] = above >= below ? 'top' : 'bottom';
+      const maxHeight = Math.max(160, side === 'top' ? above : below);
+      // measured geometry, not a theme value: imperative write keeps JSX style-free
+      if (menuRef.current) menuRef.current.style.maxHeight = `${maxHeight}px`;
+      setFit({ side });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open, anchorRef, menuRef]);
+  return fit;
+}
 
 export type AnchorPos = { top: number; left: number };
 

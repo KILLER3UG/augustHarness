@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 import type { WorkbenchGuardMode } from '@/components/chat/WorkbenchModeSelector';
 import type { WorkbenchSandboxMode } from '@/components/chat/SandboxModeSelector';
 import { normalizeHarnessMode, type HarnessAgentMode } from '@/components/chat/HarnessModeChip';
+import { useMenuFit } from './useComposerPopovers';
 
 export interface AccessPillProps {
   guardMode: WorkbenchGuardMode;
@@ -121,6 +122,8 @@ export function AccessPill({
   }
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const fit = useMenuFit(isOpen, rootRef, menuRef);
 
   useEffect(() => {
     if (isControlled || !localOpen) return;
@@ -249,11 +252,15 @@ export function AccessPill({
 
       {isOpen && (
         <div
+          ref={menuRef}
           role="menu"
           aria-label="Access"
           data-composer-popover=""
           data-testid="agent-mode-menu"
-          className="absolute bottom-full left-0 z-50 mb-2 max-h-[calc(100vh-8rem)] w-[316px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
+          className={cn(
+            'absolute left-0 z-50 w-[316px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl',
+            fit?.side === 'bottom' ? 'top-full mt-2' : 'bottom-full mb-2',
+          )}
         >
           <div className="py-1">
             <Button
