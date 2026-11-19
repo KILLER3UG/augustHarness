@@ -865,6 +865,7 @@ async def call_openai_workbench(
     tokens arrive. Returns the full aggregated response dict with
     ``choices`` (OpenAI format), ``text``, ``thinking``, and ``tool_uses``.
     """
+    from app.providers.api_format import is_loopback_base_url
     from app.providers.clients import getClient
 
     if not provider:
@@ -878,8 +879,6 @@ async def call_openai_workbench(
     if not apiKey:
         # A keyless loopback host (Ollama, LM Studio, a served GGUF) needs no
         # credential — the same rule that admits it everywhere else.
-        from app.providers.api_format import is_loopback_base_url
-
         if not is_loopback_base_url(client.resolveBaseUrl()):
             return {'error': 'API key not configured'}
         apiKey = ''
