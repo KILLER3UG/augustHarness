@@ -1581,7 +1581,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
           the global pane opened, and the layout test pinned that (2026-10-03). */}
       <MemoryGroup testId="memory-group-behavior" title="Memory behavior">
         {/* Model-memory toggles: one line each, separated by rules. */}
-        <div className="divide-y divide-border/60">
+        <div className="divide-y divide-border/60 rounded-xl border border-border/70 bg-card/40">
         <SettingsToggle
           checked={Boolean(cfg?.memoryEnabled ?? true)}
           onCheckedChange={(next) => configMut.mutate({ memoryEnabled: next })}
@@ -1627,7 +1627,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
           disabled={configQ.isLoading || configMut.isPending || cfg?.memoryEnabled === false}
           data-testid="memory-ram-export-toggle"
         />
-        <div className="flex items-center justify-between gap-3 py-2.5" data-testid="memory-ram-actions">
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5" data-testid="memory-ram-actions">
           <p className="text-xs leading-relaxed text-muted-foreground">
             {getCurrentWorkspace()?.path
               ? 'Run the topology policy review on the current workspace now.'
@@ -1647,7 +1647,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
           </Button>
         </div>
         {cfg?.ramTrajectoryExport ? (
-          <div className="py-2.5" data-testid="memory-ram-trajectories">
+          <div className="px-3 py-2.5" data-testid="memory-ram-trajectories">
             <p className="text-xs leading-relaxed text-muted-foreground">
               Exported trajectories
             </p>
@@ -1658,8 +1658,8 @@ export function MemorySection({ active }: { active: { id: string } }) {
             ) : (
               <div className="mt-1 divide-y divide-border/60">
                 {(trajectoriesQ.data?.trajectories ?? []).map((t) => (
-                  <div key={t.sessionId} className="flex items-center justify-between gap-3 py-1.5">
-                    <span className="truncate text-xs text-foreground">{t.sessionId}</span>
+                  <div key={t.sessionId} className="flex items-center justify-between gap-3 py-1.5" title={t.sessionId}>
+                    <span className="truncate text-xs text-foreground">Training trajectory</span>
                     <span className="shrink-0 text-2xs text-muted-foreground">
                       {t.turns} {t.turns === 1 ? 'turn' : 'turns'} · {Math.max(1, Math.round(t.bytes / 1024))} KB
                     </span>
