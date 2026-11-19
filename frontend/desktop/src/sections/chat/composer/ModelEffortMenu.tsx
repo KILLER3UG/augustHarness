@@ -206,6 +206,10 @@ export function ModelEffortMenu({
     [activeProviderName, visibleModels],
   );
   const searching = query.trim().length > 0;
+  // A fresh profile has no provider rows at all: the old pane invented a
+  // placeholder "Provider" group and told the user it had no models, which
+  // reads as a broken install instead of an empty one.
+  const noProviders = !loading && groups.length === 0;
   const searchResults = useMemo(
     () => (searching ? visibleModels.filter((m) => modelMatchesQuery(m, query)) : []),
     [query, searching, visibleModels],
@@ -509,6 +513,13 @@ export function ModelEffortMenu({
                 }}
                 data-testid="model-effort-menu"
               >
+                {noProviders ? (
+                  <div className="flex h-10 w-full shrink-0 items-center gap-2 border-b border-[var(--dt-line)] px-3">
+                    <span className="min-w-0 flex-1 truncate text-[0.8125rem] leading-5 text-[var(--dt-fg-3)]">
+                      No provider connected
+                    </span>
+                  </div>
+                ) : (
                 <Button
                   type="button"
                   variant="bare"
@@ -531,6 +542,7 @@ export function ModelEffortMenu({
                     )}
                   />
                 </Button>
+                )}
 
                 <div className="shrink-0 px-2 pb-1 pt-1.5">
                   <div className="flex items-center gap-1.5 rounded-md border border-[var(--dt-line)] bg-[var(--dt-background)] px-2 py-1.5 transition-colors focus-within:border-[var(--dt-line-strong)]">
@@ -565,7 +577,7 @@ export function ModelEffortMenu({
                 </div>
 
                 <div className="shrink-0 px-3 pb-1 pt-1 text-[0.625rem] font-medium leading-4 text-[var(--dt-fg-3)]">
-                  {searching ? 'Search results' : 'Models'}
+                  {searching ? 'Search results' : noProviders ? 'Get started' : 'Models'}
                 </div>
 
                 <div
@@ -576,6 +588,42 @@ export function ModelEffortMenu({
                     (searching ? searchResults : activeModels).map((m) =>
                       modelRow(m, searching),
                     )
+                  ) : noProviders && !searching && !loading ? (
+                    <div className="space-y-2 px-3 py-2">
+                      <div className="text-[0.8125rem] leading-5 text-[var(--dt-fg-2)]">
+                        No models yet
+                      </div>
+                      <div className="text-[0.75rem] leading-4 text-[var(--dt-fg-3)]">
+                        Connect a provider or download a local model to start chatting.
+                      </div>
+                      <div className="flex gap-1.5 pt-0.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="flex-1"
+                          onClick={() => {
+                            closeAll();
+                            void navigate('/settings/plugins');
+                          }}
+                        >
+                          Add provider
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="flex-1"
+                          onClick={() => {
+                            closeAll();
+                            void navigate('/settings/explore');
+                          }}
+                        >
+                          <Download className="size-3" />
+                          Explore models
+                        </Button>
+                      </div>
+                    </div>
                   ) : (
                     <>
                       <div className="px-3 py-2 text-[0.8125rem] text-[var(--dt-fg-3)]">

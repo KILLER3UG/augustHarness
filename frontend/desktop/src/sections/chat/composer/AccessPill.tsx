@@ -15,7 +15,6 @@ import {
   Shield,
   ShieldCheck,
   Terminal,
-  TriangleAlert,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -254,7 +253,7 @@ export function AccessPill({
           aria-label="Access"
           data-composer-popover=""
           data-testid="agent-mode-menu"
-          className="absolute bottom-full left-0 z-50 mb-2 max-h-[min(24rem,calc(100vh-14rem))] w-[316px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
+          className="absolute bottom-full left-0 z-50 mb-2 max-h-[calc(100vh-8rem)] w-[316px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-[var(--dt-line)] bg-popover shadow-2xl"
         >
           <div className="py-1">
             <Button
@@ -326,23 +325,23 @@ export function AccessPill({
               data-testid="agent-mode-row"
               data-mode="full"
               className={cn(
-                'flex w-full items-start gap-2.5 rounded-none px-3 py-1 text-left transition-colors hover:bg-destructive/10',
-                isFull && 'bg-destructive/10',
+                'flex w-full items-start gap-2.5 rounded-none px-3 py-1 text-left transition-colors hover:bg-[var(--dt-elevated)]',
+                isFull && 'bg-[var(--dt-elevated)]',
               )}
             >
-              <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+              <Shield className="mt-0.5 size-4 shrink-0 text-[var(--dt-fg-3)]" aria-hidden />
               <span className="min-w-0 flex-1">
-                <span className="block text-xs font-semibold leading-5 text-destructive">
+                <span className="block text-xs font-semibold leading-5 text-[var(--dt-fg-1)]">
                   Full access
                 </span>
-                <span className="block text-2xs leading-snug text-destructive/85">
+                <span className="block text-2xs leading-snug text-[var(--dt-fg-3)]">
                   {isWholeMachine
                     ? 'Never asks — edits files and runs commands across the whole machine.'
                     : 'Never asks — edits files and runs commands inside this project.'}
                 </span>
               </span>
               {isFull ? (
-                <Check className="mt-0.5 size-3.5 shrink-0 text-destructive" aria-hidden />
+                <Check className="mt-0.5 size-3.5 shrink-0 text-[var(--dt-fg-1)]" aria-hidden />
               ) : (
                 <span className="size-3.5 shrink-0" aria-hidden />
               )}
@@ -391,12 +390,7 @@ export function AccessPill({
             {!isReadOnly && (
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <div
-                    className={cn(
-                      'text-xs font-medium',
-                      isWholeMachine ? 'text-destructive' : 'text-[var(--dt-fg-1)]',
-                    )}
-                  >
+                  <div className="text-xs font-medium text-[var(--dt-fg-1)]">
                     Whole-machine reach
                   </div>
                   <div className="text-2xs text-[var(--dt-fg-3)]">
