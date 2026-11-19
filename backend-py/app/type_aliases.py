@@ -133,6 +133,8 @@ class BrainConfigDict(TypedDict, total=False):
     memoryReview: bool
     modelMemoryWrites: bool
     memorySensitiveTopics: bool
+    ramReview: bool
+    ramTrajectoryExport: bool
     cameraAccess: bool
     skillRelevanceMatch: bool
     consolidationIntervalHours: int

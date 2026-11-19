@@ -58,6 +58,8 @@ boolKeys: tuple[str, ...] = (
     'autoReview',
     'modelMemoryWrites',
     'memorySensitiveTopics',
+    'ramReview',
+    'ramTrajectoryExport',
     'subagentWorktreeIsolation',
     'cameraAccess',
     'consolidationModelSummarize',
@@ -290,6 +292,13 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # this is on; sensitive-topic facts additionally need memorySensitiveTopics.
     ('modelMemoryWrites', 'model_memory_writes', True, 'bool'),
     ('memorySensitiveTopics', 'memory_sensitive_topics', False, 'bool'),
+    # Meta-RAM: LOAD/OFFLOAD of the workspace topology ride memoryEnabled.
+    # These two are the opt-in halves: the automatic policy-review pass that
+    # files ram_policy proposals after offloads, and the JSONL trajectory
+    # exporter with trainable-token masking. Neither applies anything by
+    # itself — proposals still need human approval.
+    ('ramReview', 'ram_review', False, 'bool'),
+    ('ramTrajectoryExport', 'ram_trajectory_export', False, 'bool'),
     # Camera capture: the camera_snapshot / camera_list_devices tools are
     # gated behind this; when off the tools return a policy error. Frames
     # captured during a call are transient by default — never persisted to

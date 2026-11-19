@@ -38,6 +38,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArchiveRestore, ArrowUp, ChevronLeft, ChevronRight, Download, Loader2, Pencil, RefreshCw, Search, SlidersHorizontal, Trash2, UserRoundCog } from 'lucide-react';
 import { api } from '@/api/client';
+import { getCurrentWorkspace } from '@/store/workspaces';
+import { qk } from '@/lib/query-keys';
 import { PageLoader } from '@/components/PageLoader';
 import { Button } from '@/components/ui/button';
 import { SettingsToggle } from '@/components/settings/SettingsToggle';
@@ -81,7 +83,7 @@ interface StorePage {
 
 interface BrainConfigResponse {
   source?: string;
-  config?: { memoryEnabled?: boolean; modelMemoryRead?: boolean; memoryReview?: boolean; autoReview?: boolean; modelMemoryWrites?: boolean; memorySensitiveTopics?: boolean } & Record<string, unknown>;
+  config?: { memoryEnabled?: boolean; modelMemoryRead?: boolean; memoryReview?: boolean; autoReview?: boolean; modelMemoryWrites?: boolean; memorySensitiveTopics?: boolean; ramReview?: boolean; ramTrajectoryExport?: boolean } & Record<string, unknown>;
   defaults?: Record<string, unknown>;
 }
 
@@ -586,6 +588,40 @@ export function MemorySection({ active }: { active: { id: string } }) {
     },
     onError: (e: Error) => toast.error(e.message || 'Could not update setting'),
   });
+  /* Meta-RAM: the policy review is a user-gated action — the button files a
+   * proposal, nothing is applied until it is approved in Improvements. */
+  const ramReviewMut = useMutation({
+    mutationFn: (workspace: string) =>
+      api.post<{ ok: boolean; proposalId: string | null; revised: boolean }>('/api/brain/ram/review', { workspace }),
+    onSuccess: (res) => {
+      if (res.proposalId != null) {
+        toast.success('Policy revision proposed — review it in Improvements below');
+        void qc.invalidateQueries({ queryKey: qk.harnessProposals() });
+        void qc.invalidateQueries({ queryKey: qk.reviewInboxCount });
+      } else {
+        toast.success('Workspace topology is within policy — nothing to revise');
+      }
+    },
+    onError: (e: Error) => toast.error(e.message || 'Policy review failed'),
+  });
+  const trajectoriesQ = useQuery<{ trajectories: { sessionId: string; turns: number; bytes: number }[] }>({
+    queryKey: ['ram-trajectories'],
+    queryFn: () => api.get('/api/brain/ram/trajectories'),
+    enabled: Boolean(configQ.data?.config?.ramTrajectoryExport),
+  });
+  const downloadTrajectory = async (sessionId: string) => {
+    try {
+      const text = await api.getText(`/api/brain/ram/trajectories/${encodeURIComponent(sessionId)}`);
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/x-ndjson' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${sessionId}.jsonl`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Download failed');
+    }
+  };
   /* M-9: the store budget is a NUMBER, so it cannot ride the boolean
    * mutation above (one PUT per keystroke). Its own mutation, its own
    * draft, its own Save. */
@@ -1575,6 +1611,73 @@ export function MemorySection({ active }: { active: { id: string } }) {
           disabled={configQ.isLoading || configMut.isPending}
           data-testid="memory-auto-review-toggle"
         />
+        <SettingsToggle
+          checked={Boolean(cfg?.ramReview)}
+          onCheckedChange={(next) => configMut.mutate({ ramReview: next })}
+          label="Review workspace memory policy (Meta-RAM)"
+          description="After a subtask settles or before compaction, August offloads what it learned into the workspace's memory topology. This pass checks that topology for oversized, stale or dangling entries and proposes a revision — nothing changes until you approve it in Improvements."
+          disabled={configQ.isLoading || configMut.isPending || cfg?.memoryEnabled === false}
+          data-testid="memory-ram-review-toggle"
+        />
+        <SettingsToggle
+          checked={Boolean(cfg?.ramTrajectoryExport)}
+          onCheckedChange={(next) => configMut.mutate({ ramTrajectoryExport: next })}
+          label="Export training trajectories (JSONL)"
+          description="Each completed turn is appended to a local JSONL file with per-message trainable flags — system prompts, tool envelopes and tool calls are masked out. Files stay on this machine until you download them."
+          disabled={configQ.isLoading || configMut.isPending || cfg?.memoryEnabled === false}
+          data-testid="memory-ram-export-toggle"
+        />
+        <div className="flex items-center justify-between gap-3 py-2.5" data-testid="memory-ram-actions">
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {getCurrentWorkspace()?.path
+              ? 'Run the topology policy review on the current workspace now.'
+              : 'Open a workspace to review its memory topology.'}
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={ramReviewMut.isPending || !getCurrentWorkspace()?.path || cfg?.memoryEnabled === false}
+            onClick={() => {
+              const ws = getCurrentWorkspace()?.path;
+              if (ws) ramReviewMut.mutate(ws);
+            }}
+            data-testid="memory-ram-review-now"
+          >
+            {ramReviewMut.isPending ? 'Reviewing…' : 'Review now'}
+          </Button>
+        </div>
+        {cfg?.ramTrajectoryExport ? (
+          <div className="py-2.5" data-testid="memory-ram-trajectories">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Exported trajectories
+            </p>
+            {(trajectoriesQ.data?.trajectories ?? []).length === 0 ? (
+              <p className="mt-1 text-2xs text-muted-foreground">
+                None yet — a completed turn writes the first file.
+              </p>
+            ) : (
+              <div className="mt-1 divide-y divide-border/60">
+                {(trajectoriesQ.data?.trajectories ?? []).map((t) => (
+                  <div key={t.sessionId} className="flex items-center justify-between gap-3 py-1.5">
+                    <span className="truncate text-xs text-foreground">{t.sessionId}</span>
+                    <span className="shrink-0 text-2xs text-muted-foreground">
+                      {t.turns} {t.turns === 1 ? 'turn' : 'turns'} · {Math.max(1, Math.round(t.bytes / 1024))} KB
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void downloadTrajectory(t.sessionId)}
+                      data-testid={`memory-ram-trajectory-download-${t.sessionId}`}
+                    >
+                      <Download className="mr-1 h-3.5 w-3.5" />
+                      JSONL
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
         {/* `memoryReview` and `memorySensitiveTopics` live in the strip at the
             top of the page now — one setting, one surface. */}
       </div>

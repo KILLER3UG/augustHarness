@@ -737,3 +737,73 @@ async def openMemoryFolder() -> dict[str, object]:
     except Exception:
         opened = False
     return {'ok': True, 'path': str(folder), 'opened': opened}
+
+
+# ── Meta-RAM: policy review + trajectory export ──────────────────────────
+
+
+@router.post('/ram/review')
+async def postRamReview(body: dict[str, object]):
+    """Run the 3-step topology review now and file its proposal (if any).
+
+    Explicit human action — the ramReview toggle only governs the AUTOMATIC
+    pass after offloads. Nothing applies here; approval stays in the
+    proposals queue.
+    """
+    from app.json_narrowing import as_str
+    from app.services.workbench import ram
+
+    workspace = as_str((body or {}).get('workspace'))
+    if not workspace:
+        raise HTTPException(
+            status_code=400,
+            detail={'code': 'validation', 'message': 'workspace is required'},
+        )
+    pid = ram.file_review_proposal(workspace)
+    return {'ok': True, 'proposalId': pid, 'revised': pid is not None}
+
+
+@router.get('/ram/trajectories')
+async def getRamTrajectories():
+    """List exported trajectory files (opt-in exporter's output)."""
+    from app.lib.paths import dataPath
+
+    root = dataPath('exports', 'trajectories')
+    out = []
+    if root.is_dir():
+        for path in sorted(root.glob('*.jsonl')):
+            try:
+                lines = path.read_text(encoding='utf-8').splitlines()
+            except OSError:
+                continue
+            out.append(
+                {
+                    'sessionId': path.stem,
+                    'turns': len([ln for ln in lines if ln.strip()]),
+                    'bytes': path.stat().st_size,
+                }
+            )
+    return {'ok': True, 'trajectories': out}
+
+
+@router.get('/ram/trajectories/{sessionId}')
+async def getRamTrajectory(sessionId: str):
+    """Download one session's trajectory JSONL (masked, opt-in export)."""
+    import re
+
+    from fastapi.responses import PlainTextResponse
+
+    from app.lib.paths import dataPath
+
+    safe = re.sub(r'[^A-Za-z0-9_.-]', '_', sessionId)[:120]
+    path = dataPath('exports', 'trajectories', f'{safe}.jsonl')
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail={'code': 'not_found', 'message': 'no exported trajectory for this session'},
+        )
+    return PlainTextResponse(
+        path.read_text(encoding='utf-8'),
+        media_type='application/x-ndjson',
+        headers={'Content-Disposition': f'attachment; filename="{safe}.jsonl"'},
+    )

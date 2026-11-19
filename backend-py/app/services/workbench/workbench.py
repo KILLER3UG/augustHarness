@@ -774,6 +774,7 @@ def _unfreezePromptIndexes(session: object) -> None:
     for attr in (
         '_frozen_mem_index',
         '_frozen_project_index',
+        '_frozen_ram_block',
     ):
         try:
             setattr(session, attr, None)
@@ -1113,6 +1114,27 @@ def buildSystemPrompt(
                 pass
         if _projIdx:
             for ln in _projIdx.splitlines():
+                memParts.append('  ' + ln)
+        # Meta-RAM workspace topology — same freeze discipline as the indexes
+        # above; OFFLOAD rewrites reach the next session, and the per-turn
+        # tail stays the live channel within this one.
+        _ramBlock = getattr(session, '_frozen_ram_block', None)
+        if _ramBlock is None:
+            _ramBlock = ''
+            if _memReadAllowed and workspacePath:
+                try:
+                    from app.services.workbench import ram as _ram
+
+                    _ramBlock = _ram.load_block(workspacePath, session)
+                except Exception:
+                    logger.debug('prompt: ram block failed', exc_info=True)
+                    _ramBlock = ''
+            try:
+                session._frozen_ram_block = _ramBlock  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        if _ramBlock:
+            for ln in _ramBlock.splitlines():
                 memParts.append('  ' + ln)
         intake.append('\n'.join(memParts))
     if skillsLine:
@@ -3335,6 +3357,16 @@ async def _sendWorkbenchMessageStreamImpl(
                     logger.info('workbench auto-compact skipped — compaction lock held session=%s', sessionId)
                 else:
                     _unfreezePromptIndexes(session)
+                    # Meta-RAM OFFLOAD: dream the working state into the
+                    # workspace topology BEFORE the middle is summarized away.
+                    try:
+                        from app.services.workbench import ram as _ram
+
+                        _ramWs = as_str(getattr(session, 'workspacePath', '') or '')
+                        _ram.offload(_ramWs, session, unprunedMessages, reason='pre-compaction')
+                        _ram.maybe_file_review(_ramWs, sessionId)
+                    except Exception:
+                        logger.debug('ram pre-compaction offload failed', exc_info=True)
                     try:
                         from app.services.transcript_archive import archive_messages
 
@@ -6547,6 +6579,24 @@ async def _sendWorkbenchMessageStreamImpl(
         skillsInjected=_skillsInjectedNames,
         errorFamilies=sorted(turnErrorFamilies),
     )
+    # Meta-RAM stage-2 trajectory export (opt-in, masked). Rides turn close so
+    # every completed turn — error turns included — lands in the JSONL.
+    try:
+        from app.services.workbench import ram as _ram
+
+        _ram.export_turn(
+            sessionId,
+            resolvedModel,
+            as_str(resolvedProvider.get('name') or resolvedProvider.get('id'), '')
+            if resolvedProvider
+            else '',
+            currentMessages,
+            turn_end_reason=_finalTurnEndReason(
+                turnEndReason, errored=turnError is not None, cancelledNow=_isCancelled()
+            ),
+        )
+    except Exception:
+        logger.debug('ram trajectory export hook failed', exc_info=True)
     try:
         logger.debug('workbench turn complete: %d rounds, in=%d out=%d', toolRound, totalInputTokens, totalOutputTokens)
         _tc.persistAndClose(

@@ -57,6 +57,7 @@ APPROVABLE_KINDS = frozenset(
         'skill_delete',
         'retire',
         'archive',
+        'ram_policy',
     }
 )
 # Analysis-only kinds — always safe to store, never auto-applied.
@@ -346,7 +347,7 @@ def save_proposal(
     # Fail skill-kind proposals at file time so the queue never holds
     # a live weapon — payload.name must pass the same validation the applier
     # (and skill CRUD) enforces.
-    if kind in APPROVABLE_KINDS and kind != 'brain_config':
+    if kind in APPROVABLE_KINDS and kind not in ('brain_config', 'ram_policy'):
         p_name = as_str((payload or {}).get('name'), '').strip()
         from app.services.skill_service import SkillValidationError, _validateName
 
@@ -1081,6 +1082,13 @@ def _apply_promote(row: dict[str, Any]) -> dict[str, Any]:
 # dict entry plus a handler, so a new branch can no longer be buried in the
 # middle of a 180-line if-chain where the dispatch order is the only
 # documentation.
+def _apply_ram_policy(row: dict[str, Any]) -> dict[str, Any]:
+    """Human-approved topology revision; Undo rides the rollback entry."""
+    from app.services.workbench import ram
+
+    return ram.apply_policy(as_dict(row.get('payload')))
+
+
 _APPROVERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     'brain_config': _apply_brain_config,
     'skill_create': _apply_skill_write,
@@ -1090,6 +1098,7 @@ _APPROVERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     'retire': _apply_skill_retire,
     'archive': _apply_skill_archive,
     'promote': _apply_promote,
+    'ram_policy': _apply_ram_policy,
 }
 
 

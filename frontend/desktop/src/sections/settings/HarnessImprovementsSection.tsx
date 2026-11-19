@@ -26,6 +26,7 @@ import { toast } from 'sonner';
 import { api } from '@/api/client';
 import { Markdown } from '@/sections/chat/ChatMarkdown';
 import { getAutoApplyHistory } from '@/api/api-client/skills-versions';
+import { undoAugustRollback } from '@/api/api-client/manage';
 import { Button } from '@/components/ui/button';
 import { SectionHeader } from '@/components/SectionHeader';
 import { SettingsTabs } from '@/components/settings/SettingsTabs';
@@ -51,7 +52,7 @@ interface Proposal {
   payload?: Record<string, unknown>;
   decidedAt?: string;
   decisionNote?: string;
-  applyResult?: { ok?: boolean; error?: string; action?: string; name?: string; trashId?: string };
+  applyResult?: { ok?: boolean; error?: string; action?: string; name?: string; trashId?: string; rollbackId?: string; revised?: string[]; removed?: string[] };
   queue: Queue;
   /** The reviewer's verdict as one sentence, formed by the backend's
    *  `review_summary()`. `''` when no reviewer saw this proposal, which is how
@@ -124,6 +125,10 @@ const APPROVABLE = new Set([
   'retire',
   'archive',
   'promote',
+  // Meta-RAM topology revision: the applier rewrites/removes workspace
+  // topology files and records a restore_ram_topology rollback, so the
+  // applied row carries an Undo beside the decision.
+  'ram_policy',
 ]);
 
 /** Map one memory-store retirement row into the shared card shape
@@ -408,6 +413,25 @@ export function HarnessImprovementsSection({
     }
   };
 
+  /** Undo an applied Meta-RAM topology revision through the shared rollback
+   *  route — the decision stays recorded, the files go back to their
+   *  pre-approval bytes. */
+  const undoRamPolicy = async (row: Proposal) => {
+    const rollbackId = String(row.applyResult?.rollbackId ?? '');
+    if (!rollbackId) return;
+    setRestoring(true);
+    setError(null);
+    try {
+      await undoAugustRollback(rollbackId);
+      toast.success('Workspace topology restored to its pre-approval state');
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Undo failed');
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const toggleCheck = (row: Proposal) => {
     setSelectedId(null);
     setChecked((prev) => {
@@ -661,7 +685,15 @@ export function HarnessImprovementsSection({
                 body={JSON.stringify(
                   draftedBody
                     ? { ...selected.payload, body: `${draftedBody.length} chars — rendered above` }
-                    : selected.payload,
+                    : selected.kind === 'ram_policy'
+                      ? {
+                          workspace: selected.payload.workspace,
+                          findings: selected.payload.findings,
+                          revised: Object.keys((selected.payload.revised as Record<string, unknown>) ?? {}),
+                          removed: selected.payload.removed,
+                          note: 'file contents live in the diff above and the Undo snapshot',
+                        }
+                      : selected.payload,
                   null,
                   2,
                 )}
@@ -691,6 +723,23 @@ export function HarnessImprovementsSection({
                   {restoring ? <Loader2 className="size-3 animate-spin" /> : <Undo2 className="size-3" />}
                   Restore skill
                 </button>
+              </div>
+            )}
+            {selected.applyResult?.rollbackId && selected.kind === 'ram_policy' && (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/50 bg-muted/20 px-3 py-2">
+                <span className="text-2xs text-muted-foreground">
+                  Applied — {selected.applyResult.revised?.length ?? 0} file(s) revised, {selected.applyResult.removed?.length ?? 0} removed
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy || restoring}
+                  onClick={() => void undoRamPolicy(selected)}
+                  data-testid="proposal-undo-ram"
+                >
+                  {restoring ? <Loader2 className="size-3 animate-spin" /> : <Undo2 className="size-3" />}
+                  Undo revision
+                </Button>
               </div>
             )}
             {selected.decisionNote && (

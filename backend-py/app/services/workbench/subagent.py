@@ -398,6 +398,18 @@ def subagent_memory_block(session: object, goal: str, workspace: str | None) -> 
 
         resolved = scope_mod.resolve_scope(session)
         block, _rows = build_profile_memory_block(scope=resolved)
+        # Meta-RAM LOAD: the worker reads the same bounded workspace topology
+        # the parent sees. Read-only here — OFFLOAD stays in the parent's
+        # completion handler, so the single write door is unchanged.
+        if workspace:
+            try:
+                from app.services.workbench import ram
+
+                topo = ram.load_block(workspace, session, subagent=True)
+                if topo:
+                    block = f'{block}\n{topo}'.strip() if block else topo
+            except Exception:
+                logger.debug('subagent ram load failed', exc_info=True)
         return block
     except Exception:
         logger.debug('subagent memory build failed', exc_info=True)

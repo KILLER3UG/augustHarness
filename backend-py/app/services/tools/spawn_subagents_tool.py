@@ -437,6 +437,31 @@ def _enqueue_completion(session: object, result: dict[str, Any]) -> None:
     sid = _session_id(session)
     if not sid:
         return
+    # Meta-RAM OFFLOAD: a settled lane is a completed subtask. This runs in
+    # the parent session's context (the fanout watcher), so the write stays
+    # inside the parent-turn door — the worker itself never writes memory.
+    try:
+        from app.services.workbench import ram
+
+        _ws = as_str(getattr(session, 'workspacePath', '') or '')
+        _payload = result.get('result')
+        _text = (
+            as_str(_payload.get('result') or _payload.get('output') or _payload.get('error'))
+            if isinstance(_payload, dict)
+            else as_str(_payload or result.get('error'))
+        )
+        ram.offload(
+            _ws,
+            session,
+            [
+                {'role': 'user', 'content': as_str(result.get('goal') or '')},
+                {'role': 'assistant', 'content': _text[:1200]},
+            ],
+            reason='subagent-complete',
+        )
+        ram.maybe_file_review(_ws, sid)
+    except Exception:
+        logger.debug('ram completion offload failed', exc_info=True)
     notice = _format_completion_notice(result, session, maxChars=_parent_notice_budget(session))
     # Bounded synthesis: once every dispatched lane has settled, the parent's
     # job is to answer, not to keep polling or start new work. Say so in the
