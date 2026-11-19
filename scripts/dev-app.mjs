@@ -182,10 +182,18 @@ function shutdown(code = 0) {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
+// The backend venv is self-contained; ambient Python env from the launching
+// shell would put FOREIGN site-packages on its sys.path (pip "already
+// satisfied" against the wrong versions, mismatched binary imports). The
+// desktop shell strips the same set — backend.rs sanitizePythonEnv.
+const PYTHON_ENV_VARS = ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'PYTHONUSERBASE', 'PYTHONNOUSERSITE'];
+
 for (const { name, command, args, env = {} } of commands) {
+    const childEnv = { ...process.env, ...env };
+    for (const key of PYTHON_ENV_VARS) delete childEnv[key];
     const child = spawn(command, args, {
         cwd: root,
-        env: { ...process.env, ...env },
+        env: childEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
         shell: process.platform === 'win32' && command.endsWith('.cmd')

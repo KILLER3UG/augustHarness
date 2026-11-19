@@ -732,6 +732,29 @@ fn copyDirRecursiveAt(
     Ok(())
 }
 
+/// Strip the ambient Python environment from a bundled-interpreter spawn.
+/// A launching shell can carry PYTHONPATH / PYTHONHOME / VIRTUAL_ENV /
+/// PYTHONUSERBASE / PYTHONNOUSERSITE (a dev terminal, conda, an agent
+/// harness). Left in place they put FOREIGN site-packages on the bundled
+/// interpreter's sys.path: pip then reports the foreign versions "already
+/// satisfied" and skips the pinned wheels, and the backend imports
+/// mismatched binaries — measured on a clean install: a first-launch
+/// bootstrap resolved requirements against a foreign venv and the backend
+/// died on `ImportError: cannot import name 'ArgsKwargs' from
+/// 'pydantic_core._pydantic_core'`. The runtime is self-contained (portable
+/// Python + venv + offline wheels), so none of these may reach it.
+fn sanitizePythonEnv(cmd: &mut Command) {
+    for var in [
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "VIRTUAL_ENV",
+        "PYTHONUSERBASE",
+        "PYTHONNOUSERSITE",
+    ] {
+        cmd.env_remove(var);
+    }
+}
+
 fn runPythonSilent(
     python: &Path,
     args: &[&str],
@@ -741,6 +764,7 @@ fn runPythonSilent(
     let log_file = File::create(log_path)
         .unwrap_or_else(|_| File::create(devNullPath()).expect("failed to open null"));
     let mut cmd = Command::new(python);
+    sanitizePythonEnv(&mut cmd);
     cmd.args(args)
         .current_dir(cwd)
         .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
@@ -1085,10 +1109,10 @@ fn bootstrapBundledBackend(app: &AppHandle) -> Result<(), String> {
 /// enforces (bundled python and project venvs are known-good; system Python is
 /// not — an old interpreter can silently break the backend at runtime).
 fn pythonVersionOk(path: &Path) -> bool {
-    match Command::new(path)
-        .args(["-c", "import sys; print(sys.version_info >= (3, 12))"])
-        .output()
-    {
+    let mut cmd = Command::new(path);
+    cmd.args(["-c", "import sys; print(sys.version_info >= (3, 12))"]);
+    sanitizePythonEnv(&mut cmd);
+    match cmd.output() {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim() == "True",
         _ => false,
     }
@@ -2287,6 +2311,7 @@ fn ensureRunningLocked(app: &AppHandle) -> bool {
                     });
 
                     let mut cmd = Command::new(&python);
+                    sanitizePythonEnv(&mut cmd);
                     cmd.arg("-m")
                         .arg("uvicorn")
                         .arg("app.main:app")
