@@ -23,12 +23,14 @@ import re
 import shutil
 import signal
 import socket
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.json_narrowing import as_list
 from app.lib.paths import dataDir
 from app.services import http_env
 from app.services import llama_runtime_manifest as manifest
@@ -123,6 +125,7 @@ async def detect_gpu() -> dict[str, Any]:
             'nvidia': False,
             'cudaVersion': None,
             'gpuName': None,
+            'driverVersion': None,
             'vramTotalMb': None,
             'vramFreeMb': None,
         }
@@ -154,6 +157,7 @@ async def detect_gpu() -> dict[str, Any]:
                 'nvidia': False,
                 'cudaVersion': None,
                 'gpuName': None,
+                'driverVersion': None,
                 'vramTotalMb': None,
                 'vramFreeMb': None,
             }
@@ -162,12 +166,14 @@ async def detect_gpu() -> dict[str, Any]:
                 'nvidia': False,
                 'cudaVersion': None,
                 'gpuName': None,
+                'driverVersion': None,
                 'vramTotalMb': None,
                 'vramFreeMb': None,
             }
         first = out.decode('utf-8', 'replace').strip().splitlines()
         cols = [c.strip() for c in (first[0].split(',') if first else [])]
         gpu_name = cols[0] if cols and cols[0] else None
+        driver_version = cols[1] if len(cols) > 1 and cols[1] else None
         vram_total_mb = _mib(cols[2] if len(cols) > 2 else None)
         vram_free_mb = _mib(cols[3] if len(cols) > 3 else None)
     except Exception:  # noqa: BLE001 — a broken driver install is "no NVIDIA"
@@ -175,6 +181,7 @@ async def detect_gpu() -> dict[str, Any]:
             'nvidia': False,
             'cudaVersion': None,
             'gpuName': None,
+            'driverVersion': None,
             'vramTotalMb': None,
             'vramFreeMb': None,
         }
@@ -207,6 +214,7 @@ async def detect_gpu() -> dict[str, Any]:
         'nvidia': True,
         'cudaVersion': cuda_version,
         'gpuName': gpu_name,
+        'driverVersion': driver_version,
         'vramTotalMb': vram_total_mb,
         'vramFreeMb': vram_free_mb,
     }
@@ -360,7 +368,9 @@ async def _download_and_extract(asset: dict[str, object], target: Path) -> None:
             f'{asset["name"]}: SHA256 mismatch (got {actual}, pinned {expected_sha}) — refusing'
         )
 
-    _extract_flat(part, target)
+    # Extraction of the CUDA bundles blocks for tens of seconds; on the event
+    # loop it starves /api/health and the shell watchdog kills the "dead" backend.
+    await asyncio.to_thread(_extract_flat, part, target)
     part.unlink(missing_ok=True)
 
 
@@ -446,7 +456,7 @@ async def start_gguf_server(
     models at 0.0. A second start for a GGUF that is already served returns
     the existing row.
     """
-    variant = installed_variant()
+    variant = _startup_variant()
     if not variant:
         raise RuntimeError('The llama.cpp runtime is not installed yet — install it first.')
     exe = variant_dir(variant) / 'llama-server.exe'
@@ -478,7 +488,12 @@ async def start_gguf_server(
 
     port = _free_port()
     flags = getattr(asyncio.subprocess, 'CREATE_NO_WINDOW', 0) if hasattr(asyncio.subprocess, 'CREATE_NO_WINDOW') else 0
-    proc = await asyncio.create_subprocess_exec(
+    # CPU-only serving parks the whole model in RAM; on a pressured 16GB box
+    # that stalls the machine and the shell watchdog reads it as a dead backend.
+    gpu = await detect_gpu()
+    model_mb = path.stat().st_size // (1024 * 1024)
+    offload = variant.startswith('cuda') and int(gpu.get('vramFreeMb') or 0) >= model_mb + 1536
+    args = [
         str(exe),
         '--host', '127.0.0.1',
         '--port', str(port),
@@ -489,6 +504,11 @@ async def start_gguf_server(
         # not a name anyone picked.
         '--alias', path.stem,
         '--jinja',
+    ]
+    if offload:
+        args += ['--n-gpu-layers', '99']
+    proc = await asyncio.create_subprocess_exec(
+        *args,
         cwd=str(exe.parent),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
@@ -507,6 +527,10 @@ async def start_gguf_server(
         'status': 'starting',
         'startedAt': _now(),
         'lastUsedAt': _now(),
+        # Which runtime build serves it — the crash pass records the variant
+        # with the failure so a CUDA crash can demote CUDA to Vulkan.
+        'variant': variant,
+        'restartAttempts': 0,
     }
     rows.append(row)
     _save_servers(rows)
@@ -525,6 +549,31 @@ async def start_gguf_server(
 
 class HTTPishError(RuntimeError):
     """A user-facing failure (becomes a 400 in the router)."""
+
+
+async def _ctx_fallback_reload(row: dict[str, Any]) -> bool:
+    """A context change that failed to load falls back, ONCE, to the previous
+    working context length — visibly, with the reason on the realtime bus.
+
+    The fallback is recorded by the row that carries ``previousCtxSize`` (set
+    only by :func:`change_server_context`), so an ordinary serve that fails
+    keeps its honest ``failed`` row instead of silently retrying.
+    """
+    prev = int(row.get('previousCtxSize') or 0)
+    current = int(row.get('ctxSize') or 0)
+    if not prev or prev == current:
+        return False
+    name = str(row.get('name', ''))
+    logger.warning(
+        'ctx %s failed to load for %s — falling back to the previous %s', current, name, prev
+    )
+    _emit_status(
+        'ctx-fallback',
+        name,
+        f'context {current} exceeded what this machine could load — reloading with the previous {prev}',
+    )
+    await start_gguf_server(str(row.get('ggufPath', '')), ctx_size=prev)
+    return True
 
 
 async def _await_server_ready(
@@ -548,12 +597,22 @@ async def _await_server_ready(
         if proc.returncode is not None:
             row['status'] = 'failed'
             row['detail'] = f'llama-server exited with code {proc.returncode} while loading'
+            if await _ctx_fallback_reload(row):
+                return
             _persist_row(row)
             return
         try:
             async with http_env.client(timeout=2.0) as client:
                 resp = await client.get(url)
             if resp.status_code == 200:
+                # A 200 from a server that was killed a moment ago must not
+                # resurrect its row as 'ready' (stop_gguf_server already
+                # dropped it): re-verify the process before declaring ready.
+                if proc.returncode is not None or not await _pid_alive(proc.pid):
+                    row['status'] = 'failed'
+                    row['detail'] = 'llama-server stopped while loading'
+                    _persist_row(row)
+                    return
                 ready = True
                 break
         except Exception as exc:  # noqa: BLE001 — not up yet
@@ -573,6 +632,8 @@ async def _await_server_ready(
     if not ready:
         row['status'] = 'failed'
         row['detail'] = 'model did not finish loading in time — try again or pick a smaller context'
+        if await _ctx_fallback_reload(row):
+            return
         _persist_row(row)
         return
 
@@ -585,14 +646,25 @@ async def _await_server_ready(
 
 
 def _persist_row(row: dict[str, Any]) -> None:
+    """Update a row IN PLACE in servers.json.
+
+    The append branch this used to have was a resurrect bug: the ready-task's
+    second persist (after ``_upsert_local_provider``) ran a beat behind
+    ``stop_gguf_server``'s save of the remaining rows, found the id gone, and
+    re-appended the just-killed server as a phantom 'ready' row — the exact
+    stale-ready state the crash pass exists to catch. A row whose id is no
+    longer on disk was STOPPED while this async task was finishing; the stop
+    wins, and the update is dropped.
+    """
     rows = _load_servers()
     for i, r in enumerate(rows):
         if r.get('id') == row['id']:
             rows[i] = row
-            break
-    else:
-        rows.append(row)
-    _save_servers(rows)
+            _save_servers(rows)
+            return
+    logger.debug(
+        'persist: row %s vanished from the store (stopped) — not resurrecting', row.get('id')
+    )
 
 
 async def _upsert_local_provider(row: dict[str, Any]) -> str | None:
@@ -706,6 +778,75 @@ async def stop_gguf_server(server_id: str) -> dict[str, Any]:
     return {'stopped': server_id}
 
 
+# ── context length: the user-set window of a served model ──────────────────
+
+_CTX_MIN_TOKENS = 1024
+_CTX_MAX_TOKENS = 131072
+_CTX_WARN_ABOVE = 32768
+
+
+async def change_server_context(server_id: str, ctx_size: int) -> dict[str, Any]:
+    """Change a served local model's context length: stop it, relaunch
+    llama-server with the new ``--ctx-size``, and let the ordinary serve path
+    repoint the provider, re-price ``contextWindow``, and refresh the warm
+    record (so wake/login preload and crash restarts keep the new length).
+
+    A generation in flight is never interrupted — the change refuses while the
+    server is busy and the caller retries after the turn. If the model cannot
+    load at the new size (typically out of memory), the ready-watcher falls
+    back once to the previous working length and says so on the realtime bus.
+    """
+    try:
+        ctx = int(ctx_size)
+    except (TypeError, ValueError) as exc:
+        raise HTTPishError('context size must be a number of tokens') from exc
+    if ctx < _CTX_MIN_TOKENS or ctx > _CTX_MAX_TOKENS:
+        raise HTTPishError(
+            f'context size must be between {_CTX_MIN_TOKENS} and {_CTX_MAX_TOKENS} tokens'
+        )
+
+    rows = _load_servers()
+    row = next((r for r in rows if r.get('id') == server_id), None)
+    if not row:
+        raise HTTPishError(f'No such local server: {server_id}')
+    if str(row.get('status', '')) != 'ready':
+        raise HTTPishError(
+            f'{row.get("name", server_id)} is {row.get("status", "unknown")} — '
+            'wait for it to finish loading, then change the context'
+        )
+    if server_busy(int(row.get('port', 0))):
+        raise HTTPishError(
+            'a generation is in flight on this model — wait for the current '
+            'reply to finish, then change the context'
+        )
+
+    previous = int(row.get('ctxSize', 8192) or 8192)
+    if ctx == previous:
+        return {'row': row, 'changed': False, 'previousCtxSize': previous}
+
+    await stop_gguf_server(server_id)
+    new_row = await start_gguf_server(str(row.get('ggufPath', '')), ctx_size=ctx)
+    new_row['previousCtxSize'] = previous
+    _persist_row(new_row)
+    _emit_status(
+        'ctx-changing',
+        str(new_row.get('name', '')),
+        f'context {previous} → {ctx} — loading model…',
+    )
+    return {'row': new_row, 'changed': True, 'previousCtxSize': previous}
+
+
+def context_warning_for(ctx_size: int) -> str:
+    """The trained-window caveat, kept in one place for the API and the tool."""
+    if ctx_size > _CTX_WARN_ABOVE:
+        return (
+            f'{ctx_size} tokens is above most small models\' trained context '
+            'window — quality may degrade past it, and memory use grows with '
+            'the window'
+        )
+    return ''
+
+
 async def shutdown_all() -> None:
     """App-shutdown hook: kill every llama-server we spawned."""
     for row in _load_servers():
@@ -727,6 +868,160 @@ async def sweep_orphans() -> None:
             logger.info('swept orphan llama-server pid %s (port %s)', pid, row.get('port'))
         # Rows are dropped either way: a live pid is killed, a dead one is stale.
     _save_servers(kept)
+
+
+def _local_provider_row() -> dict[str, Any]:
+    """The ONE LocalModels provider row, read live from the store."""
+    try:
+        from app.services import config_service
+
+        store = config_service.getProvidersStore()
+        for entry in as_list(store.get('providers'), []) if isinstance(store, dict) else []:
+            if isinstance(entry, dict) and str(entry.get('id', '')) == _LOCAL_PROVIDER_ID:
+                return entry
+    except Exception:  # noqa: BLE001 — a failed read is "no row"
+        pass
+    return {}
+
+
+async def ensure_local_ready(timeout_s: float = 120.0) -> bool:
+    """Wait until the LocalModels provider points at a live server.
+
+    The post-release path: a released model left the provider disabled and
+    its port dead. The next message must RELOAD — with a visible 'loading
+    model' state — instead of dying on connection refused. This waits on the
+    provider row's LIVE baseUrl (a reload repoints the port, so polling the
+    caller's stale URL would wait on a port that never comes back), fires the
+    warm preload once, and reports every state change on the realtime bus.
+    """
+    announced = ''
+    deadline = time.monotonic() + max(5.0, timeout_s)
+    preload_started = False
+    # A local provider can be down for two very different reasons: the model
+    # was released (a warm record exists — reload it) or it was never served
+    # (no warm record — waiting 120s to fail is a hang, not a recovery; the
+    # normal provider error is the honest answer there).
+    if not _load_warm().get('ggufPath'):
+        return False
+    while time.monotonic() < deadline:
+        row = _local_provider_row()
+        port = port_from_base_url(row.get('baseUrl'))
+        enabled = row.get('enabled', True) is not False
+        if port and enabled and await _port_healthy(port):
+            if announced:
+                _emit_status('ready', str(row.get('name', '')), 'local model ready')
+            return True
+        if not preload_started:
+            preload_started = True
+            announced = 'loading'
+            _emit_status(
+                'loading',
+                str(row.get('name', '')) or 'local model',
+                'loading the local model — the first message after a release waits for it',
+            )
+            try:
+                asyncio.create_task(preload_warm())
+            except Exception:  # noqa: BLE001 — the wait loop still polls the row
+                logger.debug('ensure_local_ready could not start the preload', exc_info=True)
+        await asyncio.sleep(1.0)
+    _emit_status('failed', 'local model', 'the local model did not load in time — try again, or check Model settings')
+    return False
+
+
+async def _port_healthy(port: int, timeout: float = 2.0) -> bool:
+    """/health answers 200 — the difference between a live pid and a live server."""
+    if port <= 0:
+        return False
+    try:
+        async with http_env.client(timeout=timeout) as client:
+            resp = await client.get(f'http://127.0.0.1:{port}/health')
+        return resp.status_code == 200
+    except Exception:  # noqa: BLE001 — connection refused IS the crash signal
+        return False
+
+
+def _startup_variant() -> str | None:
+    """The installed variant to serve from.
+
+    A CUDA crash demotes CUDA: the warm record carries ``preferVariant``, and
+    when that variant is installed it wins over the detection order. This is
+    the automatic "fall back to the stable runtime after a crash" half.
+    """
+    warm = _load_warm()
+    preferred = str(warm.get('preferVariant', '') or '')
+    if preferred:
+        info = _read_marker(preferred)
+        if info and info.get('tag') == manifest.MANIFEST_TAG:
+            return preferred
+    return installed_variant()
+
+
+async def reconcile_servers(*, allow_restart: bool = True) -> dict[str, Any]:
+    """Crash pass: a 'ready' row whose process or /health is gone is FAILED.
+
+    The stale-ready bug: ``_await_server_ready`` marks failures only while a
+    server is STARTING; a mid-generation crash left a 'ready' row pointing at
+    a dead port, and every turn against it died on connection refused. This
+    pass re-checks liveness (pid + /health), marks the row failed with the
+    GPU and driver recorded for the report, restarts ONCE — preferring the
+    stable Vulkan runtime after a CUDA crash — and says what happened on the
+    realtime bus so the UI shows a visible state instead of a silent error.
+    """
+    from app.services.realtime_bus import emit_invalidate
+
+    checked = 0
+    failed = 0
+    restarted = 0
+    rows_changed = False
+    for row in _load_servers():
+        if str(row.get('status', '')) != 'ready':
+            continue
+        checked += 1
+        pid = int(row.get('pid', 0))
+        port = int(row.get('port', 0))
+        alive = await _pid_alive(pid)
+        if alive and await _port_healthy(port):
+            continue
+        failed += 1
+        gpu = await detect_gpu()
+        variant = str(row.get('variant', '') or '')
+        row['status'] = 'failed'
+        row['crashedAt'] = _now()
+        row['gpu'] = gpu.get('gpuName')
+        row['driver'] = gpu.get('driverVersion')
+        row['detail'] = (
+            'llama-server crashed mid-run'
+            + (f' (variant {variant})' if variant else '')
+            + (' — process gone' if not alive else ' — health check failed')
+        )
+        _persist_row(row)
+        rows_changed = True
+        _emit_status('crashed', str(row.get('name', '')), str(row['detail']))
+        logger.warning('local server %s crashed: %s', row.get('id'), row['detail'])
+        # A CUDA crash on this machine is a mark against the CUDA build: the
+        # next (re)start prefers the stable Vulkan runtime automatically.
+        if variant.startswith('cuda'):
+            warm = _load_warm()
+            if warm.get('preferVariant') != 'vulkan':
+                warm['preferVariant'] = 'vulkan'
+                warm['preferVariantReason'] = f'cuda crash at {row["crashedAt"]}'
+                _save_warm(warm)
+        if allow_restart and int(row.get('restartAttempts', 0) or 0) < 1:
+            gguf = str(row.get('ggufPath', ''))
+            if gguf and Path(gguf).is_file():
+                try:
+                    row['restartAttempts'] = int(row.get('restartAttempts', 0) or 0) + 1
+                    _persist_row(row)
+                    _emit_status('restarting', str(row.get('name', '')), 'reloading the local model (one restart)')
+                    fresh = await start_gguf_server(gguf, ctx_size=int(row.get('ctxSize', 8192) or 8192))
+                    restarted += 1
+                    _emit_status('ready', str(fresh.get('name', '')), 'local model back up')
+                except Exception as exc:  # noqa: BLE001 — a failed restart is a reported state
+                    logger.warning('restart after crash failed for %s: %s', gguf, exc)
+                    _emit_status('failed', str(row.get('name', '')), f'restart failed: {exc}')
+    if rows_changed:
+        emit_invalidate('llama-servers', 'aggregated-models', 'provider-availability')
+    return {'checked': checked, 'failed': failed, 'restarted': restarted}
 
 
 # ── keep-warm: preload at wake/login, release on idle/battery/load ──────────
@@ -785,6 +1080,83 @@ def touch_loopback_base_url(base_url: object) -> None:
     touch_server(port)
 
 
+# ── in-flight generations: the release must never kill a running turn ───────
+
+_BUSY_UNTIL: dict[int, float] = {}
+_BUSY_DEFAULT_TTL_S = 180.0
+
+
+_LAST_STATUS_EMITTED: dict[tuple[str, str, str], float] = {}
+_LAST_STATUS_TTL_S = 90.0
+
+
+def _emit_status(status: str, name: str, detail: str) -> None:
+    """A user-visible local-model lifecycle event on the realtime bus.
+
+    The release pass runs on a schedule, so an unchanged condition re-emits the
+    same event every tick — six identical "release waits" toasts stacked during
+    one wedged turn (found live, 2026-11-17). A repeat of the SAME
+    (status, name, detail) within the TTL is dropped; a real state change
+    always emits.
+    """
+    key = (status, name, detail)
+    now = time.monotonic()
+    last = _LAST_STATUS_EMITTED.get(key, 0.0)
+    if now - last < _LAST_STATUS_TTL_S:
+        return
+    _LAST_STATUS_EMITTED[key] = now
+    from app.services.realtime_bus import emit_realtime
+
+    emit_realtime('local-model-status', status=status, name=name, detail=detail)
+
+
+def mark_server_busy(port: int, ttl_s: float = _BUSY_DEFAULT_TTL_S) -> None:
+    """A generation is in flight on this local server: the release waits.
+
+    Called by the provider client when a request targets a loopback local
+    server. The TTL is a safety net — a client that dies mid-call must not
+    pin the model forever — and long generations renew it per request.
+    """
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return
+    if port_i > 0:
+        _BUSY_UNTIL[port_i] = time.monotonic() + max(5.0, float(ttl_s))
+
+
+def release_server_busy(port: int) -> None:
+    """The generation finished (or the client gave up): allow release again."""
+    try:
+        _BUSY_UNTIL.pop(int(port), None)
+    except (TypeError, ValueError):
+        pass
+
+
+def server_busy(port: int) -> bool:
+    """True while a generation is believed in flight on this port."""
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return False
+    deadline = _BUSY_UNTIL.get(port_i, 0.0)
+    if deadline and time.monotonic() >= deadline:
+        _BUSY_UNTIL.pop(port_i, None)
+        return False
+    return deadline > 0.0
+
+
+def port_from_base_url(base_url: object) -> int:
+    """The loopback port in a ``http://127.0.0.1:<port>/v1`` URL, else 0."""
+    try:
+        text = str(base_url or '')
+        if '127.0.0.1' not in text and 'localhost' not in text:
+            return 0
+        return int(text.rstrip('/').rsplit(':', 1)[-1].split('/')[0])
+    except (ValueError, IndexError):
+        return 0
+
+
 def on_battery() -> bool:
     """True when the machine runs on battery (Windows GetSystemPowerStatus).
     Unknown states (desktops, non-Windows) count as NOT on battery — the
@@ -805,7 +1177,7 @@ def on_battery() -> bool:
 
     status = _POWER_STATUS()
     try:
-        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):  # type: ignore[attr-defined]
             return False
     except Exception:  # noqa: BLE001
         return False
@@ -834,7 +1206,7 @@ def memory_pressure() -> int:
     status = _MEM_STATUS()
     status.dwLength = ctypes.sizeof(_MEM_STATUS)
     try:
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
             return -1
     except Exception:  # noqa: BLE001
         return -1
@@ -872,11 +1244,41 @@ async def release_warm(
 ) -> list[str]:
     """The release half of keep-warm: stop served local models that are idle
     past the TTL, when the machine runs on battery, or under memory pressure.
-    Returns the human-readable names of what was released."""
+    Returns the human-readable names of what was released.
+
+    A server with a generation in flight is NEVER released — the pass defers
+    it and says so on the realtime bus, so the user sees why the model is
+    still holding memory instead of watching their answer die mid-stream.
+    """
     stopped: list[str] = []
     for row in _load_servers():
         if str(row.get('status', '')) != 'ready':
             continue
+        port = int(row.get('port', 0))
+        if server_busy(port):
+            _emit_status(
+                'release-deferred',
+                str(row.get('name', '')),
+                'a generation is in flight — the release waits for it to finish',
+            )
+            continue
+        # A CHAT TURN active on the local provider also defers the release:
+        # the busy mark above only covers a request in flight, and the gaps
+        # between a turn's requests (tool execution, retry backoff) are where
+        # a memory-pressure release killed a fresh server mid-turn (found
+        # live, 2026-11-16 — the turn then died on its retries).
+        try:
+            from app.services.workbench.workbench import anyActiveTurnOnProvider
+
+            if anyActiveTurnOnProvider({'local-models', 'localmodels'}):
+                _emit_status(
+                    'release-deferred',
+                    str(row.get('name', '')),
+                    'a chat turn is active on this model — the release waits for it to finish',
+                )
+                continue
+        except (ImportError, AttributeError, RuntimeError):
+            pass
         reason = ''
         if release_on_battery and on_battery():
             reason = 'on battery'
@@ -893,6 +1295,11 @@ async def release_warm(
         try:
             await stop_gguf_server(str(row.get('id', '')))
             stopped.append(f"{row.get('name')} ({reason})")
+            _emit_status(
+                'released',
+                str(row.get('name', '')),
+                f'released: {reason} — the next message reloads it',
+            )
             logger.info('released warm local model %s: %s', row.get('name'), reason)
         except Exception:  # noqa: BLE001
             logger.debug('warm release failed for %s', row.get('id'), exc_info=True)

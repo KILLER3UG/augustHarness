@@ -333,10 +333,9 @@ def register() -> None:
     """Register the meta ``bulk`` tool and named bulk variants."""
     tool_registry.register(
         'bulk',
-        'Run the SAME operation on many items in one call (prefer over repeating a tool). operation: '
-        'read_files|write_files|delete_sessions|rename_sessions|kill_daemons|fetch_urls|load_skills|'
-        'run_commands — pass the matching array field for each. '
-        f'Max {BULK_MAX_ITEMS} items; mutating ops still need user confirmation.',
+        'DEPRECATED — superseded by the individual plural tools (read_files, write_files, '
+        'run_commands, delete_sessions, rename_sessions, kill_daemons, fetch_urls, load_skills). '
+        'Kept dispatchable for backward compatibility only; not advertised.',
         _bulk,
         {
             'type': 'object',
@@ -403,6 +402,7 @@ def register() -> None:
             },
             'required': ['operation'],
         },
+        hidden=True,
     )
 
     tool_registry.register(

@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Check, Copy, History, Pencil, RotateCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ChatMessage } from '@/types/chat';
 import { Markdown } from '../ChatMarkdown';
 import { ChatAttachmentService } from '../services/ChatAttachmentService';
+import { parseSubagentReceipt } from '../subagent-receipt';
 import { FileAttachmentCardRow } from './FileAttachmentCard';
 
 /** Collapse long user messages until the user expands them. */
@@ -55,24 +57,21 @@ export function UserMessageBubble({
   const editCount = message.editHistory?.length ?? 0;
   const [showHistory, setShowHistory] = useState(false);
 
+  // Defensive guard so already-persisted [SUBAGENT_COMPLETE …] envelopes
+  // from localStorage never paint as fake user bubbles.
+  if (parseSubagentReceipt(message.content ?? '')) {
+    return null;
+  }
+
   return (
     <>
-      <div className="group max-w-[70%] ml-auto flex flex-col items-end gap-1.5">
+      <div className="group max-w-[75%] ml-auto flex flex-col items-end gap-1.5">
         {hasAttachments && !editing ? (
           <FileAttachmentCardRow attachments={message.attachments!} />
         ) : null}
 
-        {(editing || displayContent || message.queued) && (
-          <div className="user-bubble w-full">
-            {/* No border: reference rule 3 makes the user bubble the only
-                elevated chat surface, elevated by FILL alone — a hairline box
-                around it is exactly the "borders are boxes" shape rule 2 bans. */}
-            {message.queued && (
-              <div className="mb-1 flex items-center gap-1 text-2xs font-semibold uppercase tracking-wider text-warning">
-                <span className="size-1.5 rounded-full bg-warning" />
-                Queued
-              </div>
-            )}
+        {(editing || displayContent) && (
+          <div className="w-full rounded-[14px] border-0 bg-[var(--dt-user-bubble)] px-4 py-3 text-[var(--dt-fg-1)] leading-relaxed">
             {editing ? (
               <div className="flex flex-col gap-2">
                 <textarea
@@ -83,8 +82,8 @@ export function UserMessageBubble({
                   autoFocus
                 />
                 <div className="flex items-center gap-1.5 justify-end">
-                  <button onClick={onCancelEdit} className="px-2.5 py-0.5 text-2xs rounded-md hover:bg-muted text-muted-foreground transition">Cancel</button>
-                  <button onClick={onSaveEdit} className="px-2.5 py-0.5 text-2xs rounded-md bg-primary text-primary-foreground hover:opacity-90 transition">Save</button>
+                  <Button variant="bare" type="button" onClick={onCancelEdit} className="px-2.5 py-0.5 text-2xs rounded-md hover:bg-muted text-muted-foreground transition">Cancel</Button>
+                  <Button variant="bare" type="button" onClick={onSaveEdit} className="px-2.5 py-0.5 text-2xs rounded-md bg-primary text-primary-foreground hover:opacity-90 transition">Save</Button>
                 </div>
               </div>
             ) : displayContent ? (
@@ -96,7 +95,7 @@ export function UserMessageBubble({
               >
                 <Markdown content={displayContent} />
                 {!userMsgExpanded && isLong && (
-                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-[hsl(var(--muted)/0.9)] to-transparent" />
+                  <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-[var(--dt-user-bubble)] to-transparent" />
                 )}
               </div>
             ) : null}

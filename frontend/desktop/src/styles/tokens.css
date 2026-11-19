@@ -16,44 +16,52 @@
 
 @layer base {
   :root {
-    /* Surface palette — the mockup's warm paper (signal-desk-complete.html).
-     * Light mode used to be a cool #fbfbfa; the mockup is #f4f1e8, and a warm
-     * ground is most of why its serif chrome reads as paper rather than as a
-     * washed-out dark theme. The ink ramp below is warm (hue 60) to match. */
-    --dt-background: #f4f1e8;
-    --dt-background-hsl: 45 30.6% 93.3%;
-    --dt-foreground: #1a1c17;
-    --dt-foreground-hsl: 80 8.2% 10%;
+    /* Surface palette — pure neutral (owner ruling, 2026-11-17): the UI is
+     * black / charcoal / gray / white only. The previous warm paper (#f4f1e8)
+     * and the terracotta accent family are retired; every rung below is zinc
+     * neutral, and the one warm story left in the file is the schematic's
+     * electrical identities (symbol ink, 3D board parts), which are the
+     * colours of physical components, not UI accents. */
+    --dt-background: #fafafa;
+    --dt-background-hsl: 0 0% 98%;
+    --dt-foreground: #18181b;
+    --dt-foreground-hsl: 240 5.9% 10%;
     /* Three sanctioned contrast tiers (2026-09-16 UI scan §3.2):
-     * - tier-1: primary body text (~15:1 on dt-background)
-     * - tier-2: secondary (timestamps, metadata, ≥11.5px) (~7:1)
-     * - tier-3: tertiary (placeholders, ≥13px OR ≥18px only) (~4.5:1)
-     * The dark theme tokens below mirror these targets.
-     *
-     * The ramp is WARM (hue 60), matching the warm paper it sits on: it used
-     * to be hue 240 blue-grey (#4a4a52 / #6b6b70), and warm paper under cool
-     * ink is most of why light mode read as muddy next to the dark theme. */
-    --dt-fg-1: #1a1c17;
-    --dt-fg-2: #42473d;
-    --dt-fg-3: #62695c;
-    --dt-card: #fbf9f2;
-    --dt-card-hsl: 45 53.8% 96.7%;
-    --dt-card-foreground: #1a1c17;
-    --dt-card-foreground-hsl: 80 8.2% 10%;
-    --dt-muted: #eae6da;
-    --dt-muted-hsl: 44 33.3% 88.6%;
-    --dt-muted-foreground: #858b7e;
-    --dt-muted-foreground-hsl: 87 5.5% 52%;
-    --dt-popover: #fbf9f2;
-    --dt-popover-hsl: 45 53.8% 96.7%;
-    --dt-popover-foreground: #1a1c17;
-    --dt-popover-foreground-hsl: 80 8.2% 10%;
-    --dt-elevated: #faf7ef;
+     * - tier-1: primary body text
+     * - tier-2: secondary (timestamps, metadata, ≥11.5px)
+     * - tier-3: tertiary (placeholders, ≥13px OR ≥18px only)
+     * The dark theme tokens below mirror these targets. Zinc ramp. */
+    --dt-fg-1: #18181b;
+    --dt-fg-2: #3f3f46;
+    --dt-fg-3: #71717a;
+    --dt-card: #ffffff;
+    --dt-card-hsl: 0 0% 100%;
+    --dt-card-foreground: #18181b;
+    --dt-card-foreground-hsl: 240 5.9% 10%;
+    --dt-muted: #f4f4f5;
+    --dt-muted-hsl: 240 4.8% 95.9%;
+    --dt-muted-foreground: #71717a;
+    --dt-muted-foreground-hsl: 240 3.8% 46.1%;
+    --dt-popover: #ffffff;
+    --dt-popover-hsl: 0 0% 100%;
+    --dt-popover-foreground: #18181b;
+    --dt-popover-foreground-hsl: 240 5.9% 10%;
+    --dt-elevated: #f4f4f5;
+    --dt-elevated-rgb: 244 244 245;
+    --dt-pill-bg: #e4e4e7;
+    --dt-pill-bg-rgb: 228 228 231;
+    --dt-stop-bg: #27272a;
+    --dt-stop-bg-rgb: 39 39 42;
+    --dt-timeline-inset: #f4f4f5;
+    --dt-timeline-inset-rgb: 244 244 245;
+    --dt-receipt-bg: #f4f4f5;
+    --dt-receipt-bg-rgb: 244 244 245;
 
     /* Shell chrome — one titlebar height, one drawer-header height.
        The CSS classes that used to hardcode 2.85rem !important next to the
        h-10 utility claimed to own this and disagreed by 5.6px. */
-    --shell-titlebar-h: 56px;
+    --dt-header-h: 40px;
+    --shell-titlebar-h: 40px;
     --shell-drawer-header-h: 48px;
     --shell-inset-x: clamp(1rem, 3vw, 2rem);
     /* Editorial display face — the Signal Desk mockup's serif. System fonts
@@ -87,31 +95,28 @@
 
     /* Sunken chrome — wells that sit BELOW the page (terminal, file preview,
      * bottom dock). One value replaces the old #181818/#171717/#111 hexes. */
-    --dt-surface-sunken: #eae6da;
-    /* The mockup's chart/code stage: an off-page panel that is LIGHTER than
-     * the paper in light mode and darker than the charcoal in dark mode. */
-    --dt-stage: #faf7ef;
-    /* The mockup's two hairline weights. `--dt-line` is the default divider;
+    --dt-surface-sunken: #f4f4f5;
+    /* The chart/code stage: an off-page panel one rung off the page. */
+    --dt-stage: #f4f4f5;
+    /* The two hairline weights. `--dt-line` is the default divider;
      * `--dt-line-strong` is the one a bordered control or a focused surface
-     * uses. Both are alpha over whatever is behind them, which is why the
-     * mockup can put a row on the page and on a card without redefining. */
-    --dt-line: rgb(26 28 23 / 0.11);
-    --dt-line-strong: rgb(26 28 23 / 0.2);
-    /* Accent as TEXT — the terracotta rung on paper, matching the dark
-     * theme's one accent family. `--dt-primary` is a fill (white text on it);
-     * a link or an icon needs this darker rung to clear AA on the warm ground
-     * (#a64f34 measures 4.9:1 on the paper). */
-    --dt-accent-text: #a64f34;
+     * uses. Both are alpha over whatever is behind them, which is why a row
+     * can sit on the page and on a card without redefining. */
+    --dt-line: rgb(24 24 27 / 0.11);
+    --dt-line-strong: rgb(24 24 27 / 0.2);
+    /* Accent as TEXT — on the monochrome ruling this is the near-black ink
+     * itself: an active indicator is a WHITE/BLACK weight change, not a hue. */
+    --dt-accent-text: #18181b;
     /* Full-screen scrim behind modals/drawers; heavier over dark ground. */
     --dt-overlay-scrim: rgb(17 17 17 / 0.32);
     /* A separator that must stay visible over sunken or imagery surfaces —
      * one step stronger than --dt-border, never a state colour. */
-    --dt-hairline-strong: #d5d0c2;
+    --dt-hairline-strong: #d4d4d8;
     /* "Paper" role — the schematic canvas and other drawing surfaces. */
-    --dt-paper: #fdfbf5;
+    --dt-paper: #ffffff;
     /* Schematic ink on the paper canvas: symbol bodies, wires, the live tint.
        Light values are the original hardcoded hexes, so the artifact renderer
-       and the editor stay in agreement. */
+       and the editor stay in agreement. Electrical identities, not theme. */
     --dt-symbol-stroke: #334155;
     --dt-symbol-wire: #475569;
     --dt-symbol-current: #2563eb;
@@ -124,73 +129,65 @@
     --dt-scrollbar: rgb(92 92 98 / 0.30);
     --dt-scrollbar-hover: rgb(92 92 98 / 0.48);
 
-    /* Brand — the reference's terracotta, reserved for action/focus.
-     * The previous blue (#2456d8, chosen for AA after #2f6df6 failed it) is
-     * retired with this retune: the accent is SPARING and warm in both themes
-     * now. #a64f34 carries white text at ~5.5:1 and clears AA as the
-     * accent-text rung above, so the swap keeps every contrast decision the
-     * blue was making. */
-    --dt-primary: #a64f34;
-    --dt-primary-hsl: 14.2 52.3% 42.8%;
+    /* Brand — the ACTIVE state on the monochrome ruling: pure near-black in
+     * light mode, pure white in dark. #18181b carries white text at ~15:1. */
+    --dt-primary: #18181b;
+    --dt-primary-hsl: 240 5.9% 10%;
     --dt-primary-foreground: #ffffff;
     --dt-primary-foreground-hsl: 0 0% 100%;
     /* Selection language is a LIGHTER FILL OF THE SAME NEUTRAL, not a second
-     * colour: `accent` and `secondary` were both a byte-copy of the same icy
-     * blue (`#eef3ff`), so every dropdown row, chip and rail hover read as a
-     * blue flash instead of "this row is under the pointer". */
-    --dt-secondary: #eae6da;
-    --dt-secondary-foreground: #1a1c17;
-    --dt-accent: #e6e1d3;
-    --dt-accent-foreground: #1a1c17;
-    --dt-border: #d9d4c6;
-    --dt-border-hsl: 44 20% 81.4%;
-    --dt-input: #d9d4c6;
-    --dt-ring: #a64f34;
+     * colour: `accent` and `secondary` are the same quiet zinc fill, so a
+     * hover reads as "this row is under the pointer", never as a colour flash. */
+    --dt-secondary: #f4f4f5;
+    --dt-secondary-foreground: #18181b;
+    --dt-accent: #f4f4f5;
+    --dt-accent-foreground: #18181b;
+    --dt-border: #e4e4e7;
+    --dt-border-hsl: 240 5.9% 90%;
+    --dt-input: #e4e4e7;
+    --dt-ring: #18181b;
 
     /* RGB triplets — the alpha-capable channel each of the roles above is
      * registered from in tailwind.config.cjs, so `bg-accent/50`,
      * `border-destructive/30`, `text-sidebar-foreground/60` and friends emit
-     * real CSS. Keep each triplet equal to its hex twin; the pairing is
-     * asserted by src/test/design-tokens.test.ts. */
-    --dt-secondary-rgb: 234 230 218;
-    --dt-accent-rgb: 230 225 211;
-    --dt-destructive-rgb: 210 80 63;
-    --dt-input-rgb: 217 212 198;
-    --dt-ring-rgb: 166 79 52;
+     * real CSS. Keep each triplet equal to its hex twin. */
+    --dt-secondary-rgb: 244 244 245;
+    --dt-accent-rgb: 244 244 245;
+    --dt-destructive-rgb: 220 38 38;
+    --dt-input-rgb: 228 228 231;
+    --dt-ring-rgb: 24 24 27;
 
-    /* Status — muted, not neon */
-    --dt-destructive: #d2503f;
+    /* Status — red is reserved for destructive confirmation (the ruling);
+     * warning reads as a neutral weight (amber was an accent). */
+    --dt-destructive: #dc2626;
     --dt-destructive-foreground: #ffffff;
     --dt-success: #2e9e6b;
     --dt-success-fg: #047857;
-    --dt-warning: #c98a14;
-    --dt-warning-fg: #b45309;
+    --dt-warning: #71717a;
+    --dt-warning-fg: #52525b;
     --dt-info: #3b82f6;
     --dt-info-fg: #1d4ed8;
-    --dt-danger: #d2503f;
+    --dt-danger: #dc2626;
     --dt-danger-fg: #b91c1c;
 
-    /* Chart series — the Signal Desk palette. Used by the Charts page and the
-     * Canvas; theme-paired so a chart's legend and lines stay legible on paper
-     * and on charcoal. Chart hues stay categorical (chart-1 keeps its blue
-     * even with the accent moved to terracotta — a chart's series is its own
-     * vocabulary, not the brand). */
+    /* Chart series — categorical on the monochrome ruling: one blue anchor,
+     * the rest a zinc ramp. */
     --dt-chart-1: #2456d8;
-    --dt-chart-2: #a64f34;
-    --dt-chart-3: #a77e3e;
-    --dt-chart-4: #7d5a6e;
+    --dt-chart-2: #71717a;
+    --dt-chart-3: #a1a1aa;
+    --dt-chart-4: #52525b;
     --dt-chart-5: #6f7b85;
     --dt-chart-6: #5d7e70;
 
     /* RGB triplets so Tailwind alpha modifiers work on status colors
      * (bg-success/15, border-danger/30, …) without a per-step class. */
     --dt-success-rgb: 46 158 107;
-    --dt-warning-rgb: 201 138 20;
-    --dt-danger-rgb: 210 80 63;
+    --dt-warning-rgb: 113 113 122;
+    --dt-danger-rgb: 220 38 38;
     --dt-info-rgb: 59 130 246;
 
     /* Code surfaces */
-    --dt-code-inline: #b3215f;
+    --dt-code-inline: #52525b;
     --dt-code-block-bg: #f6f6f5;
     --dt-code-block-fg: #1c1c1e;
     /* Shared dark code surface (highlighted code + diffs) — same in both
@@ -207,20 +204,20 @@
     --dt-code-removed-gutter: rgba(248, 113, 113, 0.1);
 
     /* Sidebar */
-    --dt-sidebar: #fbf9f2;
-    --dt-sidebar-foreground: #1a1c17;
-    --dt-sidebar-primary: #a64f34;
+    --dt-sidebar: #f4f4f5;
+    --dt-sidebar-foreground: #18181b;
+    --dt-sidebar-primary: #18181b;
     --dt-sidebar-primary-foreground: #ffffff;
-    --dt-sidebar-accent: #eae6da;
-    --dt-sidebar-accent-foreground: #1a1c17;
-    --dt-sidebar-border: #e2ddcf;
-    --dt-sidebar-ring: #a64f34;
-    --dt-sidebar-rgb: 251 249 242;
-    --dt-sidebar-foreground-rgb: 26 28 23;
-    --dt-sidebar-primary-rgb: 166 79 52;
-    --dt-sidebar-accent-rgb: 234 230 218;
-    --dt-sidebar-border-rgb: 226 221 207;
-    --dt-sidebar-ring-rgb: 166 79 52;
+    --dt-sidebar-accent: #e4e4e7;
+    --dt-sidebar-accent-foreground: #18181b;
+    --dt-sidebar-border: #e4e4e7;
+    --dt-sidebar-ring: #18181b;
+    --dt-sidebar-rgb: 244 244 245;
+    --dt-sidebar-foreground-rgb: 24 24 27;
+    --dt-sidebar-primary-rgb: 24 24 27;
+    --dt-sidebar-accent-rgb: 228 228 231;
+    --dt-sidebar-border-rgb: 228 228 231;
+    --dt-sidebar-ring-rgb: 24 24 27;
 
     /* Chat surfaces — derived from the base palette so they track the theme
        until the user overrides them (Settings → Design UI / customize_ui). */
@@ -228,27 +225,18 @@
     --dt-chat-input-bg: color-mix(in srgb, var(--dt-card) 95%, transparent);
     /* A solid fill, not a blend: `color-mix(--dt-muted 35%)` measured 1.017:1
        against the page, i.e. the user's own message had no bubble at all. */
-    --dt-user-bubble: #eae6da;
+    --dt-user-bubble: #f4f4f5;
 
     /* ── Elevation ladder (audit P2#17) ───────────────────────────────
        One vocabulary for "how far off the page is this surface", in four
-       rungs. Before this, the UI mixed a `shadow-md` on the composer with
-       1px `border`s on every sibling surface, so adjacent panels at the
-       same depth did not read as the same depth. The values are the
-       `soft` / `overlay` entries that already lived in
-       tailwind.config.cjs, and that config now reads them from here, so
-       `shadow-soft` and `<Surface elev="raised">` cannot drift apart.
-       Use the Surface primitive (components/ui/Surface) rather than
+       rungs. Use the Surface primitive (components/ui/Surface) rather than
        hand-writing a box-shadow; `--elev-ring` is the 1px-in-the-border
        colour rung for surfaces whose siblings are all bordered. */
     --elev-flat: none;
     --elev-ring: 0 0 0 1px var(--dt-border);
     --elev-raised: 0 1px 2px rgb(0 0 0 / 0.06), 0 1px 3px rgb(0 0 0 / 0.10);
     --elev-overlay: 0 24px 48px -12px rgb(0 0 0 / 0.45);
-    /* The two shadow rungs ARE re-declared under `.dark` below: black at 6%
-       over #0F0F0F separates nothing, so on charcoal the ladder needs real
-       alphas rather than the same numbers. `--elev-ring` still needs no
-       override — it is derived from `--dt-border`, which the theme swaps. */
+    /* The two shadow rungs ARE re-declared under `.dark` below. */
 
     /* Base font-size — overridden by data-text-size for scaling */
     font-size: 16px;
@@ -258,125 +246,130 @@
     /* Help native form controls (select/option) use dark system chrome on Windows */
     color-scheme: dark;
 
-    /* Surface palette — the Claude reference's WARM near-black. The previous
-     * ramp was pure neutral grey (#0F0F0F … #a6a6a6); the reference page is
-     * #1F1E1D–#262624, its rail a step darker than the page, its surfaces a
-     * step lighter, and every text rung carries the same warm cast. Blue-black
-     * under warm ink is what made the previous dark theme read cold. */
-    --dt-background: #262624;
-    --dt-background-hsl: 60 2.7% 14.5%;
-    --dt-foreground: #f4f2ec;
-    --dt-foreground-hsl: 45 26.7% 94.1%;
-    --dt-fg-1: #f4f2ec;
-    /* Warm ramp: off-white → warm grey → muted warm grey, hue ~45. */
-    --dt-fg-2: #c9c7bf;
-    --dt-fg-3: #a5a29a;
-    --dt-card: #2c2b29;
-    --dt-card-hsl: 40 3.5% 16.7%;
-    --dt-card-foreground: #f4f2ec;
-    --dt-card-foreground-hsl: 45 26.7% 94.1%;
-    --dt-muted: #302f2d;
-    --dt-muted-hsl: 40 3.2% 18.2%;
-    --dt-muted-foreground: #a5a29a;
-    --dt-muted-foreground-hsl: 43.6 5.8% 62.5%;
-    --dt-popover: #2e2d2b;
-    --dt-popover-hsl: 40 3.4% 17.5%;
-    --dt-popover-foreground: #f4f2ec;
-    --dt-popover-foreground-hsl: 45 26.7% 94.1%;
-    --dt-elevated: #383633;
+    /* Surface palette — PURE MONOCHROME (ui-spatial-redesign): the page
+     * is #0a0a0b, sidebar #111113, composer/cards #161618–#1f1f23, every text
+     * rung zinc neutral (#f4f4f5 / #a1a1aa / #71717a), the single active
+     * colour is WHITE, and borders are 1px rgba(255,255,255,0.08). */
+    --dt-background: #0a0a0b;
+    --dt-background-hsl: 240 5.3% 4.1%;
+    --dt-foreground: #f4f4f5;
+    --dt-foreground-hsl: 240 4.8% 95.9%;
+    --dt-fg-1: #f4f4f5;
+    /* Ramp: #f4f4f5 → #a1a1aa → #71717a. */
+    --dt-fg-2: #a1a1aa;
+    --dt-fg-3: #71717a;
+    --dt-card: #161618;
+    --dt-card-hsl: 240 4.3% 9.0%;
+    --dt-card-foreground: #f4f4f5;
+    --dt-card-foreground-hsl: 240 4.8% 95.9%;
+    --dt-muted: #1c1c1f;
+    --dt-muted-hsl: 240 4.3% 11.4%;
+    --dt-muted-foreground: #71717a;
+    --dt-muted-foreground-hsl: 240 3.8% 46.1%;
+    --dt-popover: #18181b;
+    --dt-popover-hsl: 240 5.9% 10%;
+    --dt-popover-foreground: #f4f4f5;
+    --dt-popover-foreground-hsl: 240 4.8% 95.9%;
+    --dt-elevated: #1f1f23;
+    --dt-elevated-rgb: 31 31 35;
+    --dt-pill-bg: #222226;
+    --dt-pill-bg-rgb: 34 34 38;
+    --dt-stop-bg: #27272a;
+    --dt-stop-bg-rgb: 39 39 42;
+    --dt-timeline-inset: #121215;
+    --dt-timeline-inset-rgb: 18 18 21;
+    --dt-receipt-bg: #141417;
+    --dt-receipt-bg-rgb: 20 20 23;
 
     /* Sunken chrome / scrim / hairline / paper / wash — see :root above. */
-    --dt-surface-sunken: #1f1e1d;
-    /* The mockup's chart/code stage — one rung off the page, see :root. */
-    --dt-stage: #1f1e1d;
-    --dt-line: rgb(244 242 236 / 0.08);
-    --dt-line-strong: rgb(244 242 236 / 0.14);
-    --dt-accent-text: #dd8465;
+    --dt-surface-sunken: #0a0a0a;
+    /* The chart/code stage — one rung off the page. */
+    --dt-stage: #131315;
+    --dt-line: rgb(255 255 255 / 0.08);
+    --dt-line-strong: rgb(255 255 255 / 0.14);
+    --dt-accent-text: #ffffff;
     --dt-overlay-scrim: rgb(0 0 0 / 0.55);
-    --dt-hairline-strong: #454440;
-    --dt-paper: #232221;
-    /* Dark-paper schematic ink. The light slate values (#334155/#475569)
-       measured 1.78:1 / 2.39:1 here and the label fill 1.01:1 — darker than
-       the canvas. Slate-300/400 and blue-400 clear 4.5:1 against the paper. */
+    --dt-hairline-strong: #3f3f46;
+    --dt-paper: #131315;
+    /* Dark-paper schematic ink. Electrical identities, not theme. */
     --dt-symbol-stroke: #cbd5e1;
     --dt-symbol-wire: #94a3b8;
     --dt-symbol-current: #60a5fa;
     --dt-wash: rgb(255 255 255 / 0.04);
-    /* Dim warm grey on the warm ground — reads as a groove, not a white bar. */
-    --dt-scrollbar: rgb(168 163 154 / 0.24);
-    --dt-scrollbar-hover: rgb(184 179 170 / 0.38);
+    /* Neutral grey groove. */
+    --dt-scrollbar: rgb(163 163 170 / 0.24);
+    --dt-scrollbar-hover: rgb(180 180 186 / 0.38);
 
-    /* Brand — the reference's sparing terracotta, used only for action,
-     * focus and the one active state. Dark text on it clears AA (~5.2:1);
-     * the coral itself is ~5.5:1 on the page as text. */
-    --dt-primary: #d97757;
-    --dt-primary-hsl: 14.8 63.1% 59.6%;
-    --dt-primary-foreground: #1f1e1d;
-    --dt-primary-foreground-hsl: 30 3.3% 11.8%;
+    /* Brand — the ACTIVE state: pure white on charcoal. Dark text on it
+     * clears AA at ~20:1; white is the one accent the ruling allows. */
+    --dt-primary: #ffffff;
+    --dt-primary-hsl: 0 0% 100%;
+    --dt-primary-foreground: #09090b;
+    --dt-primary-foreground-hsl: 240 5.9% 3.9%;
     /* Neutral selection fills — see the `:root` note. */
-    --dt-secondary: #2f2e2b;
-    --dt-secondary-foreground: #f4f2ec;
-    --dt-accent: #2f2e2b;
-    --dt-accent-foreground: #f4f2ec;
-    /* Barely-there warm hairline: ~1.08:1 lift over the page at 1px. */
-    --dt-border: #393835;
-    --dt-border-hsl: 45 3.6% 21.6%;
-    --dt-input: #3a3936;
-    --dt-ring: #d97757;
-    --dt-secondary-rgb: 47 46 43;
-    --dt-accent-rgb: 47 46 43;
-    --dt-destructive-rgb: 240 118 106;
-    --dt-input-rgb: 58 57 54;
-    --dt-ring-rgb: 217 119 87;
+    --dt-secondary: #1e1e21;
+    --dt-secondary-foreground: #ffffff;
+    --dt-accent: #1e1e21;
+    --dt-accent-foreground: #ffffff;
+    /* 1px neutral hairline: rgba(255,255,255,0.08) over the page. */
+    --dt-border: rgb(255 255 255 / 0.08);
+    --dt-border-hsl: 240 3.7% 15.9%;
+    --dt-input: #242427;
+    --dt-ring: #ffffff;
+    --dt-secondary-rgb: 30 30 33;
+    --dt-accent-rgb: 30 30 33;
+    --dt-destructive-rgb: 239 68 68;
+    --dt-input-rgb: 36 36 39;
+    --dt-ring-rgb: 255 255 255;
 
-    /* Status */
-    --dt-destructive: #f0766a;
+    /* Status — red is reserved for destructive confirmation (the ruling);
+     * warning reads as a neutral weight (amber was an accent). */
+    --dt-destructive: #ef4444;
     --dt-destructive-foreground: #ffffff;
     --dt-success: #45c08a;
     --dt-success-fg: #6ee7b7;
-    --dt-warning: #e0b341;
-    --dt-warning-fg: #fcd34d;
+    --dt-warning: #a1a1aa;
+    --dt-warning-fg: #d4d4d8;
     --dt-info: #60a5fa;
     --dt-info-fg: #93c5fd;
-    --dt-danger: #f0766a;
+    --dt-danger: #ef4444;
     --dt-danger-fg: #fca5a5;
 
-    /* Chart series — see the :root pair. */
+    /* Chart series — one blue anchor, the rest zinc. */
     --dt-chart-1: #6f9bff;
-    --dt-chart-2: #e08a6a;
-    --dt-chart-3: #e0b35c;
-    --dt-chart-4: #c48aa9;
+    --dt-chart-2: #a1a1aa;
+    --dt-chart-3: #d4d4d8;
+    --dt-chart-4: #71717a;
     --dt-chart-5: #8fa3b8;
     --dt-chart-6: #6fbfad;
 
     /* RGB triplets — see :root above. */
     --dt-success-rgb: 69 192 138;
-    --dt-warning-rgb: 224 179 65;
-    --dt-danger-rgb: 240 118 106;
+    --dt-warning-rgb: 161 161 170;
+    --dt-danger-rgb: 239 68 68;
     --dt-info-rgb: 96 165 250;
 
-    /* Code surfaces — warm near-black under the warm page; the inline token
-       follows the accent family instead of the old blue. */
-    --dt-code-inline: #eba286;
-    --dt-code-block-bg: #1e1d1b;
-    --dt-code-block-fg: #e8e6df;
+    /* Code surfaces — charcoal under the neutral page; the inline token is a
+       neutral gray weight, not a hue. */
+    --dt-code-inline: #d4d4d8;
+    --dt-code-block-bg: #161618;
+    --dt-code-block-fg: #e4e4e7;
 
-    /* Sidebar — one step DARKER than the page (the reference rail sits below
-       the transcript, not beside it). */
-    --dt-sidebar: #1f1e1d;
-    --dt-sidebar-foreground: #eeede7;
-    --dt-sidebar-primary: #d97757;
-    --dt-sidebar-primary-foreground: #1f1e1d;
-    --dt-sidebar-accent: #2f2e2b;
-    --dt-sidebar-accent-foreground: #f4f2ec;
-    --dt-sidebar-border: #333230;
-    --dt-sidebar-ring: #d97757;
-    --dt-sidebar-rgb: 31 30 29;
-    --dt-sidebar-foreground-rgb: 238 237 231;
-    --dt-sidebar-primary-rgb: 217 119 87;
-    --dt-sidebar-accent-rgb: 47 46 43;
-    --dt-sidebar-border-rgb: 51 50 48;
-    --dt-sidebar-ring-rgb: 217 119 87;
+    /* Sidebar — #111113, subtle separation above #0a0a0b page. */
+    --dt-sidebar: #111113;
+    --dt-sidebar-foreground: #f4f4f5;
+    --dt-sidebar-primary: #ffffff;
+    --dt-sidebar-primary-foreground: #09090b;
+    --dt-sidebar-accent: #1f1f23;
+    --dt-sidebar-accent-foreground: #f4f4f5;
+    --dt-sidebar-border: rgb(255 255 255 / 0.08);
+    --dt-sidebar-ring: #ffffff;
+    --dt-sidebar-rgb: 17 17 19;
+    --dt-sidebar-foreground-rgb: 244 244 245;
+    --dt-sidebar-primary-rgb: 255 255 255;
+    --dt-sidebar-accent-rgb: 31 31 35;
+    --dt-sidebar-border-rgb: 36 36 39;
+    --dt-sidebar-ring-rgb: 255 255 255;
 
     /* The ladder needs real alphas on charcoal: at `rgb(0 0 0 / 0.06)` a card
        and the page behind it are the same surface, so every "raised" panel
@@ -385,8 +378,8 @@
     --elev-overlay: 0 16px 40px -12px rgb(0 0 0 / 0.70);
 
     /* A solid bubble, not a blend — see the `:root` note. One step LIGHTER
-       than the page: the reference's user message sits above the ground. */
-    --dt-user-bubble: #30302e;
+       than the page: the user's own message sits above the ground. */
+    --dt-user-bubble: #18181b;
   }
 
 	  /* Text-size selector overrides the root font-size (scales all rems) */
@@ -432,7 +425,7 @@
 
   /* Selection had no styling anywhere, so Chromium's default blue — a colour
    * from outside the palette — was the loudest thing on a #0F0F0F page. A
-   * brand-tinted wash at 28% keeps selected prose readable and on-theme. */
+   * neutral wash at 28% keeps selected prose readable and on-theme. */
   ::selection {
     background: color-mix(in srgb, var(--dt-primary) 28%, transparent);
     color: var(--dt-foreground);
@@ -484,8 +477,7 @@
   .text-primary                  { color: var(--dt-primary); }
 
   /* Sanctioned contrast tiers — 2026-09-16 UI scan §3.2.
-   * tier-1: primary body (≥15:1), tier-2: metadata ≥11.5px (~7:1),
-   * tier-3: placeholders + decorative only at ≥13px (~4.5:1). */
+   * tier-1: primary body, tier-2: metadata ≥11.5px, tier-3: placeholders. */
   .text-tier-1                  { color: var(--dt-fg-1); }
   .text-tier-2                  { color: var(--dt-fg-2); }
   .text-tier-3                  { color: var(--dt-fg-3); }

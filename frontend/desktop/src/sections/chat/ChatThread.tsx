@@ -29,8 +29,8 @@ import {
 import { useActiveChatStreamsStore } from '@/store/chat-active-streams';
 import { composerSeed } from '@/store/composer-seed';
 import { AnimatePresence } from 'framer-motion';
-import { SCROLL_TO_TOP_THRESHOLD } from '@/components/chat/ScrollToTopButton';
 import { NEAR_BOTTOM_PX } from '@/lib/chat-scroll';
+import { parseSubagentReceipt } from './subagent-receipt';
 import { ModelVisibilityModal } from '@/components/overlays/ModelVisibilityModal';
 import { ArenaLaunchModal } from './composer/ArenaLaunchModal';
 import { ApprovalBanner } from '@/components/overlays/ApprovalBanner';
@@ -63,7 +63,6 @@ import { useChatModels } from './hooks/useChatModels';
 import { useChatUsage } from './hooks/useChatUsage';
 import { useChatAttachments } from './hooks/useChatAttachments';
 import { useChatSend } from './hooks/useChatSend';
-import { useChatVoiceCommands } from './hooks/useChatVoiceCommands';
 import { usePlanTurn } from './hooks/usePlanTurn';
 import { useChatUiActions } from './hooks/useChatUiActions';
 import { useChatMessageActions } from './hooks/useChatMessageActions';
@@ -394,7 +393,6 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrolledFromBottom, setScrolledFromBottom] = useState(false);
-  const [scrolledFromTop, setScrolledFromTop] = useState(false);
   /** True when content arrived while the user was scrolled up (gates the jump pill). */
   const [hasNewContentWhileUnpinned, setHasNewContentWhileUnpinned] = useState(false);
   /** True while the user is near the bottom — gates stick-to-bottom during stream. */
@@ -450,10 +448,19 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
   // Re-attach when the message pane mounts (empty → messages); scrollRef is null
   // on the empty-state path so a sessionId-only dep never binds the listener.
   const hasMessages = messages.length > 0;
+  // Prune any [SUBAGENT_COMPLETE …] envelopes already cached in localStorage
+  // so legacy persisted turns never paint or leave empty virtualizer slots.
+  useEffect(() => {
+    if (!messages.some((m) => m.role === 'user' && parseSubagentReceipt(m.content ?? ''))) {
+      return;
+    }
+    setMessages((prev) =>
+      prev.filter((m) => !(m.role === 'user' && parseSubagentReceipt(m.content ?? ''))),
+    );
+  }, [messages, setMessages]);
   useEffect(() => {
     if (!hasMessages) {
       setScrolledFromBottom(false);
-      setScrolledFromTop(false);
       setHasNewContentWhileUnpinned(false);
       return;
     }
@@ -472,14 +479,12 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
       // viewport back down the moment the user scrolled up to read. Only an
       // explicit jump-to-bottom (or a new turn) re-pins mid-stream.
       if (streaming && !pinnedToBottomRef.current) {
-        setScrolledFromTop(scrollable.scrollTop > SCROLL_TO_TOP_THRESHOLD);
         return;
       }
       if (nearBottom) setHasNewContentWhileUnpinned(false);
       // Re-pin only when the user scrolls back near the bottom; upward release
       // is handled immediately by wheel/touch in useStickToBottomScroll.
       setPinned(nearBottom);
-      setScrolledFromTop(scrollable.scrollTop > SCROLL_TO_TOP_THRESHOLD);
     };
     const onScroll = () => {
       if (raf) return;
@@ -663,21 +668,6 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
     setShowToolsDropdown: dropdownClosers.setShowToolsDropdown,
     setShowCommandsDropdown: dropdownClosers.setShowCommandsDropdown,
     loadMessagesForSession,
-  });
-
-  const { voiceActive, startVoiceInput, stopVoiceInput } = useChatVoiceCommands({
-    sessionId,
-    messages,
-    setMessages,
-    setInput,
-    clearAttachments,
-    attachments,
-    workspacePath: activeSession?.workspacePath,
-    workbenchSessionId: activeSession?.workbenchSessionId,
-    send,
-    setExamActive,
-    setExamSeed,
-    setAugPreview,
   });
 
   const {
@@ -1416,9 +1406,6 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
       onDebateLaunch={launchDebate}
       offlineCount={offlineCount}
       onFlushOffline={() => void flushOffline()}
-      voiceActive={voiceActive}
-      startVoiceInput={startVoiceInput}
-      stopVoiceInput={stopVoiceInput}
       scrolledFromBottom={scrolledFromBottom}
       showNewContentPill={hasNewContentWhileUnpinned}
       onScrollToBottom={scrollToBottom}
@@ -1444,7 +1431,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
   );
 
   const approvalBanner = (
-    <div className="mx-auto w-full max-w-4xl px-4">
+    <div className="mx-auto w-full max-w-[47.5rem] px-4">
       <ApprovalBanner
         sessionId={workbenchSessionId}
         onContinued={(sinceSeq) => {
@@ -1461,7 +1448,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
   // message. The per-turn model stays recoverable from the turn's own record.
   const threadIntro = null;
   const composerSlot = (
-    <div className="august-composer-slot mx-auto w-full max-w-4xl px-4">{composer}</div>
+    <div className="august-composer-slot mx-auto w-full max-w-[47.5rem] px-4">{composer}</div>
   );
 
   /** Plan > approval > composer — only one occupies the input slot. */
@@ -1596,7 +1583,7 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
           <AnimatePresence initial={false}>
             {messages.length === 0 && historyStatus === 'loading' ? (
               <div
-                className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-[var(--shell-inset-x)] py-10"
+                className="mx-auto flex w-full max-w-[47.5rem] flex-col gap-4 px-[var(--shell-inset-x)] py-10"
                 role="status"
                 aria-label="Loading conversation"
               >
@@ -1649,7 +1636,6 @@ export function ChatThread({ sessionId }: { sessionId: string | null }) {
                 revertingIndex={revertingIndex}
                 modelPickerActive={modelPickerActive}
                 onDismissModelPicker={() => setModelPickerActive(false)}
-                scrolledFromTop={scrolledFromTop}
                 scrollRef={scrollRef}
                 onRevert={handleRevert}
                 onEdit={handleEdit}

@@ -1299,6 +1299,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/brain/ram/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Postramreview
+         * @description Run the 3-step topology review now and file its proposal (if any).
+         *
+         *     Explicit human action — the ramReview toggle only governs the AUTOMATIC
+         *     pass after offloads. Nothing applies here; approval stays in the
+         *     proposals queue.
+         */
+        post: operations["postRamReview_api_brain_ram_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brain/ram/trajectories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Getramtrajectories
+         * @description List exported trajectory files (opt-in exporter's output).
+         */
+        get: operations["getRamTrajectories_api_brain_ram_trajectories_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/brain/ram/trajectories/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Getramtrajectory
+         * @description Download one session's trajectory JSONL (masked, opt-in export).
+         */
+        get: operations["getRamTrajectory_api_brain_ram_trajectories__sessionId__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/brain/routing/arena": {
         parameters: {
             query?: never;
@@ -3892,6 +3956,30 @@ export interface paths {
         get: operations["servers_api_local_models_servers_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/local-models/servers/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Server Context
+         * @description Change a served local model's context length (stop → relaunch with the
+         *     new ``--ctx-size``). Refuses while a generation is in flight; the row
+         *     returns as ``starting`` — poll GET /servers. If the model cannot load at
+         *     the new size, the runtime falls back once to the previous working length
+         *     and says so on the realtime bus.
+         */
+        post: operations["server_context_api_local_models_servers_context_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6771,6 +6859,30 @@ export interface paths {
          * @description Record that the user dismissed the queued (quiet-mode) brief.
          */
         post: operations["postWakeUpDismiss_api_wake_up_dismiss_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wake-up/model-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Getwakeupmodelinfo
+         * @description Which model phrases the brief, and whether it stays on this machine.
+         *
+         *     Settings renders this next to the wake-up switches: a cerebellum role
+         *     pointing at a cloud gateway is labelled, and the titles-only option is
+         *     the escape hatch.
+         */
+        get: operations["getWakeUpModelInfo_api_wake_up_model_info_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -9924,6 +10036,16 @@ export interface components {
             /** Postobservationscreenshot */
             postObservationScreenshot?: boolean | null;
         };
+        /**
+         * ServerContextBody
+         * @description One served model's new context length, in tokens.
+         */
+        ServerContextBody: {
+            /** Ctxsize */
+            ctxSize: number;
+            /** Serverid */
+            serverId: string;
+        };
         /** ServerStopBody */
         ServerStopBody: {
             /** Serverid */
@@ -12596,6 +12718,92 @@ export interface operations {
             };
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    postRamReview_api_brain_ram_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getRamTrajectories_api_brain_ram_trajectories_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    getRamTrajectory_api_brain_ram_trajectories__sessionId__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
@@ -16581,6 +16789,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    server_context_api_local_models_servers_context_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ServerContextBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -21580,6 +21821,26 @@ export interface operations {
         };
     };
     postWakeUpDismiss_api_wake_up_dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    getWakeUpModelInfo_api_wake_up_model_info_get: {
         parameters: {
             query?: never;
             header?: never;

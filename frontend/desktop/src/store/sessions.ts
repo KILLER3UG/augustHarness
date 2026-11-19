@@ -70,12 +70,71 @@ export const useSessionsStore = create<SessionsState>(() => {
       `[sessions] swept ${removed.length} empty placeholder chat(s) stacked up by the pre-fix "New chat" reuse loop`,
     );
   }
+  const deduped = dedupeFoldersOnInit(loadFolders(), sessions);
   return {
-    sessions,
-    folders: loadFolders(),
+    sessions: deduped.sessions,
+    folders: deduped.folders,
     sessionStates: {},
   };
 });
+
+/**
+ * Hydration migration — fold duplicate sidebar folders into one (Part D
+ * ruling: the duplicate nested "augustHarness 1" under Recent).
+ *
+ * A workspace bind plus a manual create (or a stale stored path) used to
+ * leave two same-named groups rendering as nested duplicates. Merge rules,
+ * deliberately conservative: same workspace path always merges; equal names
+ * merge when at most one folder carries a path (two DIFFERENT real
+ * workspaces must not fold together). A trailing " N" suffix is stripped
+ * before the name comparison — that is the accidental-duplicate shape, not
+ * a naming scheme. The survivor prefers the path-derived name; sessions
+ * follow it; nothing is deleted, only regrouped.
+ */
+function dedupeFoldersOnInit(
+  folders: Folder[],
+  sessions: Session[],
+): { folders: Folder[]; sessions: Session[] } {
+  if (folders.length < 2) return { folders, sessions };
+  const norm = (name: string): string =>
+    name.trim().toLowerCase().replace(/\s+\d+$/, '');
+  const survivors: Folder[] = [];
+  const dropToKeep = new Map<string, string>();
+  for (const f of folders) {
+    const twin = survivors.find((s) => {
+      if (s.workspacePath && f.workspacePath) return pathsMatch(s.workspacePath, f.workspacePath);
+      return norm(s.name) === norm(f.name);
+    });
+    if (!twin) {
+      survivors.push(f);
+      continue;
+    }
+    dropToKeep.set(f.id, twin.id);
+    // Prefer the path-derived name on the survivor.
+    if (
+      f.workspacePath &&
+      !pathsMatch(twin.workspacePath, f.workspacePath) &&
+      norm(twin.name) !== norm(folderNameFromPath(f.workspacePath))
+    ) {
+      twin.name = f.name;
+      twin.workspacePath = f.workspacePath;
+    } else if (f.workspacePath && !twin.workspacePath) {
+      twin.workspacePath = f.workspacePath;
+    }
+  }
+  if (dropToKeep.size === 0) return { folders, sessions };
+  const mergedSessions = sessions.map((s) =>
+    s.folderId && dropToKeep.has(s.folderId)
+      ? { ...s, folderId: dropToKeep.get(s.folderId) }
+      : s,
+  );
+  saveSessionsToStorage(mergedSessions);
+  saveFoldersToStorage(survivors);
+  console.info(
+    `[sessions] merged ${dropToKeep.size} duplicate sidebar folder(s) at hydration`,
+  );
+  return { folders: survivors, sessions: mergedSessions };
+}
 
 /** Nanostores-shaped shims for imperative get/set callers and tests. */
 export const $sessions = {
@@ -259,6 +318,23 @@ export function getOrCreateEmptySession(
 }
 
 /**
+ * ALWAYS mint a fresh empty chat — the owner ruling behind `+ New thread`
+ * (Part D bugs): a new-thread action must never resume the most recent
+ * session. The old get-or-reuse made the button navigate into a stale blank
+ * row (or worse, the last-touched chat); the day-long ghost sweep already
+ * backstops blank accumulation, so reuse bought nothing but surprise.
+ * `getOrCreateEmptySession` keeps the reuse behavior for callers that are
+ * NOT an explicit new-thread action (visiting `/`, workspace binds).
+ */
+export function createEmptySession(
+  folderId: string | null = null,
+  title?: string,
+  workspacePath?: string | null,
+): Session {
+  return createSession(folderId, title, workspacePath);
+}
+
+/**
  * Start a new empty chat inside a Repositories (or manual) folder — Codex-style
  * multi-thread per project. Inherits the folder's workspacePath when set.
  */
@@ -268,7 +344,7 @@ export function createEmptySessionInFolder(
 ): Session {
   const folder = useSessionsStore.getState().folders.find((f) => f.id === folderId);
   const workspacePath = folder?.workspacePath ?? null;
-  return getOrCreateEmptySession(folderId, title ?? defaultSessionTitle(), workspacePath);
+  return createEmptySession(folderId, title ?? defaultSessionTitle(), workspacePath);
 }
 
 export function renameSession(id: string, newTitle: string) {

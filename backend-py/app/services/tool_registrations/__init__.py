@@ -10,10 +10,11 @@ from __future__ import annotations
 def register_all() -> None:
     """Register all built-in tool groups (and external self-config/provider tools)."""
     from app.services import integration_tools, provider_setup_tool, self_config_tools
-    from app.services.bot_mode import dm, routines, setup
+    from app.services.bot_mode import dm, routines
     from app.services.tool_registrations import (
         agent_tools,
         artifact_tools,
+        automation_tools,
         board_tools,
         bot_tools,
         bulk_tools,
@@ -83,12 +84,14 @@ def register_all() -> None:
     shared_tools.register()
     # Bot Mode routines: Bot-owned scheduled jobs + the M-11 notepad door.
     routines.register()
-    # Bot Mode Phase C: the message_agent DM tool (offered only in canonical
-    # Bot Chats — the per-session gate lives in workbench toolDefinitions).
+    # Automations by chat: create/update/list/delete over the ONE routines
+    # record (automations_store) — the owner-ruling GAP tools, receipt cards
+    # with undo (see tool_registrations/automation_tools.py).
+    automation_tools.register()
+    # Bot Mode Phase C: the message_agent DM tool (offered only in the
+    # orchestrator's main chat — the per-session gate lives in workbench
+    # toolDefinitions).
     dm.register()
-    # Guided setup for bots: install_complete is advertised only while a
-    # bot's setup is pending (bot_mode/setup.filter_setup_tools).
-    setup.register()
     # Chat-requested secrets: request_secret/secret_check — the value goes
     # from the masked form straight into the encrypted store.
     secret_tools.register()

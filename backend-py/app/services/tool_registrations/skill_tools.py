@@ -106,8 +106,37 @@ def _skillHeader(skill: dict[str, object]) -> str:
     return ('\n'.join(lines) + '\n') if lines else ''
 
 
-async def _loadSkill(name: str, file: str = '') -> str:
-    """Load a skill's full instructions, or one bundled file (L2)."""
+def _currentTurnWindow() -> int:
+    """The serving turn's model context window, 0 when it cannot be resolved.
+
+    Reads the pair the turn loop publishes (``workbench.context.currentChatModel``)
+    and resolves the window the way the tool-result cap does — from the
+    provider row, so a served local model's per-model ``contextWindow`` is the
+    value that decides. Tools run inside the turn, so the ContextVar is set.
+    """
+    try:
+        from app.services.workbench.context import currentChatModel
+
+        model, providerName = currentChatModel.get()
+        if not model:
+            return 0
+        from app.services.workbench.loop.surface import provider_row_by_name
+
+        provider = provider_row_by_name(providerName) if providerName else None
+        from app.services.model_service import _getContextWindow
+
+        return int(_getContextWindow(model, provider or None) or 0)
+    except Exception:
+        return 0
+
+
+# At or below this window a full skill body leaves only 2–3 tool rounds
+# before overflow — the coding A/B's "Context size has been exceeded" at 16k.
+_COMPACT_SKILL_WINDOW = 16384
+
+
+async def _loadSkill(name: str, file: str = '', full: bool = False) -> str:
+    """Load a skill's instructions — compact on a small model's window — or one bundled file (L2)."""
     from app.services import skill_service
 
     try:
@@ -127,7 +156,21 @@ async def _loadSkill(name: str, file: str = '') -> str:
         trigger_path = as_str(skill.get('path'), '')
         # Trigger-hit telemetry (per-skill usage sidecar).
         skill_service.record_skill_use(trigger_path)
-        body = _skillHeader(skill) + as_str(skill.get('instructions'), '')
+        instructions = as_str(skill.get('instructions'), '')
+        window = _currentTurnWindow()
+        if (
+            not full
+            and 0 < window <= _COMPACT_SKILL_WINDOW
+            and len(instructions) > skill_service._COMPACT_SKILL_MAX_CHARS
+        ):
+            instructions = skill_service.compact_skill_body(instructions)
+            instructions += (
+                '\n\n_(Compact projection for this model’s '
+                f'{window}-token window — the complete SKILL.md text is '
+                f'{len(as_str(skill.get("instructions"), ""))} chars; load with '
+                'full=true when you need every word.)_'
+            )
+        body = _skillHeader(skill) + instructions
         # A skill may ship sidecar documents next to SKILL.md. Naming them is
         # what makes them usable: the body stays the entry point and the model
         # opens only the one file it needs, instead of the whole directory
@@ -262,7 +305,7 @@ def register() -> None:
     """Register skill tools."""
     tool_registry.register(
         'load_skill',
-        "Load a skill's full instructions by name. Use list_skills first to discover available skill names.",
+        "Load a skill's instructions by name. Use list_skills first to discover available skill names.",
         _loadSkill,
         {
             'type': 'object',
@@ -273,6 +316,13 @@ def register() -> None:
                     'description': 'Optional L2: one file inside the skill directory (e.g. '
                     'references/notes.md), relative to it. Traversal and absolute paths are '
                     'refused.',
+                },
+                'full': {
+                    'type': 'boolean',
+                    'default': False,
+                    'description': 'Load the complete SKILL.md text instead of the compact '
+                    'projection. On a small model window (≤16k) the default is the compact '
+                    'projection — the workflow checklist and tool mappings, prose folded.',
                 },
             },
             'required': ['name'],

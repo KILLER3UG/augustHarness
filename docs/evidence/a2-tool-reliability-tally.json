@@ -1,0 +1,169 @@
+{
+ "total_tool_calls": 107,
+ "total_tool_results": 109,
+ "ok_results": 105,
+ "malformed_results": 4,
+ "turns_completed": 20,
+ "turn_errors": 1,
+ "overflow_errors": 1,
+ "per_tool": {
+  "write_file": {
+   "calls": 6,
+   "ok": 5,
+   "malformed": 1,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "remember": {
+   "calls": 6,
+   "ok": 6,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "list_facts": {
+   "calls": 3,
+   "ok": 3,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_search": {
+   "calls": 18,
+   "ok": 18,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_describe": {
+   "calls": 16,
+   "ok": 16,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call": {
+   "calls": 24,
+   "ok": 0,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->create_bot": {
+   "calls": 3,
+   "ok": 3,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->list_bots": {
+   "calls": 6,
+   "ok": 6,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->verify_citation": {
+   "calls": 7,
+   "ok": 7,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "list_directory": {
+   "calls": 7,
+   "ok": 6,
+   "malformed": 1,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "read_file": {
+   "calls": 14,
+   "ok": 13,
+   "malformed": 1,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->search_files": {
+   "calls": 1,
+   "ok": 1,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->retire_bot": {
+   "calls": 4,
+   "ok": 3,
+   "malformed": 1,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->locate_claim": {
+   "calls": 1,
+   "ok": 1,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "run_command": {
+   "calls": 6,
+   "ok": 6,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "forget": {
+   "calls": 2,
+   "ok": 2,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->update_bot": {
+   "calls": 1,
+   "ok": 1,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "edit_lines": {
+   "calls": 2,
+   "ok": 2,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "update_state": {
+   "calls": 3,
+   "ok": 3,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "submit_todos": {
+   "calls": 0,
+   "ok": 1,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "update_todos": {
+   "calls": 0,
+   "ok": 1,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  },
+  "tool_call->check_paper_citations": {
+   "calls": 1,
+   "ok": 1,
+   "malformed": 0,
+   "failed": 0,
+   "repaired_after_error": 0
+  }
+ },
+ "samples": [
+  "{\"type\": \"workbench/toolCall\", \"ts\": \"2026-11-16T10:22:54Z\", \"id\": \"m8vLjZ4uJIm0UlmIwTQFX8BNijM3b5AP\", \"name\": \"write_file\", \"input\": {\"path\": \"C:\\\\Users\\\\rober\\\\AppData\\\\Local\\\\hermes\\\\cache\\\\scratch\\\\a2-workspace\\\\rese",
+  "{\"type\": \"workbench/toolCall\", \"ts\": \"2026-11-16T10:22:55Z\", \"id\": \"sfWzgRHA364EceeozjVRbohHDC6G2xM2\", \"name\": \"remember\", \"input\": {\"fact\": \"reliability of small local models\", \"key\": \"project-focus\", \"kind\": \"fact\", \"t"
+ ]
+}

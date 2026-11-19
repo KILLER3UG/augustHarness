@@ -15,12 +15,8 @@ import { SETTINGS_SECTIONS } from '@/settings/settings-registry';
 const ROUTE_LABELS: Record<string, string> = {
   '/automations': 'Automations',
   '/runs': 'Runs',
-  '/board': 'Board',
-  '/live': 'Live',
   '/history': 'History',
-  '/learning': 'Learning',
   '/artifacts': 'Artifacts',
-  '/charts': 'Charts',
   '/docs': 'Docs',
   '/_design': 'Design system',
 };

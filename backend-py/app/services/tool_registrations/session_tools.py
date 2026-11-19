@@ -10,7 +10,9 @@ from pathlib import Path
 
 from app.json_narrowing import as_int, as_str
 from app.services import tool_registry
+from app.services.memory_quality import MERGE_SIMILARITY, duplicateOf
 from app.services.memory_quality import coercivePreferenceReason as _coercivePreferenceReason
+from app.services.memory_quality import memoryIsJunk as _memoryIsJunk
 from app.services.sensitive_topics import sensitiveMemoryReason as _sensitiveMemoryReason
 
 
@@ -120,7 +122,7 @@ _MEMORY_BRAIN_STORES = frozenset(
 )
 
 
-async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int = 10) -> str:
+async def _brainQuery(store: str, query: str = '', filters: object = None, limit: int = 10) -> str:
     """Read-only query over runtime stores (sessions, messages, daemons, blackboard)."""
     from app.json_narrowing import as_int, as_str
     from app.services.memory_store import brain_query as _bq
@@ -129,7 +131,6 @@ async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int
     # dict used to leak `'int' object is not iterable` through the except.
     store = as_str(store)
     query = as_str(query)
-    filters = as_str(filters)
     if not store:
         return '{"error": "brain_query: store is required — one of sessions, messages, daemons, blackboard, facts."}'
     if store in _MEMORY_BRAIN_STORES:
@@ -137,14 +138,31 @@ async def _brainQuery(store: str, query: str = '', filters: str = '', limit: int
         if _masterRefusal:
             return _masterRefusal
     try:
-        filtersDict = {}
-        if filters and filters.strip():
-            import json as _json
+        filtersDict: dict = {}
+        if filters not in (None, ''):
+            # The schema declares an OBJECT; a stringified-JSON straggler is
+            # coerced here so an old caller keeps working. Malformed input is
+            # NAMED, never silently dropped — a silently ignored filter made
+            # the model trust rows it never asked for.
+            if isinstance(filters, dict):
+                filtersDict = filters
+            else:
+                import json as _json
 
-            try:
-                filtersDict = _json.loads(filters)
-            except _json.JSONDecodeError:
-                pass
+                try:
+                    parsed = _json.loads(as_str(filters))
+                    if isinstance(parsed, dict):
+                        filtersDict = parsed
+                    else:
+                        return (
+                            '{"error": "brain_query: filters must be a JSON object '
+                            'like {\\"category\\":\\"auth\\"} — pass it as an object."}'
+                        )
+                except _json.JSONDecodeError:
+                    return (
+                        '{"error": "brain_query: filters is not valid JSON — pass an object '
+                        'like {\\"category\\":\\"auth\\"}, or omit filters."}'
+                    )
         result = _bq(store, query, filtersDict or None, as_int(limit, 10))
         return result
     except Exception as exc:
@@ -599,6 +617,20 @@ async def _remember(
                 'Trim to the essentials.',
             }
         )
+    # The junk bar the import and distiller doors already run (memoryIsJunk):
+    # questions, quoted speech, incident/ticket logs, runtime state, and
+    # repo-derivable statements are not memories no matter who writes them.
+    # The model's own door skipping this was the gap — a small model that
+    # writes eagerly could file one-line noise the other doors would refuse.
+    _junkReason = _memoryIsJunk(text)
+    if _junkReason:
+        return _json.dumps(
+            {
+                'ok': False,
+                'policy': f'refused: {_junkReason}. Save durable, self-contained facts — '
+                'a rule or preference that stays true, not what was just said or done.',
+            }
+        )
     try:
         cfg = brain_config_service.getRuntimeConfig()
     except Exception:
@@ -876,6 +908,24 @@ async def _remember(
         'version': _after.get('version'),
         'rollbackId': _rollbackId or None,
     }
+    # Near-duplicate awareness at write time (a WARNING, never a veto —
+    # identity is the only rung this door refuses, per _duplicateFactKey's
+    # rationale). A paraphrase of an existing fact lands as its own row until
+    # the 24h merge pass; naming the close neighbour in the result lets the
+    # model merge on its next turn instead of waiting for the daemon.
+    if before is None:
+        try:
+            _ratio, _neighborKey = duplicateOf(text, scope=factScope)
+            if _neighborKey and _neighborKey != factKey and _ratio >= MERGE_SIMILARITY:
+                _neighbor = memory_store.get_fact(_neighborKey) or {}
+                _result['similarTo'] = {
+                    'key': _neighborKey,
+                    'ratio': round(_ratio, 2),
+                    'title': str(_neighbor.get('title') or ''),
+                    'hint': 'already stored under this key — update it instead of writing a new fact',
+                }
+        except Exception:
+            pass
     # 059: an edit carries its history — "now X, previously Y" — so the model
     # (and the receipt the user sees) can tell a correction from a first save.
     if before is not None:
@@ -2313,8 +2363,9 @@ def register() -> None:
     )
     tool_registry.register(
         'search',
-        'Unified search across files and web with dedup — one call, scope decides. '
-        'Prefer this over juggling search_files vs web_search.',
+        'DEPRECATED — superseded by the scoped tools: search_files (workspace), web_search '
+        '(web), brain_query (sessions/history). Kept dispatchable for backward compatibility '
+        'only; not advertised.',
         _search,
         {
             'type': 'object',
@@ -2328,6 +2379,7 @@ def register() -> None:
             },
             'required': ['query'],
         },
+        hidden=True,
     )
     tool_registry.register(
         'brain_query',
@@ -2354,8 +2406,9 @@ def register() -> None:
                 },
                 'query': {'type': 'string', 'description': 'Search text (FTS or LIKE). Optional.'},
                 'filters': {
-                    'type': 'string',
-                    'description': 'JSON object of column filters (e.g. \'{"category": "auth"}\'). Optional.',
+                    'type': 'object',
+                    'description': 'Column filters as an object (e.g. {"category": "auth"}). Optional. A JSON string is coerced.',
+                    'additionalProperties': {'type': 'string'},
                 },
                 'limit': {'type': 'integer', 'description': 'Max rows to return (1-100). Default 10.'},
             },

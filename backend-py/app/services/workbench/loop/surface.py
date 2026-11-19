@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 
-from app.json_narrowing import as_dict, as_int, as_str
+from app.json_narrowing import as_bool, as_dict, as_int, as_list, as_str
 from app.services.workbench.sessions import WorkbenchSession
 
 logger = logging.getLogger('workbench')
@@ -35,8 +35,8 @@ def normalizeGuardMode(mode: str) -> str:
     """Normalize guard mode to one of: plan, ask, edit, full."""
     lower = mode.strip().lower().replace('_', '-').replace(' ', '-')
     if not lower:
-        # Unset is not a typo: the callers that create a session with an explicit
-        # 'full' (Bot DMs, rooms) mean it.
+        # Unset is not a typo: the callers that create a session with an
+        # explicit 'full' (Bot DMs) mean it.
         return 'full'
     aliases = {
         'plan': 'plan',
@@ -79,11 +79,13 @@ _BARE_TOOL_ALLOW = frozenset(
         'list_directory',
         'write_file',
         'edit_lines',
-        'run_command',
+        # run_command is DEMOTED on the bare surface (owner ruling, STOP 1B):
+        # the A/B watched a 1.7B spend its rounds fighting PowerShell while
+        # the dedicated workspace tools sat unused. It stays reachable through
+        # the tool_call bridge for the models that truly need it.
         'read_background_task',
         'kill_background_task',
         'update_state',
-        'submit_todos',
         'update_todos',
         'write_scratchpad',
         'diagnose_proxy',
@@ -95,8 +97,123 @@ _BARE_TOOL_ALLOW = frozenset(
         'remember',
         'list_facts',
         'forget',
+        # The disclosure bridges ARE the small model's way to reach everything
+        # else — citation tools, web search, skills, exports — without paying
+        # for their schemas on every turn. A bare surface without them is a
+        # dead end: 16 tools and no way to discover the research workflow.
+        'tool_search',
+        'tool_describe',
+        'tool_call',
     }
 )
+
+# Description budget for the small-model (bare) surface: schemas are billed on
+# every turn, and a 1.7B model at 8k cannot spend ~270 tokens per tool. The
+# trim keeps the FIRST sentence (the operative instruction) and drops property
+# descriptions — types, enums and required stay intact, so the wire contract
+# is unchanged; only the prose shrinks.
+_BARE_DESCRIPTION_CAP = 140
+
+
+def _trimDescription(text: object, cap: int = _BARE_DESCRIPTION_CAP) -> str:
+    """First sentence of a tool/property description, hard-capped."""
+    raw = as_str(text, '').strip()
+    if not raw:
+        return ''
+    for cut in ('. ', '.\n'):
+        pos = raw.find(cut)
+        if 0 < pos < cap:
+            return raw[: pos + 1]
+    if len(raw) <= cap:
+        return raw
+    return raw[:cap].rsplit(' ', 1)[0] + '…'
+
+
+def _trim_tool_def(t: dict[str, object], cap: int = _BARE_DESCRIPTION_CAP) -> dict[str, object]:
+    """A copy of one tool definition with prose trimmed for a small surface."""
+    fn = as_dict(t.get('function'), {})
+    if not fn:
+        # Anthropic shape: {'name', 'description', 'input_schema'}
+        trimmed = dict(t)
+        trimmed['description'] = _trimDescription(t.get('description'), cap)
+        schema = as_dict(t.get('input_schema'), {})
+        if schema:
+            trimmed['input_schema'] = _trim_schema(schema)
+        return trimmed
+    fn = dict(fn)
+    fn['description'] = _trimDescription(fn.get('description'), cap)
+    schema = as_dict(fn.get('parameters'), {})
+    if schema:
+        fn['parameters'] = _trim_schema(schema)
+    out = dict(t)
+    out['function'] = fn
+    return out
+
+
+def _trim_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Schema copy with property DESCRIPTIONS dropped (structure kept)."""
+    out = dict(schema)
+    props = as_dict(out.get('properties'), {})
+    if props:
+        slim: dict[str, object] = {}
+        for key, spec in props.items():
+            if isinstance(spec, dict):
+                item = dict(spec)
+                item.pop('description', None)
+                slim[key] = item
+            else:
+                slim[key] = spec
+        out['properties'] = slim
+    return out
+
+
+def _trim_tools_for_small_surface(
+    tools: list[dict[str, object]], cap: int = _BARE_DESCRIPTION_CAP
+) -> list[dict[str, object]]:
+    """Prose-trimmed copies of ``tools`` for a bare (small local) surface."""
+    return [_trim_tool_def(t, cap) for t in tools]
+
+
+# At a 4k window even the bare allowlist is too much prose and a few
+# conveniences: the bulk read, the todo pair, the scratchpad and the proxy
+# diagnostic are all reachable through the bridges or covered by siblings
+# (read_file, update_state, remember). The research workflow still works —
+# the bridges stay, so citation/web/export tools load on demand.
+_BARE_MICRO_DROP = frozenset(
+    {'read_files', 'submit_todos', 'update_todos', 'write_scratchpad', 'diagnose_proxy'}
+)
+
+
+def _bare_allowlist(context_window: int) -> frozenset[str]:
+    """The bare allowlist for a model window; a 4k model gets the micro set."""
+    if 0 < context_window <= 4096:
+        return frozenset(_BARE_TOOL_ALLOW - _BARE_MICRO_DROP)
+    return _BARE_TOOL_ALLOW
+
+
+def provider_row_by_name(name: str) -> dict[str, object]:
+    """The raw provider row for a provider NAME or id, or {} when unknown.
+
+    Sessions carry ``provider`` as a NAME string (``sessions.py``), so code
+    that needs the provider's OWN config — the model's context window, its
+    tool surface — must resolve the row from the store. Best-effort: an
+    unknown name or a failed read returns {} and the caller keeps its
+    fallback.
+    """
+    cleaned = as_str(name, '').strip()
+    if not cleaned:
+        return {}
+    try:
+        from app.services import config_service
+
+        store = config_service.getProvidersStore()
+        for entry in as_list(store.get('providers'), []):
+            row = as_dict(entry, {})
+            if str(row.get('name', '')) == cleaned or str(row.get('id', '')) == cleaned:
+                return row
+    except Exception:
+        logger.debug('provider row lookup failed for %s', cleaned, exc_info=True)
+    return {}
 
 
 def _toolDefName(t: dict[str, object]) -> str:
@@ -175,6 +292,7 @@ def _modelCapabilityProfile(session: WorkbenchSession) -> dict[str, object]:
         return dict(cached[1])
     profile: dict[str, object] = {}
     try:
+        from app.providers.api_format import is_loopback_base_url as _isLoopback
         from app.services import config_service
 
         for p in config_service.getProvidersAsModels():
@@ -184,8 +302,14 @@ def _modelCapabilityProfile(session: WorkbenchSession) -> dict[str, object]:
                 if m.id == modelId:
                     profile = {
                         'tool_surface': m.tool_surface or 'full',
+                        # Whether the user actually set a surface (vs the
+                        # 'full' default) — the ≤16k local rule below must
+                        # not override an explicit choice.
+                        'tool_surface_explicit': bool(m.tool_surface),
                         'max_tools': int(m.max_tools or 0),
                         'max_tool_result_chars': int(m.max_tool_result_chars or 0),
+                        'context_window': int(getattr(m, 'context_window', 0) or 0),
+                        'loopback': _isLoopback(getattr(p, 'base_url', '')),
                     }
                     break
             if profile:
@@ -206,6 +330,19 @@ def _applyModelCapabilityProfile(
     """Filter the tool surface by the session model's capability profile."""
     profile = _modelCapabilityProfile(session)
     surface = as_str(profile.get('tool_surface'), 'full')
+    window = as_int(profile.get('context_window'), 0)
+    # A small window never carries the full catalog: the full surface is
+    # ~48k tokens of definitions alone (A.1 measurement), so a LOCAL model at
+    # ≤16k runs the compact lazy-discovery profile (bare core + discovery
+    # bridge + skill-pack tools) unless the user set a surface explicitly.
+    # Owner ruling, STOP 1B: never promote a 16k window to the full catalog.
+    if (
+        surface == 'full'
+        and not as_bool(profile.get('tool_surface_explicit'), False)
+        and as_bool(profile.get('loopback'), False)
+        and 0 < window <= 16384
+    ):
+        surface = 'bare'
     if surface == 'text':
         # Text tool protocol: no native tools are offered (models that
         # ignore `tools` must not be tempted); the model calls tools via
@@ -213,7 +350,10 @@ def _applyModelCapabilityProfile(
         setattr(session, '_text_tool_protocol', True)
         return []
     if surface == 'bare':
-        tools = [t for t in tools if _toolDefName(t) in _BARE_TOOL_ALLOW]
+        tools = [t for t in tools if _toolDefName(t) in _bare_allowlist(window)]
+        # Small models pay for prose on every turn: first-sentence
+        # descriptions, no per-property descriptions — tighter on a 4k window.
+        tools = _trim_tools_for_small_surface(tools, 90 if 0 < window <= 4096 else _BARE_DESCRIPTION_CAP)
     elif surface == 'reduced':
         tools = [t for t in tools if not _toolDefName(t).startswith(_HEAVY_TOOL_PREFIXES)]
     maxTools = as_int(profile.get('max_tools'), 0)
@@ -286,10 +426,25 @@ def _finalize_session_tools(
 
 
 def _toolResultCap(session: WorkbenchSession) -> int:
-    """Per-model tool-result truncation cap (falls back to the harness default)."""
+    """Per-model tool-result truncation cap.
+
+    Falls back to the harness default — SCALED TO THE MODEL'S WINDOW when the
+    profile carries one: a 64 KiB result inside an 8k window is the overflow
+    the A.2 reliability run hit (three tool rounds exceeded the whole context).
+    The scale is window//4, not //2: the coding A/B on the 1.7B hit "context
+    size exceeded" at 16k with six tool rounds of //2-sized results (~2k
+    tokens each ≈ 12.5% of the window per round — six rounds alone are 75%).
+    A small window gets a proportionally small cap; an explicit profile value
+    still wins; large windows floor at the 64 KiB harness default.
+    """
     profile = _modelCapabilityProfile(session)
     cap = as_int(profile.get('max_tool_result_chars'), 0)
-    return cap if cap > 0 else MAX_TOOL_RESULT_CHARS
+    if cap > 0:
+        return cap
+    window = as_int(profile.get('context_window'), 0)
+    if window > 0:
+        return max(2048, min(MAX_TOOL_RESULT_CHARS, window // 4))
+    return MAX_TOOL_RESULT_CHARS
 
 
 def _mcpToolDefinitionsAnthropic(seen: set[str]) -> list[dict[str, object]]:

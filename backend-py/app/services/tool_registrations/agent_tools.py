@@ -90,7 +90,41 @@ async def _readBackgroundTask(taskId: str = '', tailChars: int = 8000) -> str:
     from app.services.background_commands import getManager
     from app.services.workbench.context import currentSessionId
 
+    tid = str(taskId or '').strip()
+    if tid and not tid.startswith('bg_'):
+        return _subagentPollSteering(tid, currentSessionId.get() or '')
     return getManager().read(taskId, currentSessionId.get(), as_int(tailChars, 8000))
+
+
+def _subagentPollSteering(task_id: str, session_id: str) -> str:
+    """Parents poll subagent job_/task_ ids here; a bare error burned rounds
+    and context on small windows. Steer toward the pushed completions."""
+    lines = [f"'{task_id}' is not a background command id (those start with 'bg_')."]
+    try:
+        from app.services.harness_jobs import get_job, list_jobs
+
+        job = get_job(task_id)
+        if job is None:
+            for row in list_jobs(session_id, limit=10):
+                if task_id in (row.get('taskIds') or []):
+                    job = row
+                    break
+        if job is not None:
+            lanes = job.get('outcomes') or {}
+            summary = ', '.join(
+                f"{name}: {as_str(info.get('status'), '?')}"
+                for name, info in lanes.items()
+                if isinstance(info, dict)
+            )
+            status = as_str(job.get('status'), '?')
+            lines.append(f'Dispatch status: {status}' + (f' ({summary})' if summary else ''))
+    except Exception:
+        pass
+    lines.append(
+        'Subagent results arrive automatically as [SUBAGENT_COMPLETE] messages — do not poll. '
+        'If all results have arrived, write the final answer now in one round.'
+    )
+    return '\n'.join(lines)
 
 
 async def _killBackgroundTask(taskId: str = '') -> str:
@@ -434,7 +468,9 @@ def register() -> None:
         (
             'Spawn one or more sub-agents in parallel for independent work items (single or batch in one '
             'call). Default background=true delivers completions as they finish; background=false blocks. '
-            'Each item may set effort (low/medium/high/max), a model override, and yieldSchema for a JSON result.'
+            'Each item may set effort (low/medium/high/max), a model override, and yieldSchema for a JSON result. '
+            'Give each worker a focused `tools` allow-list (2–5 names it needs for its subtask) — especially '
+            'when the model serving this session is a small local one.'
         ),
         _spawnSubagents,
         {
@@ -449,6 +485,15 @@ def register() -> None:
                             'agentId': {'type': 'string', 'default': 'general'},
                             'context': {'type': 'string'},
                             'restrictedTools': {'type': 'array', 'items': {'type': 'string'}},
+                            'tools': {
+                                'type': 'array',
+                                'items': {'type': 'string'},
+                                'description': (
+                                    'EXACT tools this worker may use (allow-list, 2–5 names). '
+                                    'Preferred on small local models: a focused set keeps the worker prompt well '
+                                    'under the window. Unknown names are ignored; the spawn rule states the set.'
+                                ),
+                            },
                             'effort': {
                                 'type': 'string',
                                 'enum': ['low', 'medium', 'high', 'max'],
@@ -473,7 +518,7 @@ def register() -> None:
                             'skills': {
                                 'type': 'array',
                                 'items': {'type': 'string'},
-                                'description': 'Skill names to preload into the worker (full SKILL.md).',
+                                'description': 'Skill names to preload into the worker (compact projection on small model windows).',
                             },
                             'capability': {
                                 'type': 'string',

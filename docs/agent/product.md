@@ -103,33 +103,36 @@ not been run.
 
 ## Chat surface
 
-**A run of tool calls is ONE line in the transcript, not N.** The reference
-transcript collapses consecutive tool calls into an activity line — a warm dot,
-one phrase ("Ran 4 commands"), the elapsed time WHILE THE LINE IS STILL
-RUNNING, a chevron — and reveals them in a bordered card. A SETTLED line
-carries no time: the reference's reads "Ran 4 commands, read a file" with no
-duration, and every duration it shows is on a line that is still running
-("Running a command  1m 18s"). The run's own time is in the card, on the group
-row. That grouping is a RENDER-TIME arrangement
-(`components/chat/ActivityGroup.tsx` + `lib/tool-summary.ts`), not a new
-persisted block kind: the transcript still stores one block per tool call, so a
-reload produces the same grouping and the backend knows nothing about it.
+**A turn's work is ONE folded activity line in the transcript, not N.** Every
+non-interactive step in a turn — thinking blocks, tool calls, file reads,
+commands, edits, post-turn status notices, and **settled subagent runs** — folds
+into one single-line collapsible pill (`"Read 3 files · Ran 2 sub-agents ▾"`,
+`·`-separated), expanding to a vertical timeline inside a `--dt-timeline-inset`
+card with a `1px` `--dt-line` border. A SETTLED line carries no duration unless
+the run took at least a second, while a STILL-RUNNING line pulses and updates
+elapsed time. Thinking-only or single-call turns still get one compact
+collapsible line, never an open thinking wall. That grouping is a RENDER-TIME
+arrangement (`components/chat/ActivityGroup.tsx` + `lib/tool-summary.ts`), not
+a new persisted block kind: the transcript still stores one block per tool call
+or snapshot, so a reload produces the same grouping and the backend knows nothing
+about it.
 
-**EVERY kind collapses into the one line** — a read, a command and an edit in a
-row is ONE line whose phrase names each kind ("Ran a command, read 2 files"),
-and the card reveals every row. The separate Explore group is gone; its
-vocabulary went with it, so a run of web searches reads "read N files" rather
-than naming searches — the one cost of the merge, named rather than hidden.
+**EVERY non-interactive kind collapses into the one line** — a read, a command,
+an edit, a thinking chain, and a settled subagent in one turn merge into one
+`·`-separated phrase naming each kind, and opening the pill reveals every row in
+timeline order. The separate Explore group is gone; its vocabulary went with it,
+so a run of web searches reads `"Read N files"` rather than naming searches — the
+one cost of the merge, named rather than hidden.
 
 A run containing a FAILURE is still one line, but it **opens by default** and
-carries a "failed" marker, because a failure hidden behind a collapsed line is
-one nobody sees. A call that is waiting for approval, or carries an action
-widget, stays on its own (an interactive control must be visible and clickable)
-— and so do a subagent launch and `update_state`. A run of ONE is not a group.
-A run is still a run of *consecutive* blocks: grouping across a turn boundary
-remains an open decision in `docs/ROADMAP.md`. The live indicator
-(`WorkingIndicator`) and the persisted activity line are BOTH kept: one is what
-is happening, the other is what happened.
+carries a `"failed"` marker, because a failure hidden behind a collapsed line is
+one nobody sees. Calls that stay outside and visible on their own are those
+requiring interaction or still in flight for steering: a call waiting for
+approval, a call carrying an action widget, and **subagents that are still
+running** (live, steerable — once settled, they join the turn's folded line at
+render time). `update_state` stays quiet bookkeeping unless it fails. The live
+indicator (`WorkingIndicator`) and the persisted activity line are BOTH kept:
+one is what is happening, the other is what happened.
 
 **A DISCLOSURE OWNS ITS BODY, and the body mounts lazily.** Every
 `DisclosureRow` call site passes its body as the `content` prop, so the trigger

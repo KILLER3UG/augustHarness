@@ -7,34 +7,20 @@ import { useResizablePane } from "@/hooks/useResizablePane";
 interface SessionSidebarProps {
   activeId?: string;
   collapsed: boolean;
-  /** The phone tier: the drawer's rows drop the primary nav (the tabbar owns
-   *  those destinations) and the resize handle is meaningless on a touch
-   *  device. */
   mobile?: boolean;
   onToggleCollapsed: () => void;
   onNew: () => void;
-  onNewInFolder: (folderId: string | null) => void;
   onNavigate: (path: string) => void;
 }
 
-/* v4: the default moved to 252 CSS px. The reference rail measures 315 device
- * pixels on the machine the mockup was captured on, which runs at 125%
- * (AppliedDPI 120) — 315/1.25 = 252 CSS. The v3 default of 316 was measured in
- * device pixels by mistake and rendered 395, wider than the reference it was
- * meant to match. 252 is the mockup's CSS width, not a per-machine constant:
- * at other scalings the rail renders the same CSS size as any other UI text.
- * The key bump is the LAST one: useResizablePane now persists only a width the
- * user actually chose, so a changed default propagates without a version bump
- * (v2→v3→v4 each silently discarded every stored width on the day they
- * shipped). Existing v4 values are user intent and stay. */
 const SIDEBAR_WIDTH_KEY = "august-session-sidebar-width-v4";
 const DEFAULT_WIDTH = 252;
-const MIN_WIDTH = 220;
-const MAX_VIEWPORT_FRACTION = 0.33;
+const MIN_WIDTH = 240;
+const MAX_WIDTH = 260;
 
 function sidebarMax(): number {
   if (typeof window === "undefined") return DEFAULT_WIDTH;
-  return Math.max(MIN_WIDTH, Math.floor(window.innerWidth * MAX_VIEWPORT_FRACTION));
+  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.33)));
 }
 
 export function SessionSidebar({
@@ -43,7 +29,6 @@ export function SessionSidebar({
   mobile = false,
   onToggleCollapsed,
   onNew,
-  onNewInFolder,
   onNavigate,
 }: SessionSidebarProps) {
   const { size: width, isDragging, handleProps } = useResizablePane({
@@ -55,10 +40,6 @@ export function SessionSidebar({
     "aria-label": "Resize session sidebar",
   });
 
-  /* The phone's drawer is a sheet, not the desktop rail: the mockup opens it
-     at ~86% of the screen. The stored pane width is a DESKTOP preference (a
-     220px rail is a fine desktop column and a cramped phone drawer), so the
-     tier ignores it without overwriting it. */
   const [viewport, setViewport] = useState(
     () => (typeof window !== 'undefined' ? window.innerWidth : 390),
   );
@@ -91,11 +72,9 @@ export function SessionSidebar({
             <SessionList
               activeId={activeId}
               collapsed={collapsed}
-              mobile={mobile}
               onToggleCollapsed={onToggleCollapsed}
               onSelect={(s) => onNavigate(`/c/${s.id}`)}
               onNew={onNew}
-              onNewInFolder={onNewInFolder}
               onNavigate={onNavigate}
             />
           </div>

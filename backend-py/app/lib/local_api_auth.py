@@ -14,7 +14,6 @@ loopback included:
     POST /api/harness/proposals/{pid}/decide, /promotion/run
     POST /api/workbench/chat, /plan/approve, /mutations/respond
     POST /api/live/turn
-    POST /api/agents/rooms/{room_id}/send
     POST /api/automations/run
     *    /api/terminal/* (REST; the socket keeps its trusted-origin door)
     POST /api/preview/approve, /api/mcp/servers/{id}/start|stop,

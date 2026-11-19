@@ -129,7 +129,6 @@ async def createAgent(
     parent_agent: str = '',
     model: str = '',
     provider: str = '',
-    setup_required: bool = False,
 ) -> str:
     # Bot Mode (one agent concept): agent creation goes through the roster
     # so every agent is a Bot with a canonical chat. Idempotent on name.
@@ -185,7 +184,6 @@ async def createAgent(
             role=role,
             model=model,
             provider=provider,
-            setup_required=bool(setup_required),
             actor='agent',
         )
         return _ok(agent=agent)
@@ -309,6 +307,85 @@ async def customizeUi(changes: object = None, reset: bool = False) -> str:
     )
 
 
+async def setModelContext(ctxSize: int = 0, serverId: str = '') -> str:
+    """Change the served local model's context length. See the schema."""
+    from app.services import llama_runtime
+
+    rows = llama_runtime.list_servers().get('servers', [])
+    ready = [r for r in rows if str(r.get('status', '')) == 'ready']
+    if serverId:
+        row = next((r for r in ready if str(r.get('id', '')) == serverId), None)
+        if row is None:
+            return _err(f'No READY local server with id {serverId}. Use list to see servers.')
+    elif len(ready) == 1:
+        row = ready[0]
+    elif len(ready) == 0:
+        return _err(
+            'No local model is serving right now. The user can serve one in '
+            'Settings → Local Models; a released model reloads on the next message.'
+        )
+    else:
+        names = ', '.join(f'{r.get("name")} ({r.get("id")})' for r in ready)
+        return _err(f'More than one local model is ready — pass serverId. Ready: {names}.')
+
+    try:
+        requested = int(ctxSize)
+    except (TypeError, ValueError):
+        return _err('ctxSize must be a number of tokens, e.g. 8192.')
+
+    previous = int(row.get('ctxSize', 0) or 0)
+    if requested == previous:
+        return _ok(
+            changed=False,
+            message=f'{row.get("name")} already runs a {previous}-token context.',
+            name=str(row.get('name', '')),
+            ctxSize=previous,
+        )
+
+    try:
+        await llama_runtime.change_server_context(str(row.get('id', '')), requested)
+    except llama_runtime.HTTPishError as exc:
+        return _err(str(exc))
+
+    # The restart repoints the provider at a NEW port; the next model request
+    # of this same turn resolves the base URL live, but only once the new
+    # server answers — so the tool waits here instead of letting the turn die
+    # on the old port. A load failure at the new size falls back once to the
+    # previous length inside the ready-watcher; the receipt below reports
+    # whatever length actually came up.
+    cameUp = await llama_runtime.ensure_local_ready(timeout_s=120.0)
+    final_ctx = previous
+    for r in llama_runtime.list_servers().get('servers', []):
+        if str(r.get('status', '')) == 'ready' and str(r.get('ggufPath', '')).lower() == str(
+            row.get('ggufPath', '')
+        ).lower():
+            final_ctx = int(r.get('ctxSize', previous) or previous)
+            break
+    if not cameUp:
+        return _err(
+            f'The context change to {requested} is applied but {row.get("name")} has not '
+            'finished loading yet — check the model status before relying on it.',
+            applied=True,
+            requestedCtxSize=requested,
+        )
+
+    receipt = {
+        'kind': 'model_context_changed',
+        'serverId': str(row.get('id', '')),
+        'name': str(row.get('name', '')),
+        'from': previous,
+        'to': requested,
+        'effectiveCtx': final_ctx,
+        'changed': final_ctx == requested,
+    }
+    warning = llama_runtime.context_warning_for(requested)
+    if warning:
+        receipt['warning'] = warning
+    # The receipt is the tool RESULT: the UI renders it as a compact card with
+    # an undo (undo = the same change back to `from`).
+    return json.dumps(receipt, default=str)
+
+
 def register() -> None:
     """Register all self-configuration tools (alias + fallback).
 
@@ -408,29 +485,33 @@ def register() -> None:
         },
     )
     tool_registry.register(
-        'create_agent',
-        'Create a new agent (a Bot) with a name, role and description. The agent is persisted '
-        'and immediately usable — bind it to a session or invoke it as a sub-agent. Its tool '
-        'surface is inherited from the turn that spawns it; capabilities are the user to set, '
-        'and so is its place in the agent hierarchy. Only the Foreman bot may pin model/provider.',
-        createAgent,
+        'set_model_context',
+        'Change the context length of the served LOCAL model (when the user asks e.g. '
+        '"set the context to 16k"). Restarts the local server with the new window — a '
+        'generation in flight blocks it, so retry after the current reply. ctxSize is '
+        'tokens: 4096, 8192, 16384, 32768, or a custom multiple of 1024 up to 131072.',
+        setModelContext,
         {
             'type': 'object',
             'properties': {
-                'name': {'type': 'string', 'description': 'Human-readable agent name.'},
-                'description': {'type': 'string', 'description': 'What the agent does.'},
-                'role': {'type': 'string', 'description': "Role label (e.g. 'Researcher')."},
-                'model': {'type': 'string', 'description': 'Model id — Foreman bot only.'},
-                'provider': {'type': 'string', 'description': 'Provider name — Foreman bot only.'},
-                'setup_required': {
-                    'type': 'boolean',
-                    'description': 'True when the new bot must walk its owner through a guided '
-                    'setup in its chat first; the owner completes it with install_complete.',
+                'ctxSize': {
+                    'type': 'integer',
+                    'description': 'New context window in tokens (4096, 8192, 16384, 32768, or custom up to 131072).',
+                },
+                'serverId': {
+                    'type': 'string',
+                    'description': 'Local server id, only when several local models are ready.',
                 },
             },
-            'required': ['name'],
+            'required': ['ctxSize'],
         },
     )
+    # STOP 1B merge: create_agent/list_agents and create_bot/list_bots were
+    # two names for near-identical operations on the same roster. One clean
+    # name each remains (with the ceiling logic the bot door already had);
+    # the old names stay dispatchable as aliases.
+    tool_registry.register_alias('create_agent', 'create_bot')
+    tool_registry.register_alias('list_agents', 'list_bots')
     tool_registry.register(
         'update_agent',
         "Update an existing agent's name, description or role. Pass only the fields to change. "
@@ -449,7 +530,7 @@ def register() -> None:
     )
     tool_registry.register(
         'delete_agent',
-        'Delete an agent by id. Use list_agents to find available agent IDs.',
+        'Delete an agent by id. Use list_bots to find available agent IDs.',
         deleteAgent,
         {
             'type': 'object',
@@ -457,6 +538,4 @@ def register() -> None:
             'required': ['agentId'],
         },
     )
-    tool_registry.register(
-        'list_agents', 'List all registered agents.', listAgents, {'type': 'object', 'properties': {}, 'required': []}
-    )
+    # list_agents merged into list_bots (STOP 1B) — alias above.

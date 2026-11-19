@@ -129,29 +129,60 @@ async def _board(
 
 
 def register() -> None:
-    """Register the shared task board tool."""
+    """Register the task board tools.
+
+    STOP 1B split: `board` dispatched six actions through one schema whose
+    `action` property had NO description and whose params were prose-only.
+    Two focused tools now share the handler — a read and an edit — and the
+    old name stays dispatchable (hidden) for backward compatibility.
+    """
     tool_registry.register(
-        'board',
+        'board_list',
         (
-            'Read and update the durable task board shared by every agent, job and window. '
-            'Actions: list [column], add (title, optional column/body/agentId), move '
-            '(cardId, column), claim (cardId [, agentId]) → doing, done (cardId), drop '
-            '(cardId). Use it to pick up the next backlog item, to record work another '
-            'agent should do, or to mark a card finished when you complete it. Card ids come '
-            'from list; do not invent them.'
+            'Read the durable task board shared by every agent, job and window. '
+            'Use it to pick up the next backlog item or to see what other agents claimed. '
+            'Card ids come from here; do not invent them.'
         ),
         _board,
         {
             'type': 'object',
             'properties': {
-                'action': {'type': 'string', 'enum': list(ACTIONS)},
+                'action': {'type': 'string', 'enum': ['list'], 'description': 'list (default).'},
+                'column': {
+                    'type': 'string',
+                    'enum': sorted(store.COLUMNS),
+                    'description': 'Filter to one column.',
+                },
+            },
+            'required': [],
+        },
+        keywords=['board', 'kanban', 'task', 'queue', 'backlog'],
+    )
+    tool_registry.register(
+        'board_edit',
+        (
+            'Update the durable task board shared by every agent, job and window. '
+            'add (title, optional column/body/agentId), move (cardId, column), '
+            'claim (cardId [, agentId]) → doing, done (cardId), drop (cardId). '
+            'Record work another agent should do, or mark a card finished when you complete it. '
+            'Card ids come from board_list; do not invent them.'
+        ),
+        _board,
+        {
+            'type': 'object',
+            'properties': {
+                'action': {
+                    'type': 'string',
+                    'enum': ['add', 'move', 'claim', 'done', 'drop'],
+                    'description': 'add: new card · move: re-column · claim: take ownership (→ doing) · done: finish · drop: remove.',
+                },
                 'title': {'type': 'string', 'description': 'Card title (add).'},
                 'column': {
                     'type': 'string',
                     'enum': sorted(store.COLUMNS),
-                    'description': 'Filter for list, target for add/move.',
+                    'description': 'Target column for add/move.',
                 },
-                'cardId': {'type': 'string', 'description': 'Card id, as returned by list.'},
+                'cardId': {'type': 'string', 'description': 'Card id, as returned by board_list.'},
                 'body': {'type': 'string', 'description': 'Optional longer detail (add).'},
                 'agentId': {
                     'type': 'string',
@@ -160,5 +191,15 @@ def register() -> None:
             },
             'required': ['action'],
         },
+        keywords=['board', 'kanban', 'task', 'claim', 'handoff'],
+    )
+    tool_registry.register(
+        'board',
+        (
+            'DEPRECATED — split into board_list (read) and board_edit (add/move/claim/done/drop). '
+            'Kept dispatchable for backward compatibility only; not advertised.'
+        ),
+        _board,
+        hidden=True,
         keywords=['board', 'kanban', 'task', 'queue', 'claim', 'handoff', 'backlog'],
     )

@@ -460,10 +460,15 @@ def register(
     handler: ToolHandler,
     parameters: dict[str, object] | None = None,
     keywords: list[str] | None = None,
+    hidden: bool = False,
 ) -> None:
     """Register a tool.
 
     ``keywords`` is an optional list of search terms for BM25 retrieval (Phase 3).
+    ``hidden=True`` withdraws the tool from every advertised surface while the
+    handler stays dispatchable — the STOP 1B de-overlapping rule: a superseded
+    grab-bag (e.g. the old unified `search`) keeps working for callers that
+    emit it, but the model sees only the clean, non-overlapping set.
     """
     global _generation
     if name in _RESERVEDNames:
@@ -474,8 +479,27 @@ def register(
         'handler': handler,
         'parameters': parameters or {},
         'keywords': keywords or [],
+        'hidden': bool(hidden),
     }
     _generation += 1
+
+
+# Dispatch aliases (STOP 1B merges): `alias` executes `target`'s handler and
+# inherits its schema for guard/hint purposes, but is NEVER advertised — the
+# model sees the merged, non-overlapping name only.
+_ALIASES: dict[str, str] = {}
+
+
+def register_alias(alias: str, target: str) -> None:
+    global _generation
+    if alias in _RESERVEDNames:
+        raise ValueError(f"Cannot alias a reserved bridge name: '{alias}'")
+    _ALIASES[alias] = target
+    _generation += 1
+
+
+def _resolveName(name: str) -> str:
+    return _ALIASES.get(name, name)
 
 
 def generation() -> int:
@@ -501,18 +525,22 @@ def unregister(name: str) -> bool:
 
 
 def get(name: str) -> dict[str, object] | None:
-    """Get a tool definition by name."""
-    return _registry.get(name)
+    """Get a tool definition by name (aliases resolve to their target)."""
+    return _registry.get(_resolveName(name))
 
 
 def getTool(name: str) -> dict[str, object] | None:
     """Alias for get()."""
-    return _registry.get(name)
+    return get(name)
 
 
 def listRaw() -> list[dict[str, object]]:
-    """List all registered tools in raw (internal) format with keywords."""
-    return list(_registry.values())
+    """List all registered tools in raw (internal) format with keywords.
+
+    Hidden tools (superseded, dispatch-compatible) are excluded — they are
+    callable, never advertised.
+    """
+    return [t for t in _registry.values() if not t.get('hidden')]
 
 
 _DESKTOP_TOOL_PREFIXES = (
@@ -579,6 +607,8 @@ def listTools(*, include_host_agent: bool | None = None) -> list[dict[str, objec
     for t in _registry.values():
         name = t.get('name')
         if not isinstance(name, str):
+            continue
+        if t.get('hidden'):
             continue
         if not show_host and is_host_agent_tool(name):
             continue
@@ -656,24 +686,30 @@ def validate_tool_args(name: str, args: dict[str, object]) -> tuple[list[str], l
 
 
 def _tool_schema_check_mode() -> str:
-    """off | warn | strict, from brain-config (``toolSchemaCheck``, default off).
+    """off | warn | strict, from brain-config (``toolSchemaCheck``, default warn).
 
-    off = today's behavior; warn = the result carries ``[param_warnings]``;
-    strict = the call refuses BEFORE the handler runs.
+    warn = the result carries ``[param_warnings]`` — the validator, the
+    did-you-mean hints and the receipts all exist and were always built;
+    shipping them OFF meant a small model that misshapes an argument got
+    the raw handler error instead of the fix. strict = the call refuses
+    BEFORE the handler runs; off = today's behavior, still available.
     """
     try:
         from app.services.brain_config_service import getRuntimeConfig
 
-        return str(getRuntimeConfig().get('toolSchemaCheck', 'off') or 'off').lower()
+        return str(getRuntimeConfig().get('toolSchemaCheck', 'warn') or 'warn').lower()
     except Exception:
-        return 'off'
+        return 'warn'
 
 
 async def dispatch(name: str, args: dict[str, object]) -> str:
     """Dispatch a tool call by name and arguments.
 
     Host/desktop tools refuse when the host agent is configured but down.
+    Dispatch aliases (STOP 1B merges) resolve to their target here, so an old
+    name a model already emitted keeps executing.
     """
+    name = _resolveName(name)
     tool = _registry.get(name)
     if not tool:
         # A typo should cost one round, not a guess. Naming the closest

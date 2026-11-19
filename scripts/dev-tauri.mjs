@@ -170,7 +170,9 @@ try {
 
 console.log('[dev] launching tauri dev…');
 
-tauriChild = spawn(npm, ['run', 'tauri:dev'], {
+// HARNESS_TAURI_CDP=1 exposes the webview's CDP port (tauri.dev-cdp.conf.json)
+// so the shell can be driven by the same Playwright flow as the served app.
+tauriChild = spawn(npm, ['run', process.env.HARNESS_TAURI_CDP === '1' ? 'tauri:dev:cdp' : 'tauri:dev'], {
     cwd: resolve(root, 'frontend/desktop'),
     env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],

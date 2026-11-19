@@ -1,0 +1,52 @@
+Part A.2 — user-configurable local model context length: live verification
+2026-11-16, backend on 127.0.0.1:8085 (uvicorn, repo venv), LFM3-1.7B-Q8_0,
+Vulkan llama.cpp. Commits 018a9488 (backend) + 9fcca3ff (frontend).
+
+1. Serve at 4096
+   POST /api/local-models/gguf/serve {ctxSize:4096} → row gguf-56461,
+   status ready; llama-server GET /props → n_ctx: 4096.
+
+2. Change 4096 → 8192 via the API
+   POST /api/local-models/servers/context {serverId,ctxSize:8192} →
+   changed:true, previousCtxSize:4096, new row starting (new port) →
+   ready; /props → n_ctx: 8192; /api/models →
+   LFM3-1.7B-Q8_0 · provider LocalModels · contextWindow 8192 (the value
+   the budget calculator and the tool-surface disclosure threshold read).
+
+3. Guards
+   ctxSize 1023 → 400 "context size must be between 1024 and 131072 tokens"
+   ctxSize 999999 → 400 (same message)
+   ctxSize 65536 → accepted; context_warning_for(65536) fires the
+   trained-window caveat ("above most small models' trained context
+   window — quality may degrade…"); 8192 → no warning. The 65536 attempt
+   also exercised a second clean stop→relaunch.
+
+4. Persistence per model
+   data/runtimes/llama.cpp/warm.json follows the change (ctxSize 8192
+   after the restore) — wake/login preload and crash restarts keep the
+   user's chosen window.
+
+5. The chat door on the 1.7B (fallback chain OFF, bare profile)
+   Prompt: "Set the context length of the local model to 16384 tokens."
+   The model discovered set_model_context through the disclosure bridge,
+   called it; the turn's receipt (transcript
+   wb_20261116_160527_9749bd.jsonl):
+   {"kind":"model_context_changed","serverId":"gguf-55069",
+    "name":"LFM3-1.7B-Q8_0","from":8192,"to":16384,
+    "effectiveCtx":16384,"changed":true}
+   GET /servers after the turn → ctxSize 16384, status ready.
+   The tool waited for the new server (ensure_local_ready) before
+   returning, so the same turn continued on the new port.
+
+Not verified live yet: the receipt card + undo button rendering in the
+desktop shell (Part C).
+
+6. OOM fallback attempt (2026-11-17)
+   Requested ctx 131072 on the 1.7B (RTX 4050 Laptop) expecting a load
+   failure — the model LOADED and served at 131072 (no OOM: the 4050
+   offloads this 1.7B comfortably even at the cap). The fallback path
+   (previousCtxSize → one retry → visible ctx-fallback event) therefore
+   remains verified by the gate suite + code path only; no model on this
+   machine fails to load at these windows. Restored to 8192 afterwards.
+   The guards around the request were confirmed live: the response carried
+   the trained-window warning for 131072.

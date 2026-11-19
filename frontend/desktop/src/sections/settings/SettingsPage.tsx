@@ -393,6 +393,10 @@ const PromptTemplatesWrapper = lazySection(() => import('./PromptTemplatesSectio
 const PrivacyWrapper = lazySection(() => import('./PrivacySection'), 'PrivacySection');
 const PhonePairingWrapper = lazySection(() => import('./PhonePairingSection'), 'PhonePairingSection');
 const MemoryWrapper = lazySection(() => import('./MemorySection'), 'MemorySection');
+const PermissionsWorkspaceWrapper = lazySection(
+  () => import('./PermissionsWorkspaceSection'),
+  'PermissionsWorkspaceSection',
+);
 const LibraryWrapper = lazySection(() => import('./LibrarySection'), 'LibrarySection');
 const GoalsWrapper = lazySection(() => import('./GoalsSection'), 'GoalsSection');
 const HealthSimulatorWrapper = lazySection(() => import('./HealthSimulatorSection'), 'HealthSimulatorSection');
@@ -433,6 +437,7 @@ export const SECTION_COMPONENTS: Record<string, React.ComponentType<SectionProps
   'model-families': ModelFamiliesWrapper,
   'conversations-history': ConversationsHistoryWrapper,
   'agents-automation': AgentsAutomationWrapper,
+  'permissions-workspace': PermissionsWorkspaceWrapper,
   'computer-access': ComputerAccessSettingsWrapper,
   observability: ObservabilitySectionWrapper,
   'backend-monitor': BackendMonitorWrapper,

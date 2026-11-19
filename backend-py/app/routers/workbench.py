@@ -104,6 +104,11 @@ def _startTurnTask(
             pass
 
     async def safeStream():
+        # The release pass consults this: a chat turn on the local model must
+        # never have its server released between requests (the 2026-11-16
+        # memory-pressure release killed the model in a tool-execution gap and
+        # the turn died on retries).
+        wb.noteTurnActive(sessionId)
         try:
             await wb.sendWorkbenchMessageStream(
                 sessionId=sessionId,
@@ -124,7 +129,10 @@ def _startTurnTask(
             try:
                 session = wb.getWorkbenchSession(sessionId)
                 if session:
-                    session.status = 'idle'
+                    # A CANCELLED turn keeps its row visible as cancelled —
+                    # the user stopped it, and the rail should say so rather
+                    # than read as a finished chat (owner ruling, STOP 1B).
+                    session.status = 'cancelled'
                     # The cancelled turn's persist block never ran, so the last
                     # barrier flush left turnOpen=True on disk — reset it here
                     # or the next load fabricates a phantom "[interrupted]"
@@ -147,7 +155,11 @@ def _startTurnTask(
             try:
                 session = wb.getWorkbenchSession(sessionId)
                 if session:
-                    session.status = 'idle'
+                    # A turn that died keeps its row visible as interrupted —
+                    # the transcript survives and the rail says what happened
+                    # instead of reading as a finished chat (owner ruling,
+                    # STOP 1B).
+                    session.status = 'interrupted'
                     session.turnOpen = False
                     session.updatedAt = wb._now()
                     wb.saveSessions()
@@ -168,6 +180,7 @@ def _startTurnTask(
                 _cancelled.pop(sessionId, None)
             if _activeStreams.get(sessionId) is task:
                 _activeStreams.pop(sessionId, None)
+            wb.noteTurnIdle(sessionId)
             _notify_chat_idle()
             # Re-arm the auto-turn. A subagent/daemon completion that landed
             # after this turn's LAST queue drain finds no live turn to pick it
@@ -270,6 +283,31 @@ async def _startSubagentAutoTurn(sessionId: str) -> None:
     existing = _activeStreams.get(sessionId)
     if existing is not None and not existing.done():
         return  # a turn is live — its next loop boundary drains the queue
+    # Small-window loopback: llama-server's unified KV is one shared pool, so
+    # a synthesis turn beside a still-live worker overflows it (measured
+    # 9022 + 7363 > 16384). Hold the wake until every dispatched job has
+    # settled; the fanout watcher bounds how long that can take. Re-arm via
+    # call_later — scheduleSubagentAutoTurn would dedupe against THIS wake,
+    # which is still running, and the retry would never be scheduled.
+    try:
+        from app.services.harness_jobs import list_jobs
+        from app.services.workbench.loop.surface import _modelCapabilityProfile
+
+        profile = _modelCapabilityProfile(session)
+        if (
+            profile.get('loopback') is True
+            and 0 < as_int(profile.get('context_window'), 0) <= 16384
+            and any(
+                str(j.get('status') or '') == 'running'
+                for j in list_jobs(sessionId, limit=10)
+            )
+        ):
+            asyncio.get_running_loop().call_later(
+                _AUTO_TURN_COALESCE_S, scheduleSubagentAutoTurn, sessionId
+            )
+            return
+    except Exception:
+        logger.debug('auto-turn fanout deferral check failed', exc_info=True)
     consecutive = int(getattr(session, '_autoTurnsSinceUser', 0) or 0)
     if consecutive >= _AUTO_TURN_MAX_CONSECUTIVE:
         # The runaway guard is doing its job, but returning silently made a

@@ -618,6 +618,7 @@ class SubagentOrchestrator:
             agentId = item.get('agentId', 'general')
             context = item.get('context', '')
             restrictedTools = item.get('restrictedTools')
+            allowedTools = item.get('allowedTools')
             yieldSchema = item.get('yieldSchema')
             effort = as_str(item.get('effort'), 'medium') or 'medium'
             model = as_str(item.get('model'), '')
@@ -671,6 +672,7 @@ class SubagentOrchestrator:
                     goal=goal,
                     context=context,
                     restrictedTools=restrictedTools,
+                    allowedTools=allowedTools,
                     yieldSchema=yieldSchema,
                     effort=effort,
                     model=model,
@@ -966,6 +968,7 @@ class SubagentOrchestrator:
         goal: str,
         context: str,
         restrictedTools: list[str] | None,
+        allowedTools: list[str] | None = None,
         yieldSchema: dict[str, Any] | None = None,
         effort: str = 'medium',
         model: str = '',
@@ -1054,6 +1057,7 @@ class SubagentOrchestrator:
                     goal=goal,
                     context=context,
                     restrictedTools=restrictedTools,
+                    allowedTools=allowedTools,
                     yieldSchema=yieldSchema,
                     effort=effort,
                     model=model,

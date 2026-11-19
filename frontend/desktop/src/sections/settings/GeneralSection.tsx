@@ -19,7 +19,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 
 import { usePreferencesStore, type ChatFont, type LiveHtmlPreview, type VoiceSpeed } from '@/lib/preferences';
-import { setOnboardingSeen, shouldShowOnboarding } from '@/components/overlays/OnboardingTour';
 import { useAccountStore } from '@/store/account';
 import { SectionHeader } from '@/components/SectionHeader';
 import { SettingsToggle } from '@/components/settings/SettingsToggle';
@@ -133,10 +132,6 @@ export function GeneralSection() {
   const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const account = accounts.find((a) => a.id === activeAccountId) ?? null;
 
-  // Backed by the key OnboardingTour actually gates on, so this switch now has
-  // an effect. It used to be `useState(true)`: unwired, reset on every revisit
-  // to Settings, and ignored by the tour.
-  const [tour, setTour] = useState<boolean>(() => shouldShowOnboarding());
   const [osNotify, setOsNotify] = useState(false);
 
   useEffect(() => {
@@ -152,8 +147,17 @@ export function GeneralSection() {
     cooldownMinutes: number;
     warmModel: boolean;
     warmIdleMinutes: number;
+    titlesOnly: boolean;
   } | null>(null);
   const [wakeError, setWakeError] = useState('');
+  /* Which model phrases the brief, and whether it stays on this machine —
+   * the backend labels it so a cloud cerebellum is a choice, not a surprise. */
+  const [wakeModelInfo, setWakeModelInfo] = useState<{
+    model: string;
+    provider: string;
+    local: boolean;
+    configured: boolean;
+  } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -164,12 +168,23 @@ export function GeneralSection() {
         cooldownMinutes: number;
         warmModel: boolean;
         warmIdleMinutes: number;
+        titlesOnly: boolean;
       }>('/api/config/wake-up')
       .then((c) => {
         if (alive) setWakeCfg(c);
       })
       .catch(() => {
         if (alive) setWakeError('Wake-up brief settings are unavailable right now.');
+      });
+    api
+      .get<{ model: string; provider: string; local: boolean; configured: boolean }>(
+        '/api/wake-up/model-info',
+      )
+      .then((m) => {
+        if (alive) setWakeModelInfo(m);
+      })
+      .catch(() => {
+        /* the caption simply stays hidden when the endpoint is unreachable */
       });
     return () => {
       alive = false;
@@ -183,6 +198,7 @@ export function GeneralSection() {
       cooldownMinutes: number;
       warmModel: boolean;
       warmIdleMinutes: number;
+      titlesOnly: boolean;
     }>,
   ) => {
     api
@@ -192,6 +208,7 @@ export function GeneralSection() {
         cooldownMinutes: number;
         warmModel: boolean;
         warmIdleMinutes: number;
+        titlesOnly: boolean;
       }>(
         '/api/config/wake-up',
         patch,
@@ -220,11 +237,6 @@ export function GeneralSection() {
     (on ? enableAutostart() : disableAutostart())
       .then(() => setAutostart(on))
       .catch(() => setAutostart(null));
-  };
-
-  const toggleTour = (next: boolean) => {
-    setTour(next);
-    setOnboardingSeen(!next);
   };
 
   return (
@@ -368,6 +380,29 @@ export function GeneralSection() {
                 description="Queue the brief as a small chip instead of showing it over the chat."
                 disabled={!wakeCfg || !(wakeCfg?.enabled ?? true)}
               />
+              {wakeModelInfo?.configured && (
+                <p className="px-2 text-xs text-muted-foreground" data-testid="wake-up-model-info">
+                  Brief written by{' '}
+                  <span className="text-foreground">{wakeModelInfo.model || 'the fallback digest'}</span>
+                  {' · '}
+                  {wakeModelInfo.local ? (
+                    'runs locally — your text stays on this machine'
+                  ) : (
+                    <span className="text-warning-fg">
+                      a cloud model ({wakeModelInfo.provider || 'remote'}) — the digest leaves this
+                      machine
+                    </span>
+                  )}
+                  .
+                </p>
+              )}
+              <SettingsToggle
+                checked={wakeCfg?.titlesOnly ?? false}
+                onCheckedChange={(on) => saveWake({ titlesOnly: on })}
+                label="Titles only"
+                description="Skip the model: the brief is just your recent session titles and running automations, composed on this machine."
+                disabled={!wakeCfg || !(wakeCfg?.enabled ?? true)}
+              />
               <label className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5">
                 <span className="min-w-0">
                   <span className="block text-sm text-foreground">Minimum time between briefs</span>
@@ -475,17 +510,6 @@ export function GeneralSection() {
                 </div>
               ))}
             </div>
-          </Section>
-
-          {/* Onboarding */}
-          <Section title="Onboarding">
-            <SettingsToggle
-              checked={tour}
-              onCheckedChange={toggleTour}
-              label="Show onboarding tour"
-              description="Play the guided walkthrough the next time you start August with no conversations yet."
-              tooltip="The tour highlights where to find chat, settings, and activity. It only plays while you have zero conversations, so clearing this stops it permanently."
-            />
           </Section>
 
           {/* App description */}

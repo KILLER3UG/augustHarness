@@ -774,6 +774,7 @@ def _unfreezePromptIndexes(session: object) -> None:
     for attr in (
         '_frozen_mem_index',
         '_frozen_project_index',
+        '_frozen_ram_block',
     ):
         try:
             setattr(session, attr, None)
@@ -831,6 +832,13 @@ def buildSystemPrompt(
             if n:
                 tool_names.append(n)
     offeredTools = set(tool_names)
+
+    # Small-model (bare) surface: the prompt shrinks with it. A 1.7B model at
+    # 8k cannot carry the full doctrine on every turn, so the catalogue-style
+    # blocks below have lean variants (same rules, fraction of the bytes).
+    leanSurface = (
+        as_str(_modelCapabilityProfile(session).get('tool_surface'), 'full') == 'bare'
+    )
 
     workspacePath = (
         str(session.workspacePath)
@@ -914,17 +922,26 @@ def buildSystemPrompt(
     # against the original instruction, never a critic gate (verifier gate
     # removed 2026-08-24; nothing withholds the answer).
     if offeredTools:
-        parts.append(
-            '<completion_checklist>\n'
-            'Before declaring work complete, check it yourself:\n'
-            '1. Re-read the original instruction — every asked item is done, or you say what is not.\n'
-            '2. Verification actually ran (tests/build/lint for the change) and you report its real result — failures included.\n'
-            '3. No placeholders, stubs, or leftover TODOs in the files you changed.\n'
-            '4. Error paths and edge cases of the change are considered.\n'
-            '5. Your final message states the outcome with evidence (commands, exit codes, test counts).\n'
-            'This is your own checklist — no other gate stands between you and your answer.\n'
-            '</completion_checklist>'
-        )
+        if leanSurface:
+            parts.append(
+                '<completion_checklist>\n'
+                'Before declaring work complete, check it yourself: every asked item is done, '
+                'verification actually ran and you report its real result, no placeholders remain. '
+                'State the outcome with evidence.\n'
+                '</completion_checklist>'
+            )
+        else:
+            parts.append(
+                '<completion_checklist>\n'
+                'Before declaring work complete, check it yourself:\n'
+                '1. Re-read the original instruction — every asked item is done, or you say what is not.\n'
+                '2. Verification actually ran (tests/build/lint for the change) and you report its real result — failures included.\n'
+                '3. No placeholders, stubs, or leftover TODOs in the files you changed.\n'
+                '4. Error paths and edge cases of the change are considered.\n'
+                '5. Your final message states the outcome with evidence (commands, exit codes, test counts).\n'
+                'This is your own checklist — no other gate stands between you and your answer.\n'
+                '</completion_checklist>'
+            )
     # Per-model-family prompt variant (short framing block keyed by
     # the model id family; unknown families get nothing).
     try:
@@ -1098,6 +1115,27 @@ def buildSystemPrompt(
         if _projIdx:
             for ln in _projIdx.splitlines():
                 memParts.append('  ' + ln)
+        # Meta-RAM workspace topology — same freeze discipline as the indexes
+        # above; OFFLOAD rewrites reach the next session, and the per-turn
+        # tail stays the live channel within this one.
+        _ramBlock = getattr(session, '_frozen_ram_block', None)
+        if _ramBlock is None:
+            _ramBlock = ''
+            if _memReadAllowed and workspacePath:
+                try:
+                    from app.services.workbench import ram as _ram
+
+                    _ramBlock = _ram.load_block(workspacePath, session)
+                except Exception:
+                    logger.debug('prompt: ram block failed', exc_info=True)
+                    _ramBlock = ''
+            try:
+                session._frozen_ram_block = _ramBlock  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        if _ramBlock:
+            for ln in _ramBlock.splitlines():
+                memParts.append('  ' + ln)
         intake.append('\n'.join(memParts))
     if skillsLine:
         intake.append(f'- Skills: {skillsLine}. Bodies load on demand via load_skill.')
@@ -1174,7 +1212,24 @@ def buildSystemPrompt(
         except Exception:
             logger.debug('prompt: agent context failed', exc_info=True)
     _skillsIndexText = ''
-    if tool_names:
+    if tool_names and leanSurface:
+        # Lean capabilities: the small-model surface gets the two rules it can
+        # act on (tools are the array; skills load on demand) without the
+        # name-only skills catalogue and the agents doctrine, which name tools
+        # the bare surface does not even offer.
+        parts.append(
+            '<capabilities>\n'
+            '<tools>\n'
+            'Tools are callable actions; the tools array is authoritative. Prefer read tools '
+            'for investigation; destructive tools only when the user intent requires it.\n'
+            '</tools>\n'
+            '<skill_policy>\n'
+            'Before acting on a task a skill describes, call load_skill and follow it first. '
+            'list_skills enumerates everything; tool_search finds a tool you cannot see.\n'
+            '</skill_policy>\n'
+            '</capabilities>'
+        )
+    elif tool_names:
         # The capabilities memo is keyed by workspace path
         # TOO — per-workspace catalogues (project skills shadowing) must not
         # cross-contaminate sessions; a mutation still busts every key via
@@ -1248,7 +1303,7 @@ def buildSystemPrompt(
         'kill_daemons',
         'web_fetch_many',
         'load_skills',
-    }:
+    } and not leanSurface:
         parts.append(_seg_cache.BULK_BLOCK)
     if offeredTools & {'web_search', 'web_fetch'}:
         parts.append(_seg_cache.WEB_BLOCK)
@@ -1265,7 +1320,18 @@ def buildSystemPrompt(
         except Exception:
             memWritesOn = True
         if memWritesOn:
-            parts.append(_seg_cache.MEMORY_BLOCK)
+            if leanSurface:
+                parts.append(
+                    '<memory_policy>\n'
+                    'Long-term memory (`remember`): save only what outlives this chat — user-stated '
+                    'preferences, decisions, constraints, corrections, durable lessons. Write '
+                    'immediately when the user states such a fact; revise the SAME key instead of '
+                    'duplicating (list_facts shows keys); forget what is wrong. Never save task '
+                    'steps, fetched content, or your own unconfirmed conclusions.\n'
+                    '</memory_policy>'
+                )
+            else:
+                parts.append(_seg_cache.MEMORY_BLOCK)
     # The goal environment this session works inside: where it is, what that goal permits, and
     # what it still owes. Composed per assembly rather than cached with the constant segments — a
     # goal edit mid-session must reach the NEXT turn's prompt. A layer that has never been seeded
@@ -1279,8 +1345,9 @@ def buildSystemPrompt(
     except Exception:
         logger.debug('goal prompt block skipped', exc_info=True)
     # The Bot roster + messaging protocol, offered ONLY where the
-    # message_agent tool is (canonical Bot Chats — offeredTools already
-    # reflects the filter_dm_tools gate, so bytes stay stable elsewhere).
+    # message_agent tool is (the orchestrator's main chat — offeredTools
+    # already reflects the filter_dm_tools gate, so bytes stay stable
+    # elsewhere).
     if 'message_agent' in offeredTools:
         try:
             from app.services.bot_mode import dm as _dm
@@ -1311,18 +1378,6 @@ def buildSystemPrompt(
                 "Bots' private skills and notes are not visible to you. Do not "
                 'write into another Bot\'s scope.'
             )
-            # Guided setup (rerun INSTALL pattern): a bot carrying a pending
-            # setup owes its owner the walkthrough; install_complete closes it.
-            try:
-                if _roster.bot_setup_pending(_agent_id):
-                    parts.append(
-                        '<guided_setup>This bot has a pending guided setup. Walk the owner '
-                        'through configuring you step by step, and when everything is set, '
-                        'call install_complete — this section and that tool disappear once '
-                        'setup closes.</guided_setup>'
-                    )
-            except Exception:
-                logger.debug('prompt: guided-setup section failed', exc_info=True)
     except Exception:
         logger.debug('prompt: bot-scope guard line failed', exc_info=True)
     # T15 versioned refine store: active prompt-note/memory entries ride along
@@ -1487,6 +1542,7 @@ from app.services.workbench.loop.surface import (  # noqa: E402
     _toolDefName,
     _toolResultCap,
     normalizeGuardMode,
+    provider_row_by_name,
 )
 
 
@@ -1678,12 +1734,50 @@ def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, obje
         return tools
 
     tools = tool_defs_cache.get_or_build(fmt, _build_base)
+    # The bot ceiling binds the SURFACE, not just the executor. A bot's
+    # canonical chat is offered only what its ceiling names (own declaration
+    # ∩ parent chain, the same predicate the subagent loop enforces) — a
+    # ceiling that only filtered the resident list would still let
+    # tool_search discover off-ceiling tools, and AGENTS.md forbids
+    # advertising a capability the model cannot use. The discovery bridges
+    # stay reachable (they are access mechanisms, not capabilities): the
+    # ceiling binds where the effect lands, at dispatch (_checkToolGuard
+    # re-checks the bridged inner call). Main chats resolve to 'global'
+    # scope and skip this entirely.
+    try:
+        from app.services import session_scope as _ss_ceiling
+
+        _botId = _ss_ceiling.bot_agent_id(_ss_ceiling.resolve_scope(session))
+    except Exception:
+        _botId = ''
+    if _botId and tools:
+        from app.services.tools.agent_registry import _effectivePermissions
+
+        _perm = _effectivePermissions(_botId)
+        if _perm is not None and 'all' not in _perm:
+
+            def _inCeiling(name: str) -> bool:
+                if name in ('tool_search', 'tool_describe', 'tool_call'):
+                    return True
+                if name in _perm:
+                    return True
+                return any(name.startswith(p) for p in _perm if p)
+
+            tools = [t for t in tools if _inCeiling(_toolDefName(t))]
     messages = getattr(session, 'messages', None) or []
     contextMsgs = list(messages) if isinstance(messages, list) else []
     contextWindow = DEFAULT_CONTEXT_WINDOW
     try:
         modelId = as_str(getattr(session, 'model', ''), '')
         providerCfg = as_dict(getattr(session, 'provider', None), {})
+        if not providerCfg and modelId:
+            # `session.provider` is a NAME string (sessions.py), so as_dict()
+            # of it is always {} — and the window below then fell back to the
+            # 1M default, which made progressive disclosure's 10% threshold
+            # unreachable and offered every model (an 8k local one included)
+            # the full ~140-tool surface. Resolve the real provider row from
+            # the store so the model's own contextWindow sizes the threshold.
+            providerCfg = provider_row_by_name(as_str(getattr(session, 'provider', ''), ''))
         if modelId:
             contextWindow = _resolveModelContextWindow(modelId, providerCfg or None)
     except Exception:
@@ -1752,19 +1846,13 @@ def _sessionToolDefs(session: WorkbenchSession, fmt: str) -> list[dict[str, obje
             tools = [t for t in tools if not _is_circuit_gate_tool(_toolDefName(t))]
     except Exception:
         pass
-    # Phase C gate: message_agent only in a Bot's canonical chat (the tool
+    # Messaging gate: message_agent only in the orchestrator's main chat
+    # (orchestrator-to-bot; bots cannot message anyone — the tool
     # executor re-checks, so a forged call from elsewhere fails closed).
     try:
         from app.services.bot_mode.dm import filter_dm_tools
 
         tools = filter_dm_tools(tools, session)
-    except Exception:
-        pass
-    # Guided setup: install_complete rides only with a pending setup.
-    try:
-        from app.services.bot_mode.setup import filter_setup_tools
-
-        tools = filter_setup_tools(tools, session)
     except Exception:
         pass
     tools = _finalize_session_tools(session, tools)
@@ -2706,6 +2794,11 @@ async def _sendWorkbenchMessageStreamImpl(
         session.guardMode = normalizeGuardMode(guardMode)
     session.status = 'streaming'
     session.updatedAt = _now()
+    # Persist the row AT TURN START (owner ruling, STOP 1B): a turn that is
+    # killed, crashes or is cancelled must leave its session in the
+    # sidebar/rail with the surviving transcript — end-of-turn saves alone
+    # lost the row entirely, and a deep link then opened a blank draft.
+    saveSessions()
     # 1.1: the text-tool-protocol flag was set-true-only, so a session
     # that once ran a text-surface model (or hit the 2-refusal downgrade) kept
     # emitting the <tool_protocol> block + [TOOLCALL] parsing on later turns
@@ -2833,6 +2926,27 @@ async def _sendWorkbenchMessageStreamImpl(
         session_provider=session.provider or provider or '',
         session_model=session.model or '',
     )
+    # A released local model reloads HERE, with a visible 'loading model'
+    # state on the realtime bus — never a connection error on the next message.
+    try:
+        _provId = as_str((resolvedProvider or {}).get('id') or (resolvedProvider or {}).get('name'), '')
+        if _provId in ('local-models', 'LocalModels'):
+            from app.services.llama_runtime import ensure_local_ready as _ensureLocalReady
+
+            if await _ensureLocalReady():
+                # A reload repoints the provider's port — re-resolve once so
+                # this turn runs on the LIVE base URL, not the released one.
+                _reProvider, _reModel = _resolveChatLlm(
+                    model=model or '',
+                    model_provider=modelProvider or '',
+                    session_provider=session.provider or provider or '',
+                    session_model=session.model or '',
+                )
+                if _reProvider:
+                    resolvedProvider = _reProvider
+                    resolvedModel = _reModel or resolvedModel
+    except Exception:
+        logger.debug('local-model readiness wait skipped', exc_info=True)
     # Remember model/provider on the session so BTW and Live use the same ones —
     # never a role model. A role belongs to the turn that earned it; parking it
     # on the session would make it the next turn's default (and media_tools
@@ -3142,11 +3256,18 @@ async def _sendWorkbenchMessageStreamImpl(
     chainUsedAt: str | None = None
     # Context window is also needed by the reactive overflow reduction inside
     # the tool loop — resolve it once here (0 = unknown → reduction skips).
-    contextWindow = 0
+    # Resolved OUTSIDE the compactor feature gate: the small-window relief and
+    # the overflow rescue need the real window even when summarizing is off.
+    contextWindow = _resolveModelContextWindow(resolvedModel, resolvedProvider)
+    _turnProfile = _modelCapabilityProfile(session)
+    _turnLoopbackSmall = as_bool(_turnProfile.get('loopback'), False) and 0 < as_int(
+        _turnProfile.get('context_window'), 0
+    ) <= 16384
     try:
         from app.providers.clients.base import estimateTokens
         from app.services.workbench.context_compressor import (
             COMPACT_TRIGGER_RATIO,
+            PROTECTED_TOOL_TOKENS,
             acquireCompactionLock,
             isFeatureEnabled,
             noteCompactionPhase,
@@ -3156,6 +3277,8 @@ async def _sendWorkbenchMessageStreamImpl(
         from app.services.workbench.loop.recovery import (
             _compactionCall,
             _reductionIsWorthwhile,
+            relieveSmallWindowContext,
+            smallWindowProtectBudget,
         )
 
         if isFeatureEnabled():
@@ -3221,12 +3344,29 @@ async def _sendWorkbenchMessageStreamImpl(
             # in the model-facing projection only — session.messages stays
             # untouched unless compaction below persists the reduced list.
             unprunedMessages = currentMessages
-            currentMessages = pruneToolOutputs(currentMessages)
+            currentMessages = pruneToolOutputs(
+                currentMessages,
+                protectTokens=(
+                    smallWindowProtectBudget(contextWindow)
+                    if _turnLoopbackSmall
+                    else PROTECTED_TOOL_TOKENS
+                ),
+            )
             if _shouldAutoCompact(attentionPressure, turnsSinceCompaction, remainingTokens):
                 if not acquireCompactionLock(session):
                     logger.info('workbench auto-compact skipped — compaction lock held session=%s', sessionId)
                 else:
                     _unfreezePromptIndexes(session)
+                    # Meta-RAM OFFLOAD: dream the working state into the
+                    # workspace topology BEFORE the middle is summarized away.
+                    try:
+                        from app.services.workbench import ram as _ram
+
+                        _ramWs = as_str(getattr(session, 'workspacePath', '') or '')
+                        _ram.offload(_ramWs, session, unprunedMessages, reason='pre-compaction')
+                        _ram.maybe_file_review(_ramWs, sessionId)
+                    except Exception:
+                        logger.debug('ram pre-compaction offload failed', exc_info=True)
                     try:
                         from app.services.transcript_archive import archive_messages
 
@@ -3433,11 +3573,17 @@ async def _sendWorkbenchMessageStreamImpl(
             # store. Keys the profile lane already rendered are skipped, so one
             # write is never shown twice.
             try:
+                # Delta facts join the same provenance list: they were shown to
+                # the model, so the Recalled-memory pill and the turn-end
+                # usage feedback must see them too, exactly like the profile
+                # lane's rows.
+                _deltaKeys: list[tuple[str, str]] = []
                 _deltaBlock = (
                     build_memory_delta_block(
                         session_started_at=as_str(getattr(session, 'createdAt', ''), ''),
                         scope=_turnScope,
                         exclude_keys={str(k) for k, _ in (_injectedFacts or [])},
+                        collected_keys=_deltaKeys,
                     )
                     if _memEnabled
                     else ''
@@ -3446,6 +3592,8 @@ async def _sendWorkbenchMessageStreamImpl(
                     _memoryBlock = (
                         f'{_memoryBlock}\n\n{_deltaBlock}' if _memoryBlock else _deltaBlock
                     )
+                    if _deltaKeys:
+                        _injectedFacts = [*(_injectedFacts or []), *_deltaKeys]
             except Exception:
                 logger.debug('memory delta block failed', exc_info=True)
             try:
@@ -3695,8 +3843,19 @@ async def _sendWorkbenchMessageStreamImpl(
     # A round that ends holding only reasoning and no answer gets ONE "say the
     # answer now" round rather than the turn closing on an apology. Same failure
     # shape as a truncated sentence: the output budget went into thinking. The
-    # flag is turn-scoped so a rescue cannot repeat itself every round.
-    _thinkingOnlyRescueFired = False
+    # flag is turn-scoped so a rescue cannot repeat itself every round. A
+    # loopback model gets two: local reasoning models re-think cheaply between
+    # rounds, and one spent rescue followed by "Stopped after tools with
+    # reasoning but no final answer" was the standard small-model death.
+    try:
+        from app.providers.api_format import is_loopback_base_url as _turnIsLoopback
+
+        _thinkingOnlyRescueBudget = (
+            2 if _turnIsLoopback(resolvedProvider.get('baseUrl')) else 1
+        )
+    except Exception:
+        _thinkingOnlyRescueBudget = 1
+    _thinkingOnlyRescueFired = 0
     _thinkingOnlyRescue = False
     # Why the tool loop ended, reported on the turn_end event so a user report
     # of "it stopped after N commands" is one query instead of a code audit
@@ -3963,7 +4122,7 @@ async def _sendWorkbenchMessageStreamImpl(
                     session,
                     sessionId,
                     currentMessages,
-                    contextWindow=contextWindow,
+                    context_window=contextWindow,
                     emit=emit,
                     resolvedProvider=resolvedProvider,
                     resolvedModel=resolvedModel,
@@ -4189,6 +4348,13 @@ async def _sendWorkbenchMessageStreamImpl(
                         tracker.record_user_message()
                 except Exception:
                     logger.debug('tool tracker user-message reset failed', exc_info=True)
+        # A fan-out turn appends tool results and subagent completions every
+        # round; pre-turn compaction cannot see that growth. On loopback <=16k
+        # windows, relieve pressure before the next request is built.
+        if _turnLoopbackSmall:
+            currentMessages = relieveSmallWindowContext(
+                session, currentMessages, contextWindow, emit=emit
+            )
         logger.debug(
             'workbench round %d start (model=%s, in=%d, out=%d)',
             toolRound,
@@ -4457,7 +4623,14 @@ async def _sendWorkbenchMessageStreamImpl(
                         _isContextOverflowError(response)
                         and not overflowReducedThisRound
                         and not _isCancelled()
-                        and not attemptEmittedContent
+                        # Text-only veto: a reasoning model streams `thinking`
+                        # before every overflow, so counting thinking as
+                        # emitted content vetoed the rescue on exactly the
+                        # models that need it. Thinking is not an answer — the
+                        # loopback boundary strips prior reasoning anyway, and
+                        # a retry adds a second thinking block, not a second
+                        # reply. Transient retries below still veto on content.
+                        and not attemptEmittedText
                         and retryAttempt < retryPolicy['maxRetries']
                     ):
                         overflowReducedThisRound = True
@@ -4682,6 +4855,28 @@ async def _sendWorkbenchMessageStreamImpl(
                         emit({'type': 'warning', 'message': msg})
                     break
                 delayMs = _modelRetryDelayMs(retryAttempt + 1, response, retryPolicy)
+                # A LOCAL server that died mid-turn (crash, release in a tool
+                # gap, context change) must not wedge the turn through ten
+                # slow retries: the reload machinery brings it back on the
+                # NEXT message, so say what happened and stop — resending the
+                # message is the one-click retry. (Owner ruling, STOP 1B.)
+                _respErr = as_str(response.get('error'), '').lower()
+                if (
+                    'connection' in _respErr
+                    and as_str(getattr(session, 'provider', '') or '', '').strip().lower()
+                    in ('localmodels', 'local-models')
+                    and _localServerDown()
+                ):
+                    _downMsg = (
+                        'The local model server went down mid-turn (crash, release or context '
+                        'change). It reloads automatically on your next message — send it again '
+                        'to retry.'
+                    )
+                    logger.warning('workbench aborting a wedged turn: %s', _downMsg)
+                    response['error'] = _downMsg
+                    if emit:
+                        emit({'type': 'warning', 'message': _downMsg})
+                    break
                 logger.warning(
                     'workbench model call failed (retry %d/%d in %dms): %s',
                     retryAttempt + 1,
@@ -4988,11 +5183,11 @@ async def _sendWorkbenchMessageStreamImpl(
                 )
                 _thinkingOnlyRescue = (
                     stop_reason in ('max_tokens', 'length') or len(thinkingContent) > 2000
-                ) and not _thinkingOnlyRescueFired
+                ) and _thinkingOnlyRescueFired < _thinkingOnlyRescueBudget
                 if not _thinkingOnlyRescue and emit and (
                     stop_reason in ('max_tokens', 'length') or len(thinkingContent) > 2000
                 ):
-                    # The rescue already spent its one round and the model still
+                    # The rescue already spent its round(s) and the model still
                     # sent no answer. Only now is "it stopped" the truth.
                     emit(
                         {
@@ -5006,12 +5201,12 @@ async def _sendWorkbenchMessageStreamImpl(
                     )
             currentMessages.append(assistantMsg)
             if _thinkingOnlyRescue:
-                # Ask for the answer once, with the reasoning already in the
+                # Ask for the answer again, with the reasoning already in the
                 # history it can see. This advances the transcript rather than
                 # replaying a round, so no work is re-run: the tool results are
                 # still there and the model is only told to spend its remaining
                 # budget on the reply.
-                _thinkingOnlyRescueFired = True
+                _thinkingOnlyRescueFired += 1
                 _thinkingOnlyRescue = False
                 currentMessages.append(
                     {
@@ -5034,7 +5229,7 @@ async def _sendWorkbenchMessageStreamImpl(
                             ),
                         }
                     )
-                _emitRecovery(emit, 'thinking-only', 1, 'retrying', False)
+                _emitRecovery(emit, 'thinking-only', _thinkingOnlyRescueFired, 'retrying', False)
                 continue
             # Refusal detection: a model claiming it cannot use tools (or
             # hosted on a gateway that silently drops `tools`) would end the
@@ -6320,6 +6515,24 @@ async def _sendWorkbenchMessageStreamImpl(
                 await asyncio.get_running_loop().run_in_executor(None, _stepSnap)
             except Exception:
                 logger.debug('shadow-git step snapshot failed', exc_info=True)
+        # A background fanout on a small-window loopback must yield the turn
+        # instead of looping on: llama-server's unified KV is ONE pool shared
+        # by every slot, and the parent's prompt+generation beside a single
+        # worker already exceeds a 16k pool (measured 9022 + 7363 > 16384).
+        # No amount of parent-side pruning fits both; the completions arrive
+        # as queued messages and the auto-turn synthesizes once lanes settle.
+        if _turnLoopbackSmall and not cancelledMidRound:
+            for _tr in toolResults:
+                _trContent = str(_tr.get('content') or '')
+                if (
+                    '"fanoutId"' in _trContent
+                    and re.search(r'"background"\s*:\s*true', _trContent)
+                    and re.search(r'"status"\s*:\s*"started"', _trContent)
+                ):
+                    turnEndReason = 'awaiting-subagents'
+                    break
+        if turnEndReason == 'awaiting-subagents':
+            break
         if planSubmittedThisRound:
             turnEndReason = 'awaiting-input'
             break
@@ -6366,6 +6579,24 @@ async def _sendWorkbenchMessageStreamImpl(
         skillsInjected=_skillsInjectedNames,
         errorFamilies=sorted(turnErrorFamilies),
     )
+    # Meta-RAM stage-2 trajectory export (opt-in, masked). Rides turn close so
+    # every completed turn — error turns included — lands in the JSONL.
+    try:
+        from app.services.workbench import ram as _ram
+
+        _ram.export_turn(
+            sessionId,
+            resolvedModel,
+            as_str(resolvedProvider.get('name') or resolvedProvider.get('id'), '')
+            if resolvedProvider
+            else '',
+            currentMessages,
+            turn_end_reason=_finalTurnEndReason(
+                turnEndReason, errored=turnError is not None, cancelledNow=_isCancelled()
+            ),
+        )
+    except Exception:
+        logger.debug('ram trajectory export hook failed', exc_info=True)
     try:
         logger.debug('workbench turn complete: %d rounds, in=%d out=%d', toolRound, totalInputTokens, totalOutputTokens)
         _tc.persistAndClose(
@@ -6753,6 +6984,58 @@ _READ_ONLY_SHELL_PASSTHROUGH = frozenset({
 })
 
 
+# ── in-flight turn registry (router-maintained) ──────────────────────────────
+# The release pass must know a CHAT TURN is active, not just a request. The
+# per-request busy renewal (providers/clients/base.py) covers the seconds a
+# model call takes; the gaps BETWEEN calls inside one turn — tool execution,
+# retry backoff — were unguarded, and under memory pressure the release killed
+# a freshly loaded server in exactly such a gap (2026-11-16), after which the
+# turn died on its retries. The router marks turn start/end here; the release
+# pass asks before stopping a local server.
+_activeTurnSessionIds: set[str] = set()
+
+
+def noteTurnActive(sessionId: str) -> None:
+    if sessionId:
+        _activeTurnSessionIds.add(sessionId)
+
+
+def noteTurnIdle(sessionId: str) -> None:
+    _activeTurnSessionIds.discard(sessionId)
+
+
+def anyActiveTurnOnProvider(provider_names: set[str]) -> bool:
+    """True while any in-flight turn runs on one of the named providers."""
+    wanted = {p.strip().lower() for p in provider_names if p}
+    if not wanted or not _activeTurnSessionIds:
+        return False
+    for sid in list(_activeTurnSessionIds):
+        try:
+            sess = getWorkbenchSession(sid)
+            name = as_str(getattr(sess, 'provider', '') or '', '').strip().lower()
+            if name in wanted:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _localServerDown() -> bool:
+    """True when NO local llama-server is ready.
+
+    A mid-turn connection failure against the Local Models provider with no
+    ready row means the server crashed, was released, or is being changed —
+    the turn must say so and stop, not wedge through ten slow retries.
+    """
+    try:
+        from app.services import llama_runtime
+
+        rows = llama_runtime.list_servers().get('servers', [])
+        return not any(str(r.get('status') or '') == 'ready' for r in rows)
+    except Exception:
+        return False
+
+
 def _checkToolGuard(session: WorkbenchSession, toolName: str, args: dict[str, object]) -> str | None:
     """Check if a tool execution is blocked by guard mode or permissions.
 
@@ -6776,6 +7059,31 @@ def _checkToolGuard(session: WorkbenchSession, toolName: str, args: dict[str, ob
                 f"Tool '{toolName}' is blocked by read-only sandbox. "
                 'Switch sandbox mode to Workspace or Full access to make changes.'
             )
+
+    # The dispatch-time half of the bot ceiling (the surface half lives in
+    # _sessionToolDefs): a bot's canonical chat executes under the same
+    # predicate the subagent loop enforces. Surface assembly alone made the
+    # ceiling advisory — a directly named off-ceiling tool (or one reached
+    # through the tool_call bridge's re-dispatch, which runs THIS guard on
+    # the inner name) still executed. The discovery bridges are exempt here:
+    # they bind where the effect lands (the inner call), not at discovery.
+    if toolName:
+        try:
+            from app.services import session_scope as _ss_guard
+
+            _botAgentId = _ss_guard.bot_agent_id(_ss_guard.resolve_scope(session))
+        except Exception:
+            _botAgentId = ''
+        if _botAgentId and toolName not in ('tool_search', 'tool_describe', 'tool_call'):
+            from app.services.tools.agent_registry import evaluateAgentTool
+
+            _ceilingVerdict = evaluateAgentTool(_botAgentId, toolName)
+            if not as_bool(_ceilingVerdict.get('allowed', False)):
+                return (
+                    f"Tool '{toolName}' is outside this bot's permission ceiling "
+                    f'({_ceilingVerdict.get("reason", "not permitted")}). Use a tool the '
+                    'bot was granted, or ask the orchestrator to update its tools.'
+                )
 
     # Session-deletion tools promise "confirm with the user before deleting"
     # — deleting the session that is CURRENTLY executing would destroy the

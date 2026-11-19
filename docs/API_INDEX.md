@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-451 routes across 378 paths,
+456 routes across 383 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -115,7 +115,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `PATCH` | `/api/sessions/{sessionId}/messages/enrichment` | Attach the client-authored structured transcript to one message. |
 | `GET` | `/api/sessions/search` | Full-text search across conversation messages (C8). |
 
-## Memory & brain (27)
+## Memory & brain (30)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -135,6 +135,9 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/brain/memory/metrics` | Phase D item 4: recall + latency instrument. |
 | `POST` | `/api/brain/memory/open-folder` | Open the markdown memory mirror in the OS file browser. |
 | `GET` | `/api/brain/memory/preview` | The literal durable-memory text a turn would receive for one query. |
+| `POST` | `/api/brain/ram/review` | Run the 3-step topology review now and file its proposal (if any). |
+| `GET` | `/api/brain/ram/trajectories` | List exported trajectory files (opt-in exporter's output). |
+| `GET` | `/api/brain/ram/trajectories/{sessionId}` | Download one session's trajectory JSONL (masked, opt-in export). |
 | `GET` | `/api/brain/routing/arena` | Recent arena verdicts (the durable archive the UI groups per session). |
 | `POST` | `/api/brain/routing/arena` | Record one arena/debate verdict: a winner row (ok=1) + one loser row (ok=0) per competing model, all tagged s… |
 | `GET` | `/api/brain/routing/suggestions` | Per-model win-rate suggestions from arena evidence (surpass #1 loop): models ranked by win rate over ≥1 recor… |
@@ -500,7 +503,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/desktop-automation/config` | Return the effective desktop-automation configuration. |
 | `GET` | `/api/desktop-automation/health` | Report desktop-automation capability and a live probe. |
 
-## Other (60)
+## Other (62)
 
 > Routes not yet assigned a family. Naming these is a small doc task;
 > leaving them here is what keeps the index honest.
@@ -552,6 +555,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/local-models/runtime/install` | Kick off the runtime install in the background; poll GET /runtime. |
 | `POST` | `/api/local-models/scan` | Probe loopback ports for local model servers; read-only. |
 | `GET` | `/api/local-models/servers` | Running llama-server instances and their status. |
+| `POST` | `/api/local-models/servers/context` | Change a served local model's context length (stop → relaunch with the new ``--ctx-size``). Refuses while a g… |
 | `POST` | `/api/local-models/servers/stop` | Server Stop |
 | `GET` | `/api/overview` | Dashboard overview cards (requests / activity / errors / cost). |
 | `GET` | `/api/realtime/recent` | Recent realtime events (debug / reconnect catch-up). |
@@ -564,10 +568,11 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `POST` | `/api/system/restart` | Signal a soft restart intent — process managers (or the desktop shell) act on it. |
 | `GET` | `/api/wake-up/brief` | Ask whether a wake-up brief is due, and get it when it is. |
 | `POST` | `/api/wake-up/dismiss` | Record that the user dismissed the queued (quiet-mode) brief. |
+| `GET` | `/api/wake-up/model-info` | Which model phrases the brief, and whether it stays on this machine. |
 | `GET` | `/api/whats-new` | Return commits + releases from the last ``hours`` (default 48). |
 | `GET` | `/api/workspace/files` | List files under a workspace path (desktop file tree). |
 | `POST` | `/mcp/harness` | Harness Mcp |
 
 ---
 
-Generated from `docs/api/openapi.json` (451 operations).
+Generated from `docs/api/openapi.json` (456 operations).

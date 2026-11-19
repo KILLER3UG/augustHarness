@@ -27,6 +27,9 @@ _MAXFileSize = 20 * 1024 * 1024
 # whole file as decoded text (the paged window is cut out of it). The second
 # pass it used to need (raw bytes for the sha256) is now streamed in chunks.
 _MAXPageFileSize = 200 * 1024 * 1024
+# Default page for an UNPAGED read_file (owner ruling, STOP 1B): the first
+# 250 numbered lines + a continuation receipt, instead of a whole-file dump.
+_DEFAULT_READ_LINES = 250
 # Chunk size for the streamed sha256 of the raw bytes (see _readFile).
 _HASH_CHUNK_BYTES = 1024 * 1024
 _MAXSearchResults = 100
@@ -579,6 +582,21 @@ async def _readFile(
             return out
 
         out2 = hashHeader + content
+        # DEFAULT PAGING (owner ruling, STOP 1B): an unpaged read of a long
+        # file returns the FIRST _DEFAULT_READ_LINES numbered lines with the
+        # same continuation receipt the paged path uses. A whole-file dump
+        # fed the spill ladder head/tail rubble instead of an answer, and a
+        # small model rarely chose to page on its own. An explicit
+        # offset/limit still reads exactly the window asked for.
+        allLines = content.splitlines(keepends=True)
+        if len(allLines) > _DEFAULT_READ_LINES:
+            paged = allLines[:_DEFAULT_READ_LINES]
+            numbered = ''.join(f'{i + 1:5d}| {line}' for i, line in enumerate(paged))
+            header = (
+                f'[lines 1-{_DEFAULT_READ_LINES} of {len(allLines)}, '
+                f'use offset={_DEFAULT_READ_LINES + 1} to continue]\n'
+            )
+            out2 = hashHeader + header + numbered + ('\n' if numbered else '')
         try:
             from app.services.workbench.context import currentSessionId as _csid2
 
@@ -625,6 +643,9 @@ async def _writeFile(path: str, content: str, **_extra: object) -> str:
             )
             if _journal_err:
                 return _journal_err
+            from app.services import paper_provenance
+
+            paper_provenance.record_draft_write(filePath, content, tool='write_file')
             return f'Successfully wrote {len(content.encode("utf-8"))} bytes to {path}'
         import aiofiles
 
@@ -636,6 +657,12 @@ async def _writeFile(path: str, content: str, **_extra: object) -> str:
         # difference is visible to the model on the next read.
         async with aiofiles.open(str(filePath), 'w', encoding='utf-8', newline='') as f:
             await f.write(content)
+        # Provenance sidecar: a paper-chapter draft records its own
+        # attribution (agent-drafted) automatically — the skill teaches the
+        # habit, the tool enforces it.
+        from app.services import paper_provenance
+
+        paper_provenance.record_draft_write(filePath, content, tool='write_file')
         try:
             from app.services.workbench.context import currentSessionId as _csid_w
 

@@ -16,7 +16,7 @@ export interface DonutSlice {
 export const DEFAULT_COLORS = [
   '#3b7eff',
   '#4ade80',
-  '#f59e0b',
+  '#a1a1aa',
   '#f87171',
   '#a78bfa',
   '#06b6d4',

@@ -1,7 +1,7 @@
 import { phaseLabel } from '@/lib/phase-labels';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
-import { Brain, ChevronDown, Settings } from 'lucide-react';
+import { Brain, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { isTransportError } from '@/lib/error-copy';
@@ -18,17 +18,14 @@ import {
 } from '@/components/chat/tool/extractors';
 import { PromptDisclosure } from '@/components/chat/PromptDisclosure';
 import { ThoughtStep } from '@/components/chat/ThoughtStep';
-import { useCollapseThinking } from '@/hooks/useThinkingPreference';
 import { ToolStepRow } from '@/components/chat/ToolStepRow';
 import { EditRailRow } from '@/components/chat/EditRailRow';
 import { MemoryEditRow } from '@/components/chat/MemoryEditRow';
-import { RailDoneRow } from '@/components/chat/RailDoneRow';
-import { ActivitySummary } from '@/components/chat/ActivitySummary';
 import { SearchResultsTask } from '@/components/chat/SearchResultsCard';
 import { isSubagentToolName } from '@/components/chat/subagent-tools';
 import { SubagentDelegateRow } from '@/components/chat/SubagentDelegateRow';
 import { ActivityGroup } from '@/components/chat/ActivityGroup';
-import { countSharedFiles, summarizeToolRun } from '@/lib/tool-summary';
+import { countSharedFiles, summarizeTurnActivity } from '@/lib/tool-summary';
 import { splitThinkingTexts, summarizeThoughtHeader } from '@/lib/process-summary';
 import { collectSnapshots, fromSnapshot, readSnapshot } from '../stream/subagent-blocks';
 import { classifyTool, normalizeToolName } from '@/lib/tool-classify';
@@ -124,18 +121,14 @@ function isFinalOutput(block: DisplayBlock): boolean {
  * that reasoning is answered by opening the group, not by keeping the
  * failure out of it.
  */
-function isGroupableToolBlock(block: DisplayBlock): boolean {
-  if (block.type !== 'toolCall' && block.type !== 'command') return false;
-  const tool = block.tool;
-  if (!tool) return false;
-  if (isSubagentToolName(tool.name)) return false;
-  if (normalizeToolName(tool.name) === 'update_state') return false;
-  if (tool.pendingApproval || tool.actionNeeded) return false;
-  // Provider/integration setup widgets are interactive forms; the reference's
-  // rule is that an action widget stays on its own. `actionNeeded` is only one
-  // of the three widgets a tool result can carry.
-  if (tool.providerSetup || tool.integrationSetup) return false;
-  return true;
+function isInteractiveActionTool(tool: NonNullable<DisplayBlock['tool']>): boolean {
+  return !!(
+    tool.pendingApproval ||
+    tool.actionNeeded ||
+    tool.providerSetup ||
+    tool.integrationSetup ||
+    tool.secretRequest
+  );
 }
 
 /**
@@ -212,15 +205,6 @@ function parseSubagentToolContext(context?: string): { task: string; agentId: st
 const extractSearchQueryCached = memoizeByString(extractSearchQuery);
 const parseSubagentToolContextCached = memoizeByString(parseSubagentToolContext);
 
-/** "6s" / "1m 06s" — total elapsed for a tool-execution sequence. */
-function formatSequenceDuration(ms: number): string {
-  const totalSec = Math.max(1, Math.round(ms / 1000));
-  if (totalSec < 60) return `${totalSec}s`;
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}m ${String(s).padStart(2, '0')}s`;
-}
-
 /** Split blocks into process (thinking/tools) vs final answer. Error blocks
  *  are pulled out entirely — they render as a standalone message bubble below
  *  the timeline, never buried inside the collapsible activity pack (a failed
@@ -272,63 +256,6 @@ function splitProcessAndFinal(blocks: DisplayBlock[]): {
 /** Plan §4.1 plan-tree group: one `update_state` phase and the tool rows
  *  that ran under it. Finished subtrees auto-collapse (expanded defaults
  *  come from the parent); the active group stays open and highlighted. */
-function PlanPhaseGroup({
-  phase,
-  step,
-  active,
-  expanded,
-  onToggle,
-  children,
-}: {
-  phase: string;
-  step?: number;
-  active: boolean;
-  expanded: boolean;
-  onToggle: (next: boolean) => void;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      className={cn('plan-phase-group my-0.5', active && 'plan-phase-group--active')}
-      data-slot="plan-phase-group"
-      data-active={active ? 'true' : 'false'}
-    >
-      <button
-        type="button"
-        onClick={() => onToggle(!expanded)}
-        aria-expanded={expanded}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-xs px-1 py-0.5 text-left text-[0.75rem] font-medium text-foreground/75 hover:bg-accent hover:text-foreground"
-        data-testid="plan-phase-head"
-      >
-        <ChevronDown
-          className={cn(
-            'size-3 shrink-0 transition-transform',
-            !expanded && '-rotate-90',
-          )}
-          aria-hidden
-        />
-        {/* The phase's NAME, humanised. The heading rendered the raw enum
-            value, so a group read "research" in lower case — a value from
-            the tool contract, not a title. */}
-        <span className="min-w-0 flex-1 truncate" title={phaseLabel(phase)}>
-          {phaseLabel(phase)}
-          {typeof step === 'number' ? (
-            <span className="ml-1 font-normal text-muted-foreground/70">
-              · step {step}
-            </span>
-          ) : null}
-        </span>
-        {active ? (
-          <span className="shrink-0 text-2xs italic text-muted-foreground/70">
-            working…
-          </span>
-        ) : null}
-      </button>
-      {expanded ? <div className="plan-phase-body pl-4">{children}</div> : null}
-    </div>
-  );
-}
-
 export type SubagentPromptEntry = {
   content: string;
   systemPrompt: string;
@@ -398,7 +325,6 @@ export function AssistantBlockTimeline({
   /** Rendered on error blocks: dismiss the error bubble (removes the block). */
   onDismissError?: () => void;
 }) {
-  const collapseThinking = useCollapseThinking();
   const { sessionId: routeSessionId } = useParams<{ sessionId?: string }>();
   const liveSessionKey = resolveUiSessionId(routeSessionId || message.id);
   // /verbose: raw tool output renders inline for this
@@ -498,50 +424,13 @@ export function AssistantBlockTimeline({
     .filter((b) => b.type === 'thinking' && b.content?.trim())
     .map((b) => b.content!.trim());
   const processSummary = buildProcessSummaryLine(thinkingParts);
-  // The phrase the collapsed line will carry: what the turn DID, in the
-  // reference's words ("Running a command", "Ran a command, edited a
-  // file"). A run of two or more groupable calls has a phrase; a lone
-  // call renders as its own row, and the thinking gist stands in for it.
-  const groupableTools = processBlocks
-    .filter((b) => isGroupableToolBlock(b) && b.tool)
-    .map((b) => b.tool!);
-  const workPhrase =
-    groupableTools.length > 1 ? summarizeToolRun(groupableTools) : null;
 
-  let toolsCount = 0;
-  let viewedCount = 0;
-  let editedCount = 0;
-  let ranCount = 0;
-  let usedCount = 0;
-  let searchesCount = 0;
-  let commandsCount = 0;
-  let errorsCount = 0;
   let anyToolRunning = false;
-  const filesTouched = new Set<string>();
   let seqStart = Number.POSITIVE_INFINITY;
   let seqEnd = 0;
   for (const block of processBlocks) {
     if ((block.type === 'toolCall' || block.type === 'command') && block.tool) {
       const tool = block.tool;
-      toolsCount += 1;
-      const bucket = classifyTool(tool.name);
-      if (bucket === 'view') viewedCount += 1;
-      else if (bucket === 'edit') editedCount += 1;
-      else if (bucket === 'run') ranCount += 1;
-      else usedCount += 1;
-      // §9 completion tally — files touched, searches run, commands executed.
-      if (bucket === 'view' || bucket === 'edit') {
-        const path = extractFilename(tool.context);
-        if (path) filesTouched.add(path.toLowerCase());
-      }
-      if (
-        (tool.searchHits && tool.searchHits.length > 0) ||
-        normalizeToolName(tool.name).includes('web_search')
-      ) {
-        searchesCount += 1;
-      }
-      if (block.type === 'command' || bucket === 'run') commandsCount += 1;
-      if (isToolFailure(tool.status)) errorsCount += 1;
       if (tool.status === 'running') anyToolRunning = true;
       if (tool.startedAt) {
         seqStart = Math.min(seqStart, tool.startedAt);
@@ -575,12 +464,6 @@ export function AssistantBlockTimeline({
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [livePacked]);
-  // The tool durations are the OTHER clock. A tool block that carries a
-  // duration but no startedAt - a restored transcript, a merged one - still
-  // knows how long it took, and the ActivityGroup's own elapsed already
-  // uses that number. The header must not disagree with the group it sits
-  // above, so the wall-clock span is preferred and the durations are the
-  // fallback, not a second answer.
   const summedToolMs = processBlocks.reduce(
     (sum, b) =>
       sum +
@@ -589,14 +472,6 @@ export function AssistantBlockTimeline({
         : 0),
     0,
   );
-  const sequenceDurationLabel =
-    Number.isFinite(seqStart) && (anyToolRunning || seqEnd > seqStart)
-      ? formatSequenceDuration(
-          (anyToolRunning ? nowMs : seqEnd) - seqStart,
-        )
-      : summedToolMs > 0
-        ? formatSequenceDuration(summedToolMs)
-        : null;
 
   const { liveDetail, liveItems } = useMemo(() => {
     const items: LiveActivityItem[] = [];
@@ -718,56 +593,76 @@ export function AssistantBlockTimeline({
     });
   }, [livePacked, liveSessionKey, liveDetail, liveItems, processSummary, isLast, streaming]);
 
-  const renderFlatProcess = (
-    blocks: DisplayBlock[],
-    withDoneMarker = true,
-    keyPrefix = 'flat',
-  ) => {
-    // Each rendered node is tagged rail (threaded onto the left line:
-    // thinking, file edits, the terminal Done marker) or block (everything
-    // else). Consecutive rail nodes are grouped into one segment so the line
-    // runs continuously through them; block rows sit between segments.
-    type Tagged = { kind: 'rail' | 'block'; node: ReactNode };
-    const tagged: Tagged[] = [];
+  const buildTurnActivityLayout = () => {
+    const foldedNodes: ReactNode[] = [];
+    const exposedNodes: ReactNode[] = [];
+    const foldedTools: NonNullable<DisplayBlock['tool']>[] = [];
+    const claimed = new Set<string>();
+    let settledSubagentsCount = 0;
+    let settledSubagentFailed = false;
+    let liveSubagentRunning = false;
+    let settledSubagentMs = 0;
+
+    if (showPendingThinking) {
+      foldedNodes.push(
+        <ThoughtStep
+          key="pending_think"
+          content=""
+          isGenerating
+          showFull={isThoughtExpanded('pending_think')}
+          onToggle={() =>
+            toggleExpand('pending_think', !isThoughtExpanded('pending_think'))
+          }
+          collapsedDefault={false}
+        />,
+      );
+    }
+
     let ti = 0;
-    while (ti < blocks.length) {
-      const block = blocks[ti];
+    while (ti < processBlocks.length) {
+      const block = processBlocks[ti];
+
       if (block.type === 'thinking') {
         const parts: string[] = [];
         const start = ti;
-        while (ti < blocks.length && blocks[ti].type === 'thinking') {
-          const c = (blocks[ti].content || '').trim();
+        while (ti < processBlocks.length && processBlocks[ti].type === 'thinking') {
+          const c = (processBlocks[ti].content || '').trim();
           if (c) parts.push(c);
           ti++;
         }
-        // Generating only when this coalesced thought is the last process
-        // step and no final answer has landed yet.
         const isGenerating = !!(
           isLast &&
           streaming &&
           !hasFinalOutput &&
-          ti === blocks.length
+          ti === processBlocks.length
         );
         const thoughtId = block.id || `think_${start}`;
-        // Clamped ("Show more") by default — even while generating. A thought
-        // renders in full only when the user explicitly expands it (override),
-        // so long reasoning never pushes the whole thread open mid-stream, and
-        // a finished thought stays clamped rather than lingering on "Show less".
-        const thoughtExpanded =
-          thoughtId in expandOverrides ? expandOverrides[thoughtId] : false;
-        tagged.push({
-          kind: 'rail',
-          node: (
-            <ThoughtStep
-              key={thoughtId}
-              content={parts.join('\n\n')}
-              isGenerating={isGenerating}
-              showFull={thoughtExpanded}
-              onToggle={() => toggleExpand(thoughtId, !thoughtExpanded)}
-              collapsedDefault={collapseThinking}
-            />
-          ),
-        });
+        const thoughtExpanded = isThoughtExpanded(thoughtId);
+        foldedNodes.push(
+          <ThoughtStep
+            key={thoughtId}
+            content={parts.join('\n\n')}
+            isGenerating={isGenerating}
+            showFull={thoughtExpanded}
+            onToggle={() => toggleExpand(thoughtId, !thoughtExpanded)}
+            collapsedDefault={false}
+          />,
+        );
+        continue;
+      }
+
+      if (block.type === 'phase' && block.content && block.content.trim()) {
+        foldedNodes.push(
+          <div
+            key={block.id || `phase_${ti}`}
+            className="pt-0.5 text-2xs font-medium uppercase tracking-wider text-[var(--dt-fg-3)]"
+            data-testid="plan-phase-head"
+          >
+            {phaseLabel(block.content.trim())}
+            {typeof block.step === 'number' ? ` · step ${block.step}` : ''}
+          </div>,
+        );
+        ti++;
         continue;
       }
 
@@ -777,24 +672,13 @@ export function AssistantBlockTimeline({
         const isSubagentCall = !isCommand && isSubagentToolName(tool.name);
         const toolId = tool.id || block.id || `tool_${ti}`;
 
-        // Subagent launches render one inline row per agent —
-        // the keystone of delegation visibility (reverses the 265ba24a
-        // "drawer-only" decision). Live containers drive rich rows; a spawn
-        // call whose workers already streamed out (reloaded transcript)
-        // still renders one settled row from the tool block itself.
         if (isSubagentCall) {
-          // A1 keystone: live SSE containers first, then the persisted
-          // transcript's own `subagent` blocks (the reload / reconnect case
-          // that used to leave a bare stub with no output), then the backend
-          // roster for runs that predate this message, then a stub from the
-          // spawn tool's own context as the last-resort fallback. Each source
-          // is filtered against the ones above it, so a worker renders once.
           const liveContainers = subagentBlocks
             ? Array.from(subagentBlocks.values())
                 .filter((s) => s.parentToolId === tool.id)
                 .sort((a, b) => a.startedAt - b.startedAt)
             : [];
-          const claimed = new Set(liveContainers.map((c) => c.jobId));
+          for (const c of liveContainers) claimed.add(c.jobId);
           const persistedForTool = persistedSubagentStates.filter((s) => {
             if (claimed.has(s.jobId)) return false;
             if (s.parentToolId !== tool.id) return false;
@@ -807,224 +691,111 @@ export function AssistantBlockTimeline({
             return true;
           });
 
+          const workers: Array<{
+            key: string;
+            jobId?: string;
+            agentId: string;
+            task: string;
+            status: InlineSubagentRosterEntry['status'];
+            startedAt?: number;
+            finishedAt?: number;
+            workstream?: string;
+            state?: SubagentBlockState;
+          }> = [];
+
           if (liveContainers.length > 0) {
             for (const c of liveContainers) {
-              tagged.push({
-                kind: 'block',
-                node: (
-                  <SubagentDelegateRow
-                    key={c.jobId}
-                    jobId={c.jobId}
-                    agentId={c.agentId}
-                    task={c.task || ''}
-                    status={c.status}
-                    startedAt={c.startedAt}
-                    finishedAt={c.finishedAt}
-                    workstream={c.workstream}
-                    state={c}
-                    defaultExpanded
-                    sessionId={liveSessionKey}
-                  />
-                ),
+              workers.push({
+                key: c.jobId,
+                jobId: c.jobId,
+                agentId: c.agentId,
+                task: c.task || '',
+                status: c.status,
+                startedAt: c.startedAt,
+                finishedAt: c.finishedAt,
+                workstream: c.workstream,
+                state: c,
               });
             }
           } else if (persistedForTool.length > 0) {
-            // The reload path: the transcript carries the worker's own
-            // timeline, so the row expands inline without any SSE replay.
             for (const s of persistedForTool) {
-              tagged.push({
-                kind: 'block',
-                node: (
-                  <SubagentDelegateRow
-                    key={`sub_block_${s.jobId}`}
-                    jobId={s.jobId}
-                    agentId={s.agentId}
-                    task={s.task || ''}
-                    status={s.status}
-                    startedAt={s.startedAt}
-                    finishedAt={s.finishedAt}
-                    workstream={s.workstream}
-                    state={s}
-                    sessionId={liveSessionKey}
-                  />
-                ),
+              workers.push({
+                key: `sub_block_${s.jobId}`,
+                jobId: s.jobId,
+                agentId: s.agentId,
+                task: s.task || '',
+                status: s.status,
+                startedAt: s.startedAt,
+                finishedAt: s.finishedAt,
+                workstream: s.workstream,
+                state: s,
               });
             }
           } else if (rosterForTool.length > 0) {
             for (const r of rosterForTool) {
-              tagged.push({
-                kind: 'block',
-                node: (
-                  <SubagentDelegateRow
-                    key={`roster_${r.jobId}`}
-                    jobId={r.jobId}
-                    agentId={r.agentId}
-                    task={r.task}
-                    status={r.status}
-                    startedAt={r.startedAt}
-                    finishedAt={r.finishedAt}
-                    workstream={r.workstream}
-                    state={allSubagentStates.get(r.jobId)}
-                    sessionId={liveSessionKey}
-                  />
-                ),
+              workers.push({
+                key: `roster_${r.jobId}`,
+                jobId: r.jobId,
+                agentId: r.agentId,
+                task: r.task,
+                status: r.status,
+                startedAt: r.startedAt,
+                finishedAt: r.finishedAt,
+                workstream: r.workstream,
+                state: allSubagentStates.get(r.jobId),
               });
             }
           } else {
             const ctx = parseSubagentToolContextCached(tool.context);
-            tagged.push({
-              kind: 'block',
-              node: (
-                <SubagentDelegateRow
-                  key={toolId}
-                  agentId={ctx.agentId || 'general'}
-                  task={ctx.task}
-                  status={
-                    isToolFailure(tool.status)
-                      ? 'failed'
-                      : tool.status === 'running'
-                        ? 'running'
-                        : 'completed'
-                  }
-                  startedAt={tool.startedAt}
-                  sessionId={liveSessionKey}
-                />
-              ),
+            workers.push({
+              key: toolId,
+              agentId: ctx.agentId || 'general',
+              task: ctx.task,
+              status: isToolFailure(tool.status)
+                ? 'failed'
+                : tool.status === 'running'
+                  ? 'running'
+                  : 'completed',
+              startedAt: tool.startedAt,
             });
+          }
+
+          for (const w of workers) {
+            const isWorkerLive = w.status === 'running' || w.status === 'pending';
+            const row = (
+              <SubagentDelegateRow
+                key={w.key}
+                jobId={w.jobId}
+                agentId={w.agentId}
+                task={w.task}
+                status={w.status}
+                startedAt={w.startedAt}
+                finishedAt={w.finishedAt}
+                workstream={w.workstream}
+                state={w.state}
+                defaultExpanded={isWorkerLive}
+                sessionId={liveSessionKey}
+              />
+            );
+            if (isWorkerLive) {
+              liveSubagentRunning = true;
+              exposedNodes.push(row);
+            } else {
+              settledSubagentsCount += 1;
+              if (w.status === 'failed' || w.status === 'error') {
+                settledSubagentFailed = true;
+              }
+              if (w.startedAt && w.finishedAt && w.finishedAt > w.startedAt) {
+                settledSubagentMs += w.finishedAt - w.startedAt;
+              }
+              foldedNodes.push(row);
+            }
           }
           ti++;
           continue;
         }
 
-        // A run of tool work collapses into ONE activity line — the
-        // reference's "Ran 4 commands, read a file" — with the individual
-        // calls inside a bordered card when it is opened.
-        //
-        // The grouping is a RENDER-TIME arrangement, not a new persisted
-        // block kind: the transcript still stores one block per call, so a
-        // reload produces the same grouping and the backend needs to know
-        // nothing about it.
-        //
-        // EVERY kind joins: reads, commands, edits, memory writes, plain
-        // tool calls. A mixed run (a read, a command, a read) is one thing
-        // that happened, so it is one line — and the phrase names each
-        // kind. A run of reads used to keep the Explore group it had
-        // ("Explore · 2 searches, 3 files"); that group and its vocabulary
-        // are gone, merged into this one.
-        const runBlocks: DisplayBlock[] = [];
-        let tj = ti;
-        while (tj < blocks.length) {
-          const nb = blocks[tj];
-          if (isGroupableToolBlock(nb)) {
-            runBlocks.push(nb);
-            tj += 1;
-            continue;
-          }
-          // A call that renders as nothing must not break the run: the
-          // blocks on either side of it are adjacent on screen.
-          if (isInvisibleBookkeeping(nb)) {
-            tj += 1;
-            continue;
-          }
-          break;
-        }
-        if (runBlocks.length >= 2) {
-          const runTools = runBlocks
-            .map((b) => b.tool)
-            .filter((t): t is NonNullable<typeof t> => !!t);
-          const anyRunning = runTools.some((t) => t.status === 'running');
-          // A run that FAILED opens. The group used to refuse to group a
-          // failure at all, because a failure behind a collapsed line is
-          // one nobody sees; opening the group answers that, so the
-          // failure is grouped AND visible without a click.
-          const hasFailure = runTools.some((t) => isToolFailure(t.status));
-          const elapsedMs = runTools.reduce(
-            (sum, t) => sum + (typeof t.duration === 'number' ? t.duration : 0),
-            0,
-          );
-          /* The files this run SHARED. The reference's expanded card ends
-             with a row naming them - "Presented 2 files" - and the count is
-             the same rule the phrase and the artifact cards use, so the
-             three cannot disagree about what the turn produced. */
-          const sharedFiles = countSharedFiles(runTools);
-          const groupKey = `activity_${toolId}`;
-          const groupOpen =
-            groupKey in expandOverrides
-              ? expandOverrides[groupKey]
-              : anyRunning || hasFailure;
-          tagged.push({
-            kind: 'block',
-            node: (
-              <ActivityGroup
-                key={groupKey}
-                groupKey={groupKey}
-                summary={summarizeToolRun(runTools)}
-                elapsedMs={elapsedMs}
-                running={anyRunning}
-                failed={hasFailure}
-                expanded={groupOpen}
-                onToggle={(next) => toggleExpand(groupKey, next)}
-              >
-                {runBlocks.map((rb, ri) => {
-                  const rt = rb.tool!;
-                  const rtId = rt.id || `activity_child_${ti + ri}`;
-                  const rbIsCommand = rb.type === 'command';
-                  return (
-                    <ToolStepRow
-                      key={rtId}
-                      tool={rt}
-                      label={getToolLabel(rt.name, {
-                        command: rbIsCommand
-                          ? extractCommand(rt.context) ?? undefined
-                          : undefined,
-                        filename: !rbIsCommand
-                          ? extractFilename(rt.context) ?? undefined
-                          : undefined,
-                        subject: extractSubject(rt.context) ?? undefined,
-                        status: rt.status,
-                      })}
-                      isCommand={rbIsCommand}
-                      /* A failed row opens with the group, so the error
-                         text is on screen without a second click. */
-                      expanded={
-                        rtId in expandOverrides
-                          ? expandOverrides[rtId]
-                          : isToolFailure(rt.status)
-                      }
-                      verbose={verbose}
-                      onToggle={(next) => toggleExpand(rtId, next)}
-                      progress={rt.id ? toolProgress?.get(rt.id) : undefined}
-                    >
-                      <ToolCallItemBody tool={rt} verbose={verbose} />
-                    </ToolStepRow>
-                  );
-                })}
-                {sharedFiles > 0 ? (
-                  <div
-                    key={`presented_${groupKey}`}
-                    className="py-1.5 text-[0.71875rem] text-muted-foreground"
-                    data-testid="activity-group-presented"
-                  >
-                    Presented{' '}
-                    {sharedFiles} {sharedFiles === 1 ? 'file' : 'files'}
-                  </div>
-                ) : null}
-              </ActivityGroup>
-            ),
-          });
-          ti = tj;
-          continue;
-        }
-
-        // update_state bookkeeping is represented by the phase marker
-        // itself — a duplicate "Edited state" rail
-        // row is exactly the noise the minimal transcript removes.
-        // Failures still render so the user sees them.
-        if (
-          !isCommand &&
-          normalizeToolName(tool.name) === 'update_state' &&
-          tool.status !== 'error'
-        ) {
+        if (isInvisibleBookkeeping(block)) {
           ti++;
           continue;
         }
@@ -1040,50 +811,6 @@ export function AssistantBlockTimeline({
           extractAgentId(tool.context) ??
           undefined;
         const filename = !isCommand ? extractFilename(tool.context) : null;
-        const expanded = isToolExpanded(toolId, tool.status, tool);
-
-        // Web-search results render as their own specialized Task block
-        // (query trigger + scroll-capped hit list) instead of a generic row.
-        if (!isCommand && tool.searchHits && tool.searchHits.length > 0) {
-          tagged.push({
-            kind: 'block',
-            node: (
-              <SearchResultsTask
-                key={toolId}
-                query={extractSearchQueryCached(tool.context)}
-                hits={tool.searchHits}
-                expanded={expanded}
-                onToggle={(next) => toggleExpand(toolId, next)}
-              />
-            ),
-          });
-          ti++;
-          continue;
-        }
-
-        // File edits render as compact rail rows (pencil · description ·
-        // filename chip · ±N), threaded onto the same line as the thinking
-        // and the terminal Done marker.
-        if (!isCommand && classifyTool(tool.name) === 'edit') {
-          tagged.push({
-            kind: 'rail',
-            node: <EditRailRow key={toolId} tool={tool} expanded={expanded} />,
-          });
-          ti++;
-          continue;
-        }
-
-        // Memory writes render as rail rows (brain glyph · entry title),
-        // expanded by default to show the saved entry text.
-        if (!isCommand && classifyTool(tool.name) === 'memoryWrite') {
-          tagged.push({
-            kind: 'rail',
-            node: <MemoryEditRow key={toolId} tool={tool} expanded={expanded} />,
-          });
-          ti++;
-          continue;
-        }
-
         const label = getToolLabel(tool.name, {
           agentId: agentId ?? undefined,
           filename: filename ?? undefined,
@@ -1092,15 +819,12 @@ export function AssistantBlockTimeline({
           status: tool.status,
         });
 
-        // Consecutive reads of the same file used to collapse into one row:
-        // `read consolidation.py ×4`. That path is gone — a run of two or
-        // more reads is an activity group now, so the consolidation could
-        // only ever have fired for a single read, which is not a
-        // consolidation. The group shows every call, one row each.
-
-        tagged.push({
-          kind: 'block',
-          node: (
+        // Approval prompts and interactive action widgets stay visible outside
+        // the folded activity line so the user can always see and act on them.
+        if (isInteractiveActionTool(tool)) {
+          const expanded =
+            toolId in expandOverrides ? expandOverrides[toolId] : true;
+          exposedNodes.push(
             <ToolStepRow
               key={toolId}
               tool={tool}
@@ -1110,158 +834,219 @@ export function AssistantBlockTimeline({
               verbose={verbose}
               onToggle={(next) => toggleExpand(toolId, next)}
               progress={tool.id ? toolProgress?.get(tool.id) : undefined}
-              afterRow={
-                promptEntries.length > 0 ? (
-                  <div className="mt-1.5 flex flex-col gap-1">
-                    {promptEntries.map((p, pi) => (
-                      <PromptDisclosure
-                        key={`${toolId}-prompt-${pi}`}
-                        content={p.content}
-                        tokens={p.tokens}
-                        label={
-                          p.subagentId
-                            ? `SUB-AGENT PROMPT · ${p.subagentId}`
-                            : 'SUB-AGENT PROMPT'
-                        }
-                      />
-                    ))}
-                  </div>
-                ) : null
-              }
             >
               <ToolCallItemBody
                 tool={tool}
                 progress={tool.id ? toolProgress?.get(tool.id) : undefined}
                 verbose={verbose}
               />
-            </ToolStepRow>
-          ),
-        });
+            </ToolStepRow>,
+          );
+          ti++;
+          continue;
+        }
+
+        foldedTools.push(tool);
+        const expanded =
+          toolId in expandOverrides
+            ? expandOverrides[toolId]
+            : isToolFailure(tool.status) || isToolExpanded(toolId, tool.status, tool);
+
+        if (!isCommand && tool.searchHits && tool.searchHits.length > 0) {
+          foldedNodes.push(
+            <SearchResultsTask
+              key={toolId}
+              query={extractSearchQueryCached(tool.context)}
+              hits={tool.searchHits}
+              expanded={expanded}
+              onToggle={(next) => toggleExpand(toolId, next)}
+            />,
+          );
+          ti++;
+          continue;
+        }
+
+        if (!isCommand && classifyTool(tool.name) === 'edit') {
+          foldedNodes.push(
+            <EditRailRow key={toolId} tool={tool} expanded={expanded} />,
+          );
+          ti++;
+          continue;
+        }
+
+        if (!isCommand && classifyTool(tool.name) === 'memoryWrite') {
+          foldedNodes.push(
+            <MemoryEditRow key={toolId} tool={tool} expanded={expanded} />,
+          );
+          ti++;
+          continue;
+        }
+
+        foldedNodes.push(
+          <ToolStepRow
+            key={toolId}
+            tool={tool}
+            label={label}
+            isCommand={isCommand}
+            expanded={expanded}
+            verbose={verbose}
+            onToggle={(next) => toggleExpand(toolId, next)}
+            progress={tool.id ? toolProgress?.get(tool.id) : undefined}
+            afterRow={
+              promptEntries.length > 0 ? (
+                <div className="mt-1.5 flex flex-col gap-1">
+                  {promptEntries.map((p, pi) => (
+                    <PromptDisclosure
+                      key={`${toolId}-prompt-${pi}`}
+                      content={p.content}
+                      tokens={p.tokens}
+                      label={
+                        p.subagentId
+                          ? `SUB-AGENT PROMPT · ${p.subagentId}`
+                          : 'SUB-AGENT PROMPT'
+                      }
+                    />
+                  ))}
+                </div>
+              ) : null
+            }
+          >
+            <ToolCallItemBody
+              tool={tool}
+              progress={tool.id ? toolProgress?.get(tool.id) : undefined}
+              verbose={verbose}
+            />
+          </ToolStepRow>,
+        );
         ti++;
         continue;
       }
 
       if (block.type === 'memoryNotice') {
-        // Plan §4.1: a memory write renders as one subtle chip — entry title
-        // only, no raw payload in the transcript.
-        tagged.push({
-          kind: 'block',
-          node: (
-            <div
-              key={block.id || `memory_${ti}`}
-              data-testid="memory-notice-chip"
-              className="mx-3 my-1 inline-flex max-w-full items-center gap-1.5 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1 text-2xs text-muted-foreground"
-              title={block.content || undefined}
-            >
-              <Brain className="size-3 shrink-0 opacity-70" aria-hidden />
-              <span className="truncate">{block.content || 'Memory updated'}</span>
-            </div>
-          ),
-        });
+        foldedNodes.push(
+          <div
+            key={block.id || `memory_${ti}`}
+            data-testid="memory-notice-chip"
+            className="inline-flex max-w-full items-center gap-1.5 text-2xs text-[var(--dt-fg-3)]"
+            title={block.content || undefined}
+          >
+            <Brain className="size-3 shrink-0 opacity-70" aria-hidden />
+            <span className="truncate">{block.content || 'Memory updated'}</span>
+          </div>,
+        );
         ti++;
         continue;
       }
 
-      // Non-process leftovers inside process list (ignore)
       ti++;
     }
 
-    // Terminal rail marker once the turn settles. Gated off while the last
-    // turn streams so it never flickers in the gap between steps.
-    const hasRail = tagged.some((t) => t.kind === 'rail');
-    if (withDoneMarker && hasRail && (!isLast || !streaming) && !anyToolRunning) {
-      tagged.push({
-        kind: 'rail',
-        node: <RailDoneRow key="rail-done" errored={errorsCount > 0} />,
-      });
-    }
-
-    // Group consecutive rail rows into segments (continuous left line); emit
-    // block rows between them with the body's normal spacing.
-    const out: ReactNode[] = [];
-    let railBuf: ReactNode[] = [];
-    let segSeq = 0;
-    const flushRail = () => {
-      if (railBuf.length === 0) return;
-      out.push(
-        <div key={`rail-seg-${keyPrefix}-${segSeq}`} className="process-rail-segment">
-          {railBuf}
-        </div>,
+    // Orphan persisted sub-agent blocks attached directly to this message.
+    const orphanSnapshots = persistedSubagentBlocks
+      .map((block) => readSnapshot(block))
+      .filter((s): s is SubagentSnapshot => !!s && !claimed.has(s.jobId));
+    for (const snap of orphanSnapshots) {
+      const resolved = allSubagentStates.get(snap.jobId) ?? fromSnapshot(snap);
+      const isWorkerLive =
+        resolved.status === 'running' || resolved.status === 'pending';
+      const row = (
+        <SubagentDelegateRow
+          key={`orphan_${resolved.jobId}`}
+          jobId={resolved.jobId}
+          agentId={resolved.agentId}
+          task={resolved.task || ''}
+          status={resolved.status}
+          startedAt={resolved.startedAt}
+          finishedAt={resolved.finishedAt}
+          workstream={resolved.workstream}
+          state={resolved}
+          defaultExpanded={isWorkerLive}
+          sessionId={liveSessionKey}
+        />
       );
-      segSeq += 1;
-      railBuf = [];
-    };
-    for (const t of tagged) {
-      if (t.kind === 'rail') {
-        railBuf.push(t.node);
+      if (isWorkerLive) {
+        liveSubagentRunning = true;
+        exposedNodes.push(row);
       } else {
-        flushRail();
-        out.push(t.node);
+        settledSubagentsCount += 1;
+        if (resolved.status === 'failed') {
+          settledSubagentFailed = true;
+        }
+        if (
+          resolved.startedAt &&
+          resolved.finishedAt &&
+          resolved.finishedAt > resolved.startedAt
+        ) {
+          settledSubagentMs += resolved.finishedAt - resolved.startedAt;
+        }
+        foldedNodes.push(row);
       }
     }
-    flushRail();
-    return out;
-  };
 
-  /**
-   * Plan §4.1 plan tree: `update_state` phase markers group the rows that
-   * follow them — indent under the current step, highlight the active one,
-   * auto-collapse finished subtrees. Flat fallback when the model emitted
-   * no phases; the tree is never required for correctness.
-   */
-  const renderProcessBlocks = (blocks: DisplayBlock[]) => {
-    const phaseIdx: number[] = [];
-    blocks.forEach((b, i) => {
-      if (b.type === 'phase' && b.content && b.content.trim()) phaseIdx.push(i);
-    });
-    if (phaseIdx.length === 0) return renderFlatProcess(blocks, true, 'flat');
-
-    const out: ReactNode[] = [];
-    if (phaseIdx[0] > 0) {
-      out.push(...renderFlatProcess(blocks.slice(0, phaseIdx[0]), false, 'pre'));
-    }
-    phaseIdx.forEach((start, gi) => {
-      const end = gi + 1 < phaseIdx.length ? phaseIdx[gi + 1] : blocks.length;
-      const phaseBlock = blocks[start];
-      const phaseKey = phaseBlock.id || `phase_${start}`;
-      // Active = the newest group while the turn still streams; finished
-      // subtrees auto-collapse once the answer starts.
-      const active = gi === phaseIdx.length - 1 && !!streaming && !hasFinalOutput;
-      const expanded =
-        phaseKey in expandOverrides ? expandOverrides[phaseKey] : active;
-      out.push(
-        <PlanPhaseGroup
-          key={phaseKey}
-          phase={(phaseBlock.content || '').trim()}
-          step={phaseBlock.step}
-          active={active}
-          expanded={expanded}
-          onToggle={(next) => toggleExpand(phaseKey, next)}
+    // D13: fold stacked post-turn status notices into the activity timeline
+    // so they never clutter the main transcript as stacked status strips.
+    noticeBlocks.forEach((block, index) => {
+      foldedNodes.push(
+        <div
+          key={block.id || `notice_${index}`}
+          data-testid="chat-system-notice"
+          className="text-2xs leading-relaxed text-[var(--dt-fg-3)]"
         >
-          {renderFlatProcess(blocks.slice(start + 1, end), false, `ph${gi}`)}
-        </PlanPhaseGroup>,
+          {block.content}
+        </div>,
       );
     });
 
-    // Terminal Done marker after the last group once the turn settles.
-    const settled = !isLast || !streaming;
-    const hasRailContent = blocks.some(
-      (b) =>
-        b.type === 'thinking' ||
-        (b.type === 'toolCall' &&
-          !!b.tool &&
-          (classifyTool(b.tool.name) === 'edit' ||
-            classifyTool(b.tool.name) === 'memoryWrite')),
-    );
-    if (settled && !anyToolRunning && hasRailContent) {
-      out.push(
-        <div key="rail-done-wrap" className="process-rail-segment">
-          <RailDoneRow errored={errorsCount > 0} />
+    const sharedFiles = countSharedFiles(foldedTools);
+    if (sharedFiles > 0) {
+      foldedNodes.push(
+        <div
+          key="activity-presented"
+          className="py-0.5 text-2xs text-[var(--dt-fg-3)]"
+          data-testid="activity-group-presented"
+        >
+          Presented {sharedFiles} {sharedFiles === 1 ? 'file' : 'files'}
         </div>,
       );
     }
-    return out;
+
+    const activityFailed =
+      foldedTools.some((t) => isToolFailure(t.status)) || settledSubagentFailed;
+    const activityRunning =
+      anyToolRunning ||
+      (!!isLast && !!streaming && !hasFinalOutput && !liveSubagentRunning);
+    const activityElapsedMs =
+      Number.isFinite(seqStart) && (anyToolRunning || seqEnd > seqStart)
+        ? (anyToolRunning ? nowMs : seqEnd) - seqStart
+        : summedToolMs + settledSubagentMs;
+
+    return {
+      foldedNodes,
+      exposedNodes,
+      activityFailed,
+      activityRunning,
+      activityElapsedMs,
+      summary: summarizeTurnActivity({
+        tools: foldedTools,
+        settledSubagents: settledSubagentsCount,
+        thoughtCount: coalescedThoughtCount || (showPendingThinking ? 1 : 0),
+        noticeCount: noticeBlocks.length,
+        running: activityRunning,
+      }),
+    };
   };
+
+  const {
+    foldedNodes,
+    exposedNodes,
+    activityFailed,
+    activityRunning,
+    activityElapsedMs,
+    summary: activitySummary,
+  } = buildTurnActivityLayout();
+  const turnGroupKey = `turn_${message.id}`;
+  const activityExpanded =
+    turnGroupKey in expandOverrides ? expandOverrides[turnGroupKey] : activityFailed;
 
   const renderFinal = (blocks: DisplayBlock[]) =>
     blocks.map((block, index) => {
@@ -1287,67 +1072,6 @@ export function AssistantBlockTimeline({
         </div>
       );
     });
-
-  const renderSystemNotices = (blocks: DisplayBlock[]) =>
-    blocks.map((block, index) => {
-      // Harness notice (retry warning, context pressure, info) — a muted
-      // inline strip below the answer, never inside the thinking pack: the
-      // Thinking disclosure holds only the model's chain-of-thought.
-      const key = block.id || `notice_${index}`;
-      return (
-        <div
-          key={key}
-          data-testid="chat-system-notice"
-          className="mt-1 flex w-full items-start gap-2 text-2xs leading-relaxed text-muted-foreground/80"
-        >
-          <Settings className="mt-px size-3 shrink-0 opacity-70" aria-hidden />
-          <span className="min-w-0 flex-1">{block.content}</span>
-        </div>
-      );
-    });
-
-  /**
-   * Persisted worker rows that no spawn tool call claims.
-   *
-   * The backend only reports `parentToolUseId` when a worker was launched
-   * from inside a tool call; otherwise the block is anchored to the newest
-   * assistant message with no matching `toolCall` block. Rendering it here
-   * (outside the activity pack, next to the answer) is what stops a
-   * reconnected session from silently dropping a worker's output.
-   */
-  const renderOrphanSubagentRows = (blocks: DisplayBlock[]) => {
-    const claimed = new Set<string>();
-    for (const block of blocks) {
-      if (block.type !== 'toolCall' && block.type !== 'command') continue;
-      if (!block.tool) continue;
-      for (const state of allSubagentStates.values()) {
-        if (state.parentToolId === block.tool.id) claimed.add(state.jobId);
-      }
-    }
-    const orphans = blocks
-      .map((block) => readSnapshot(block))
-      .filter((s): s is SubagentSnapshot => !!s && !claimed.has(s.jobId))
-      .map(fromSnapshot);
-    if (orphans.length === 0) return null;
-    return (
-      <div className="mt-1 space-y-1" data-testid="subagent-orphan-rows">
-        {orphans.map((s) => (
-          <SubagentDelegateRow
-            key={`orphan_${s.jobId}`}
-            jobId={s.jobId}
-            agentId={s.agentId}
-            task={s.task || ''}
-            status={s.status}
-            startedAt={s.startedAt}
-            finishedAt={s.finishedAt}
-            workstream={s.workstream}
-            state={s}
-            sessionId={liveSessionKey}
-          />
-        ))}
-      </div>
-    );
-  };
 
   const renderErrorBubble = (blocks: DisplayBlock[]) =>
     blocks.map((block, index) => {
@@ -1446,52 +1170,26 @@ export function AssistantBlockTimeline({
     });
 
   return (
-    <div className="process-timeline" data-slot="process-timeline">
-      {(processBlocks.length > 0 || showPendingThinking) && (
-        <ActivitySummary
-          thoughtCount={coalescedThoughtCount || (showPendingThinking ? 1 : 0)}
-          toolsCount={toolsCount}
-          viewedCount={viewedCount}
-          editedCount={editedCount}
-          ranCount={ranCount}
-          usedCount={usedCount}
-          workersCount={subagentBlocks?.size ?? 0}
-          filesTouched={filesTouched.size}
-          searches={searchesCount}
-          commands={commandsCount}
-          errors={errorsCount}
-          summary={livePacked ? null : workPhrase || processSummary}
-          live={livePacked}
-          liveDetail={
-            livePacked && processBlocks.length === 0 && !liveDetail
-              ? 'Working…'
-              : liveDetail || null
-          }
-          defaultOpen={false}
-          collapseWhen={hasFinalOutput}
-          mode={toolsCount > 0 ? 'completion' : 'activity'}
-          durationLabel={sequenceDurationLabel}
+    <div className="process-timeline flex flex-col gap-2" data-slot="process-timeline">
+      {foldedNodes.length > 0 && (
+        <ActivityGroup
+          groupKey={turnGroupKey}
+          summary={activitySummary}
+          elapsedMs={activityElapsedMs > 0 ? activityElapsedMs : undefined}
+          running={activityRunning}
+          failed={activityFailed}
+          expanded={activityExpanded}
+          onToggle={(next) => toggleExpand(turnGroupKey, next)}
         >
-          {showPendingThinking && (
-            <ThoughtStep
-              content=""
-              isGenerating
-              showFull={isThoughtExpanded('pending_think')}
-              onToggle={() =>
-                toggleExpand(
-                  'pending_think',
-                  !isThoughtExpanded('pending_think'),
-                )
-              }
-              collapsedDefault={collapseThinking}
-            />
-          )}
-          {renderProcessBlocks(processBlocks)}
-        </ActivitySummary>
+          {foldedNodes}
+        </ActivityGroup>
+      )}
+      {exposedNodes.length > 0 && (
+        <div className="flex flex-col gap-1.5" data-testid="exposed-activity-rows">
+          {exposedNodes}
+        </div>
       )}
       {hasFinalOutput && renderFinal(finalBlocks)}
-      {renderOrphanSubagentRows(persistedSubagentBlocks)}
-      {noticeBlocks.length > 0 && renderSystemNotices(noticeBlocks)}
       {errorBlocks.length > 0 && renderErrorBubble(errorBlocks)}
     </div>
   );

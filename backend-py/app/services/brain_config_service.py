@@ -58,6 +58,8 @@ boolKeys: tuple[str, ...] = (
     'autoReview',
     'modelMemoryWrites',
     'memorySensitiveTopics',
+    'ramReview',
+    'ramTrajectoryExport',
     'subagentWorktreeIsolation',
     'cameraAccess',
     'consolidationModelSummarize',
@@ -290,6 +292,13 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # this is on; sensitive-topic facts additionally need memorySensitiveTopics.
     ('modelMemoryWrites', 'model_memory_writes', True, 'bool'),
     ('memorySensitiveTopics', 'memory_sensitive_topics', False, 'bool'),
+    # Meta-RAM: LOAD/OFFLOAD of the workspace topology ride memoryEnabled.
+    # These two are the opt-in halves: the automatic policy-review pass that
+    # files ram_policy proposals after offloads, and the JSONL trajectory
+    # exporter with trainable-token masking. Neither applies anything by
+    # itself — proposals still need human approval.
+    ('ramReview', 'ram_review', False, 'bool'),
+    ('ramTrajectoryExport', 'ram_trajectory_export', False, 'bool'),
     # Camera capture: the camera_snapshot / camera_list_devices tools are
     # gated behind this; when off the tools return a policy error. Frames
     # captured during a call are transient by default — never persisted to
@@ -356,10 +365,12 @@ fieldTable: tuple[tuple[str, str, object, str], ...] = (
     # see it happen and no setting having been chosen — is a destructive
     # default in a codebase whose rule is that anything which removes what
     # the user owns is opt-in (the OQ5 retirement pass is propose-only for
-    # the same reason). A budget that is OFF until someone sets it is a
-    # switch; a budget that starts curating is a decision the user never
-    # made. 0 also has to stay writable so an armed budget can be disarmed.
-    ('factBudget', 'fact_budget', 0, 'num'),
+    # the same reason). OWNER RULING, STOP 1B: the budget ships ARMED at 80 —
+    # an unattended store grows monotonically while the boot index silently
+    # pushes facts out of its window, and archiving (not deleting) the weakest
+    # tail with the Memory UI as the restore door is the curation the user
+    # asked for. 0 stays writable so an armed budget can be disarmed.
+    ('factBudget', 'fact_budget', 80, 'num'),
     # M-7 negative recall signal: a fact that is injected again and again
     # and never quoted is a stale-but-plausible entry holding rank. These
     # three are the penalty's constants — weight (how much one unused

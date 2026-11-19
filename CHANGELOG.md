@@ -1,5 +1,22 @@
 # August Proxy — Changelog
 
+## 2026-11-18 — 0.26.0 (monochrome shell, composer pill, receipt cards, local-model reliability)
+
+- **The desktop shell goes pure monochrome.** A `#0a0a0b` canvas, a `#111113`
+  collapsible sidebar, a `40px` header with inline title edit, the
+  `Threads | Bots & Runs` unification, a `/runs` ConfirmDialog lock fix, and a
+  `220px` Settings rail.
+- **The composer is a two-row `760px` pill.** `[+]`, `[Workspace ▾]`,
+  `[Access: … ▾]` and `[Model ▾]` on the top row; a standalone `[16k ▾]`
+  context pill (live `llama-server` context plus presets and a custom input)
+  and `[Send]/[Stop]` below — zero footer clutter.
+- **Streams and transcripts are overhauled.** Monochrome starter chips, an
+  inline wake-up brief, a folded single-line `ActivityGroup` pill over a
+  `#121215` vertical timeline inset, `[SUBAGENT_COMPLETE]`/`QUEUED`
+  suppression, dark monochrome toasts, and inline horizontal Receipt Cards
+  with working `Edit` and `Undo` state transitions.
+- **Local-model reliability and budget fixes.** `alias_mapping_service._has_credentials` allows keyless loopback providers (so local subagents no longer fall back), an output-token floor plus window-scaled tool-result caps, and compact skill projection for small local windows.
+
 ## 2026-11-13 — 0.25.0 (the brain record leaves SQLite; the shell goes quiet)
 
 - **The memory record is files.** `dataDir/memory/` — one markdown file per fact

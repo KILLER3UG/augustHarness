@@ -27,6 +27,17 @@ async def getWakeUpBrief(reason: str = Query('focus', max_length=40)):
     return await wake_up.brief(reason)
 
 
+@router.get('/model-info')
+async def getWakeUpModelInfo():
+    """Which model phrases the brief, and whether it stays on this machine.
+
+    Settings renders this next to the wake-up switches: a cerebellum role
+    pointing at a cloud gateway is labelled, and the titles-only option is
+    the escape hatch.
+    """
+    return wake_up.brief_model_info()
+
+
 @router.post('/dismiss')
 async def postWakeUpDismiss():
     """Record that the user dismissed the queued (quiet-mode) brief."""

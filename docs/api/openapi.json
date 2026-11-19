@@ -3021,6 +3021,25 @@
         "title": "SecurityBody",
         "type": "object"
       },
+      "ServerContextBody": {
+        "description": "One served model's new context length, in tokens.",
+        "properties": {
+          "ctxSize": {
+            "title": "Ctxsize",
+            "type": "integer"
+          },
+          "serverId": {
+            "title": "Serverid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverId",
+          "ctxSize"
+        ],
+        "title": "ServerContextBody",
+        "type": "object"
+      },
       "ServerStopBody": {
         "properties": {
           "serverId": {
@@ -4415,7 +4434,7 @@
   },
   "info": {
     "title": "August Harness",
-    "version": "0.25.0"
+    "version": "0.26.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7080,6 +7099,109 @@
           }
         },
         "summary": "Getmemorypreview",
+        "tags": [
+          "brain-config"
+        ]
+      }
+    },
+    "/api/brain/ram/review": {
+      "post": {
+        "description": "Run the 3-step topology review now and file its proposal (if any).\n\nExplicit human action — the ramReview toggle only governs the AUTOMATIC\npass after offloads. Nothing applies here; approval stays in the\nproposals queue.",
+        "operationId": "postRamReview_api_brain_ram_review_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Postramreview",
+        "tags": [
+          "brain-config"
+        ]
+      }
+    },
+    "/api/brain/ram/trajectories": {
+      "get": {
+        "description": "List exported trajectory files (opt-in exporter's output).",
+        "operationId": "getRamTrajectories_api_brain_ram_trajectories_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Getramtrajectories",
+        "tags": [
+          "brain-config"
+        ]
+      }
+    },
+    "/api/brain/ram/trajectories/{sessionId}": {
+      "get": {
+        "description": "Download one session's trajectory JSONL (masked, opt-in export).",
+        "operationId": "getRamTrajectory_api_brain_ram_trajectories__sessionId__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "title": "Sessionid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Getramtrajectory",
         "tags": [
           "brain-config"
         ]
@@ -11990,6 +12112,43 @@
           }
         },
         "summary": "Servers"
+      }
+    },
+    "/api/local-models/servers/context": {
+      "post": {
+        "description": "Change a served local model's context length (stop → relaunch with the\nnew ``--ctx-size``). Refuses while a generation is in flight; the row\nreturns as ``starting`` — poll GET /servers. If the model cannot load at\nthe new size, the runtime falls back once to the previous working length\nand says so on the realtime bus.",
+        "operationId": "server_context_api_local_models_servers_context_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServerContextBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Server Context"
       }
     },
     "/api/local-models/servers/stop": {
@@ -18661,6 +18820,26 @@
           }
         },
         "summary": "Postwakeupdismiss",
+        "tags": [
+          "wake-up"
+        ]
+      }
+    },
+    "/api/wake-up/model-info": {
+      "get": {
+        "description": "Which model phrases the brief, and whether it stays on this machine.\n\nSettings renders this next to the wake-up switches: a cerebellum role\npointing at a cloud gateway is labelled, and the titles-only option is\nthe escape hatch.",
+        "operationId": "getWakeUpModelInfo_api_wake_up_model_info_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Getwakeupmodelinfo",
         "tags": [
           "wake-up"
         ]

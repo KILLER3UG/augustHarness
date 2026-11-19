@@ -37,6 +37,7 @@ import {
 } from '@/api/api-client/docs-state';
 import { PageLoader } from '@/components/PageLoader';
 import { extractSection, splitMermaidSegments, stripDuplicateTitle } from '@/lib/docs-markdown';
+import { getCurrentWorkspace } from '@/store/workspaces';
 import { cn } from '@/lib/utils';
 
 const PROJECT_KEY = 'august.docsProject';
@@ -57,7 +58,9 @@ const STATUS_TONE: Record<string, string> = {
 
 export function DocsPage() {
   const [project, setProject] = useState<string>(
-    () => localStorage.getItem(PROJECT_KEY) || '',
+    // An explicit past choice wins; otherwise open on the bound workspace
+    // instead of an empty "enter a path" rail.
+    () => localStorage.getItem(PROJECT_KEY) || getCurrentWorkspace()?.path || '',
   );
   const [catalog, setCatalog] = useState<DocsCatalog | null>(null);
   const [loading, setLoading] = useState(false);

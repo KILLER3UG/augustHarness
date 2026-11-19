@@ -83,9 +83,6 @@ _SUBAGENT_NEVER_TOOLS = frozenset(
         # Same reason as `create_agent`, and these two were missing: the whole
         # agent-management surface lets a turn rewrite shared authority state.
         'update_agent', 'delete_agent',
-        # A subagent completing its parent's guided setup would close config
-        # state nobody walked through.
-        'install_complete',
         # Secret requests route to the user via the main turn's card; a
         # subagent's result transcript is not a place a secret form lives,
         # and durable secrets are the main model's door only.
@@ -401,6 +398,18 @@ def subagent_memory_block(session: object, goal: str, workspace: str | None) -> 
 
         resolved = scope_mod.resolve_scope(session)
         block, _rows = build_profile_memory_block(scope=resolved)
+        # Meta-RAM LOAD: the worker reads the same bounded workspace topology
+        # the parent sees. Read-only here — OFFLOAD stays in the parent's
+        # completion handler, so the single write door is unchanged.
+        if workspace:
+            try:
+                from app.services.workbench import ram
+
+                topo = ram.load_block(workspace, session, subagent=True)
+                if topo:
+                    block = f'{block}\n{topo}'.strip() if block else topo
+            except Exception:
+                logger.debug('subagent ram load failed', exc_info=True)
         return block
     except Exception:
         logger.debug('subagent memory build failed', exc_info=True)
@@ -415,6 +424,7 @@ async def executeSubAgent(
     emit: Callable[[dict[str, object]], None] | None = None,
     job_id: str | None = None,
     restricted_names: set[str] | None = None,
+    allowed_names: list[str] | None = None,
     yield_schema: dict[str, object] | None = None,
     effort: str = 'medium',
     model_override: str = '',
@@ -438,7 +448,10 @@ async def executeSubAgent(
     creating a second pending job. ``restricted_names`` filters the tool
     surface (both wire formats) for worker-launched sub-agents — callers must
     never mutate the module-level ``toolDefinitions``, which races across
-    concurrent workers. ``yield_schema`` (optional JSON Schema) makes the
+    concurrent workers. ``allowed_names`` is the spawn's explicit allow-list
+    (the ``tools`` field): the worker's resident set becomes exactly those
+    tools, further narrowed by every other filter below. ``yield_schema``
+    (optional JSON Schema) makes the
     agent return a single JSON object; the result is validated and returned
     as parsed JSON when it matches. ``effort`` maps to the reasoning/thinking
     budget (default 'medium'); ``model_override`` pins the model instead of
@@ -769,6 +782,56 @@ async def executeSubAgent(
         allowedNames = raw_allowed
         tools = [t for t in fullTools if _toolName(t) in allowedNames]
         openaiTools = [t for t in fullOpenaiTools if _toolName(t) in allowedNames]
+    # The spawn's explicit `tools` allow-list: the resident set becomes EXACTLY
+    # those tools (2–5 names per the schema guidance) — the orchestrator's
+    # focused-worker door. Unknown names are ignored; never-tools stay blocked
+    # because this only narrows what was already allowed.
+    if allowed_names:
+        explicit = {str(n).strip() for n in allowed_names if str(n).strip()}
+        if explicit:
+            allowedNames &= explicit
+            tools = [t for t in tools if _toolName(t) in allowedNames]
+            openaiTools = [t for t in openaiTools if _toolName(t) in allowedNames]
+    # Small local models give WORKERS the same bare discipline the main turn
+    # got (STOP 1C): the parent's surface may be the full catalog when the
+    # parent runs on a cloud model, while this worker resolved a small local
+    # one — its window cannot carry 137 tool schemas plus a 4k-token reply
+    # (the STOP 1B desktop fanout died exactly this way at 8k). The bare
+    # allowlist already keeps the disclosure bridges, so nothing behind the
+    # narrowing is unreachable; the dispatch guard enforces the same set
+    # through _workerDeniedNames below.
+    workerWindow = 0
+    workerLoopback = False
+    try:
+        from app.providers.api_format import is_loopback_base_url as _workerIsLoopback
+        from app.services.workbench.workbench import _resolveModelContextWindow as _workerCtxWindow
+
+        workerWindow = _workerCtxWindow(resolvedModel, provider)
+        workerLoopback = _workerIsLoopback(provider.get('baseUrl'))
+        if workerLoopback and 0 < workerWindow <= 16384:
+            from app.services.workbench.loop.surface import (
+                _bare_allowlist as _workerBareNames,
+            )
+            from app.services.workbench.loop.surface import (
+                _trim_tools_for_small_surface as _trimWorkerTools,
+            )
+
+            allowedNames &= set(_workerBareNames(workerWindow))
+            tools = _trimWorkerTools(
+                [t for t in tools if _toolName(t) in allowedNames]
+            )
+            openaiTools = _trimWorkerTools(
+                [t for t in openaiTools if _toolName(t) in allowedNames]
+            )
+    except Exception:
+        logger.debug('worker bare narrowing skipped', exc_info=True)
+    # The reply must fit beside the prompt inside the worker's n_ctx: a 4k
+    # output budget on an 8k window overflowed the context mid-generation
+    # (STOP 1B: both fanout workers died with "Context size has been
+    # exceeded"). Local workers cap the reply at a quarter of the window.
+    _workerOutputCeiling = (
+        max(1024, min(4096, workerWindow // 4)) if workerLoopback and workerWindow > 0 else 0
+    )
     # The worker's authority, once, as the names it may NOT execute.
     # The dispatch guard and the `tool_call` bridge both read this, because a name
     # removed from the surface was never refused at execution — `tool_call` takes
@@ -798,7 +861,14 @@ async def executeSubAgent(
             # copy into spawned tasks); a worker routed to a different model
             # inherits the parent's window, an accepted limit, not a read of
             # the shipped 24 KiB cap.
-            skills_max_bytes=sum(currentIndexBudget()[:2]),
+            # A small local worker cannot spend the parent's whole Tier-1
+            # envelope on a skills index it will mostly reach through the
+            # bridge — scale the slice to its window.
+            skills_max_bytes=(
+                min(sum(currentIndexBudget()[:2]), max(1024, workerWindow // 8))
+                if workerLoopback and workerWindow > 0
+                else sum(currentIndexBudget()[:2])
+            ),
         )
     except Exception:
         caps = ''
@@ -825,7 +895,14 @@ async def executeSubAgent(
         try:
             from app.services.skill_service import load_bodies
 
-            bodies = load_bodies(skill_names, workspace=_ws)
+            # Same rule as the main turn's load_skill: on a small local window
+            # a full body costs the 2–3 tool rounds the coding A/B died of —
+            # the compact projection fits and says so.
+            bodies = load_bodies(
+                skill_names,
+                workspace=_ws,
+                compact=bool(workerLoopback and 0 < workerWindow <= 16384),
+            )
             if bodies:
                 systemText += f'\n\n<preloaded_skills>\n{bodies}\n</preloaded_skills>'
         except Exception:
@@ -1020,14 +1097,16 @@ async def executeSubAgent(
                     if isAnthropic:
                         response = await asyncio.wait_for(
                             _callAnthropicWorkbench(
-                                messages, systemText, resolvedModel, tools, effort, provider=provider, emit=_subEmit
+                                messages, systemText, resolvedModel, tools, effort, provider=provider, emit=_subEmit,
+                                output_ceiling=_workerOutputCeiling,
                             ),
                             timeout=SUBAGENT_MODEL_TIMEOUT_S,
                         )
                     elif isOpenai:
                         response = await asyncio.wait_for(
                             _callOpenaiWorkbench(
-                                messages, systemText, resolvedModel, openaiTools, effort, provider=provider, emit=_subEmit
+                                messages, systemText, resolvedModel, openaiTools, effort, provider=provider, emit=_subEmit,
+                                output_ceiling=_workerOutputCeiling,
                             ),
                             timeout=SUBAGENT_MODEL_TIMEOUT_S,
                         )

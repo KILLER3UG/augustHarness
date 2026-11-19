@@ -186,8 +186,9 @@ _PROMPT_AGENT = frozenset({
             'list_workstreams', 'send_subagent_message', 'interrupt_subagent',
             # Bot tools: the orchestrator's own door to the roster.
             'create_bot', 'list_bots', 'update_bot', 'retire_bot',
-            # Bot Mode routines: Bot-owned scheduled jobs.
-            'create_routine', 'list_routines',
+            # Automations by chat: the agent creates and manages the one
+            # routines record (automations_store) itself.
+            'create_automation', 'update_automation', 'list_automations', 'delete_automation',
             # Bot Mode Phase C: the single agent-to-agent DM send path.
             'message_agent',
             # Durable agent board: shared work items across agents, jobs and windows.
@@ -250,13 +251,11 @@ _PLAN_BLOCKED_EXACT = frozenset({
     # (and its canonical chat) that outlives the turn, so plan mode must treat
     # them as mutations. list_bots is a read and stays readable.
     'create_bot', 'update_bot', 'retire_bot',
-    # Guided setup closes a bot's config state (create_agent precedent).
-    'install_complete',
     'update_alias', 'delete_alias', 'configure_fallback',
-    # Bot Mode routines — create/delete persists a scheduled job that fires
-    # later (create_agent precedent: persistent mutations are plan-blocked;
-    # delete_routine is also caught by the 'delete' marker below).
-    'create_routine',
+    # Automations by chat — create/update/delete persists a scheduled job
+    # that fires later (create_agent precedent: persistent mutations are
+    # plan-blocked; delete_automation is also caught by the 'delete' marker).
+    'create_automation', 'update_automation',
     # Integration tools (explicit list added in the security fix).
     'connect_github', 'connect_slack', 'connect_google', 'install_mcp_server',
     'disconnect_integration',

@@ -26,6 +26,24 @@ from app.services.workbench.effort import (
     resolve_completion_limits,
 )
 
+
+def _loopbackOutputFloor(provider: dict | None, has_tools: bool, max_tokens: int) -> int:
+    """Output floor for LOCAL models — a starved reply is a lie.
+
+    A local reasoning model spends the reply budget ON the reasoning; a
+    ceiling configured below the floor is a starvation knob, so the floor
+    wins in code. A turn that carries TOOLS needs headroom for the tool-call
+    JSON itself: the coding A/B watched stop_reason=length truncate tool
+    arguments mid-stream at the 1024 floor, so a tool-carrying request floors
+    at 4096.
+    """
+    from app.providers.api_format import is_loopback_base_url as _isLoopback
+
+    if not _isLoopback(provider.get('baseUrl') if provider else None):
+        return max_tokens
+    floor = 4096 if has_tools else 1024
+    return max(floor, int(max_tokens or 0))
+
 logger = logging.getLogger('workbench.providers')
 
 
@@ -610,6 +628,7 @@ async def call_anthropic_workbench(
     provider: dict[str, object] | None = None,
     emit: Callable[[dict[str, object]], None] | None = None,
     thinking_enabled: bool = True,
+    output_ceiling: int = 0,
 ) -> dict[str, object]:
     """Call an Anthropic-format model with progressive streaming.
 
@@ -657,6 +676,14 @@ async def call_anthropic_workbench(
         )
     else:
         thinking_budget, max_tokens = 0, model_out
+    # Output floor for LOCAL models — same rule as the OpenAI path: a local
+    # reasoning model that starves the reply ends thinking-only.
+    max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
+    # A caller-supplied ceiling (small-window workers) applies AFTER the floor:
+    # the reply must fit beside the prompt inside the model's n_ctx, or the
+    # stream dies mid-generation with "Context size has been exceeded".
+    if output_ceiling > 0:
+        max_tokens = min(max_tokens, output_ceiling)
     req = AnthropicRequest(model=model, max_tokens=max_tokens)
     body = buildAnthropicUpstreamRequest(req, model, [{'type': 'text', 'text': system_text}])
     body['messages'] = anthropicMessages
@@ -830,6 +857,7 @@ async def call_openai_workbench(
     provider: dict[str, object] | None = None,
     emit: Callable[[dict[str, object]], None] | None = None,
     thinking_enabled: bool = True,
+    output_ceiling: int = 0,
 ) -> dict[str, object]:
     """Call an OpenAI-format model with progressive streaming.
 
@@ -837,6 +865,7 @@ async def call_openai_workbench(
     tokens arrive. Returns the full aggregated response dict with
     ``choices`` (OpenAI format), ``text``, ``thinking``, and ``tool_uses``.
     """
+    from app.providers.api_format import is_loopback_base_url
     from app.providers.clients import getClient
 
     if not provider:
@@ -850,8 +879,6 @@ async def call_openai_workbench(
     if not apiKey:
         # A keyless loopback host (Ollama, LM Studio, a served GGUF) needs no
         # credential — the same rule that admits it everywhere else.
-        from app.providers.api_format import is_loopback_base_url
-
         if not is_loopback_base_url(client.resolveBaseUrl()):
             return {'error': 'API key not configured'}
         apiKey = ''
@@ -867,6 +894,15 @@ async def call_openai_workbench(
             _synthesized, _dropped,
         )
     openaiMessages = translateMessages(messages)
+    # Loopback: prior rounds' reasoning is dead weight on a small window and an
+    # invitation to re-think the same thoughts — the tool results are already
+    # in context. (The Anthropic path drops unsigned thinking on translate;
+    # loopback servers never sign, so nothing survives there to strip.)
+    if is_loopback_base_url(provider.get('baseUrl')):
+        for _msg in openaiMessages:
+            if isinstance(_msg, dict) and _msg.get('role') == 'assistant':
+                _msg.pop('reasoning_content', None)
+                _msg.pop('reasoning', None)
     openaiMessages.insert(0, {'role': 'system', 'content': system_text})
     from app.models.openai import dump_openai_upstream_body
 
@@ -879,6 +915,14 @@ async def call_openai_workbench(
         _budget, max_tokens = resolve_completion_limits(effort, max_output_tokens=model_out)
     else:
         max_tokens = model_out
+    # Output floor for LOCAL models: a small local reasoning model spends the
+    # reply budget ON the reasoning and ends the turn with empty content — the
+    # honest answer needs headroom. A configured ceiling below the floor on a
+    # loopback model is a starvation knob, so the floor wins in code.
+    max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
+    # Same caller ceiling as the Anthropic path — see the comment there.
+    if output_ceiling > 0:
+        max_tokens = min(max_tokens, output_ceiling)
     body['max_tokens'] = max_tokens
     if tools:
         body['tools'] = tools
@@ -1253,6 +1297,8 @@ async def call_responses_workbench(
         _budget, max_tokens = resolve_completion_limits(effort, max_output_tokens=model_out)
     else:
         max_tokens = model_out
+    # Output floor for LOCAL models — same rule as the chat paths.
+    max_tokens = _loopbackOutputFloor(provider, bool(tools), max_tokens)
     body['max_output_tokens'] = max_tokens
     respTools = _responses_tools(tools)
     if respTools:

@@ -7,7 +7,7 @@ import { Bot, CalendarClock, TerminalSquare } from 'lucide-react';
 import { SettingsTabs } from '@/components/settings/SettingsTabs';
 import { settingsTabPanelId } from '@/components/settings/settingsTabIds';
 import { Agents } from '@/sections/agents/Agents';
-import { Automations } from '@/sections/automations/Automations';
+import { AutomationsSection } from '@/sections/runs/AutomationsSection';
 import { Terminal } from '@/sections/terminal/Terminal';
 
 const TABS = [
@@ -67,7 +67,7 @@ export function AgentsAutomationSection() {
             aria-labelledby={`agents-automation-tab-${activeTab}`}
           >
             {activeTab === 'agents' && <Agents />}
-            {activeTab === 'automations' && <Automations />}
+            {activeTab === 'automations' && <AutomationsSection />}
             {activeTab === 'terminal' && <Terminal />}
           </div>
         </div>

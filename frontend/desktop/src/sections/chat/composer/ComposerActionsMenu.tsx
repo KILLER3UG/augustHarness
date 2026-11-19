@@ -18,7 +18,8 @@
 
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Paperclip, Mic, AtSign, Plus, Bot, Swords, Gavel, Camera, type LucideIcon } from 'lucide-react';
+import { Paperclip, AtSign, Plus, Bot, Swords, Gavel, Camera, type LucideIcon } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { ToolBtn } from '../ComposerControls';
 import type { AnchorPos } from './useComposerPopovers';
 
@@ -36,15 +37,16 @@ function MenuRow({
   testId?: string;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="bare"
       onClick={onClick}
       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground/90 transition hover:bg-muted/50"
       data-testid={testId}
     >
       <Icon className="size-3 shrink-0 text-muted-foreground" aria-hidden />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -68,7 +70,6 @@ export function ComposerActionsMenu({
   onToggle,
   onAttach,
   onMention,
-  onVoice,
   onCamera,
   onSpawn,
   onAskParallel,
@@ -81,7 +82,6 @@ export function ComposerActionsMenu({
   onToggle: () => void;
   onAttach: () => void;
   onMention: () => void;
-  onVoice: () => void;
   /** Open the camera capture popover (browser webcam). */
   onCamera?: () => void;
   /** Open the sub-agent spawn launcher (bound to the active session). */
@@ -97,9 +97,10 @@ export function ComposerActionsMenu({
       <ToolBtn
         Icon={Plus}
         label="Composer actions"
-        className="h-8 w-8 rounded-full"
+        className="h-7 w-7 rounded-full"
         buttonRef={triggerRef}
         onClick={onToggle}
+        triggerAttr
       />
       {open &&
         pos &&
@@ -119,7 +120,6 @@ export function ComposerActionsMenu({
               <MenuRow icon={AtSign} label="Mention skill / tool" onClick={onMention} />
             </MenuGroup>
             <MenuGroup label="Input">
-              <MenuRow icon={Mic} label="Voice input" onClick={onVoice} />
               {onCamera && (
                 <MenuRow
                   icon={Camera}

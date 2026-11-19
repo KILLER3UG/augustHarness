@@ -567,13 +567,31 @@ class BaseProviderClient:
     def _touchLocalRuntime(self, url: str) -> None:
         """A request to a loopback llama-server is a USE of the kept-warm
         local model — the idle release measures from the last real use, so
-        an actively-chatted local model is never released mid-conversation."""
+        an actively-chatted local model is never released mid-conversation.
+        The request also marks the server BUSY for the release pass: a
+        generation in flight must never be killed to free memory."""
         try:
             if '127.0.0.1:' not in url and 'localhost:' not in url:
                 return
             from app.services import llama_runtime
 
             llama_runtime.touch_loopback_base_url(url)
+            port = llama_runtime.port_from_base_url(url)
+            if port:
+                llama_runtime.mark_server_busy(port)
+        except Exception:  # noqa: BLE001 — telemetry must never break a call
+            pass
+
+    def _releaseLocalRuntime(self, url: str) -> None:
+        """The request finished: the server may be released again."""
+        try:
+            if '127.0.0.1:' not in url and 'localhost:' not in url:
+                return
+            from app.services import llama_runtime
+
+            port = llama_runtime.port_from_base_url(url)
+            if port:
+                llama_runtime.release_server_busy(port)
         except Exception:  # noqa: BLE001 — telemetry must never break a call
             pass
 
@@ -590,6 +608,17 @@ class BaseProviderClient:
         - Read/write timeouts and protocol errors MAY have been processed
           (and billed) upstream — surfaced immediately, never replayed.
         """
+        self._touchLocalRuntime(url)
+        try:
+            return await self._requestJsonRetried(method, url, headers, body)
+        finally:
+            self._releaseLocalRuntime(url)
+
+    async def _requestJsonRetried(
+        self, method: str, url: str, headers: dict[str, str], body: dict[str, object] | None = None
+    ) -> ProviderResponse:
+        """The retry loop of :meth:`requestJson` — the busy mark released by the
+        caller's ``finally`` covers this whole attempt sequence."""
         # Local import: httpx costs ~170 ms at module import and the except
         # clauses below need it bound at runtime (a TYPE_CHECKING import is
         # invisible here — relying on it raised NameError on the first
@@ -598,7 +627,6 @@ class BaseProviderClient:
 
         from app.providers.clients.rate_gate import hostOfUrl, rateGate
 
-        self._touchLocalRuntime(url)
         host = hostOfUrl(url)
         for attempt in range(self.maxRetries + 1):
             try:
@@ -688,11 +716,22 @@ class BaseProviderClient:
         instead of replaying the whole request (which would pay for the
         same completion twice).
         """
+        self._touchLocalRuntime(url)
+        try:
+            async for event in self._streamSseInner(url, headers, body):
+                yield event
+        finally:
+            self._releaseLocalRuntime(url)
+
+    async def _streamSseInner(
+        self, url: str, headers: dict[str, str], body: dict[str, object]
+    ) -> AsyncIterator[dict[str, object]]:
+        """The SSE loop of :meth:`streamSse` — the busy mark released by the
+        wrapper's ``finally`` covers the whole stream, however long it runs."""
         import httpx
 
         from app.providers.clients.rate_gate import hostOfUrl, rateGate
 
-        self._touchLocalRuntime(url)
         host = hostOfUrl(url)
         lastExc: Exception | None = None
         emittedAny = False

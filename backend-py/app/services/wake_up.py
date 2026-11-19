@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from app.json_narrowing import as_bool, as_dict, as_int, as_str
@@ -79,6 +80,11 @@ def get_wake_up_config() -> dict[str, object]:
             _MIN_WARM_IDLE_MINUTES,
             min(_MAX_WARM_IDLE_MINUTES, as_int(user.get('warmIdleMinutes'), _DEFAULT_WARM_IDLE_MINUTES)),
         ),
+        # Titles only: skip the model entirely — the digest (session titles +
+        # automation names) IS the brief. The honest zero-cost option, and the
+        # one a cloud-averse user wants when the cerebellum role points away
+        # from a local model.
+        'titlesOnly': as_bool(user.get('titlesOnly'), False),
     }
 
 
@@ -86,7 +92,14 @@ def set_wake_up_config(patch: dict[str, object]) -> tuple[bool, str, dict[str, o
     """Validate and apply a partial wake-up config patch."""
     current = get_wake_up_config()
     for field, value in patch.items():
-        if field not in ('enabled', 'quiet', 'cooldownMinutes', 'warmModel', 'warmIdleMinutes'):
+        if field not in (
+            'enabled',
+            'quiet',
+            'cooldownMinutes',
+            'warmModel',
+            'warmIdleMinutes',
+            'titlesOnly',
+        ):
             return (False, f'unknown field: {field!r}', current)
         if field == 'cooldownMinutes':
             if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -170,7 +183,32 @@ def _gather_facts() -> dict[str, object]:
             )
             if len(jobs) >= MAX_JOBS_IN_BRIEF:
                 break
-    return {'recentSessions': sessions, 'automations': jobs}
+
+    # The CURRENT local-model state, read live (owner ruling, STOP 1B): the
+    # composing model once inferred a context length from a session TITLE and
+    # stated it as fact. The truth goes in as its own field so the brief never
+    # has to guess.
+    localModel: dict[str, object] = {}
+    with best_effort('wake-up.local-model-facts'):
+        from app.services import llama_runtime
+
+        rows = llama_runtime.list_servers().get('servers', [])
+        ready = next((r for r in rows if str(r.get('status', '')) == 'ready'), None)
+        if ready is not None:
+            localModel = {
+                'name': as_str(ready.get('name'), 'local model'),
+                'contextTokens': as_int(ready.get('ctxSize'), 0),
+                'state': 'serving',
+            }
+        else:
+            warm = llama_runtime._load_warm()
+            if warm.get('ggufPath'):
+                localModel = {
+                    'name': Path(str(warm.get('ggufPath'))).stem,
+                    'contextTokens': as_int(warm.get('ctxSize'), 0),
+                    'state': 'not loaded — it reloads on the first message',
+                }
+    return {'recentSessions': sessions, 'automations': jobs, 'localModel': localModel}
 
 
 def _fallback_brief(facts: dict[str, object]) -> str:
@@ -184,6 +222,11 @@ def _fallback_brief(facts: dict[str, object]) -> str:
     if jobs:
         names = ', '.join(as_str(j.get('name')) for j in jobs[:3])
         lines.append(f'Background automations: {names}.')
+    local = as_dict(facts.get('localModel'))
+    if local:
+        ctx = as_int(local.get('contextTokens'), 0)
+        ctxText = f' · {ctx // 1024}k context' if ctx >= 1024 else ''
+        lines.append(f"Local model: {as_str(local.get('name'), 'local model')}{ctxText} — {as_str(local.get('state'), 'unknown')}.")
     lines.append('What would you like to pick up first?')
     return '\n'.join(lines)
 
@@ -195,14 +238,49 @@ def as_list_of_dicts(value: object) -> list[dict[str, object]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def brief_model_info() -> dict[str, object]:
+    """Which model phrases the brief, and whether it stays on this machine.
+
+    The Settings surface and the brief receipt both render this, so a user
+    whose cerebellum role points at a cloud gateway is TOLD, not surprised.
+    """
+    with best_effort('wake-up.model-info'):
+        from app.services.workbench.model_fleet import resolveRoleModel
+
+        model, provider_hint = resolveRoleModel('cerebellum')
+        if not model:
+            return {'model': '', 'provider': '', 'local': True, 'configured': False}
+        from app.services.workbench.loop.surface import provider_row_by_name
+
+        row = provider_row_by_name(provider_hint or model)
+        base = as_str(row.get('baseUrl'), '').lower()
+        local = (
+            as_str(row.get('id'), '') == 'local-models'
+            or '127.0.0.1' in base
+            or 'localhost' in base
+        )
+        return {
+            'model': model,
+            'provider': provider_hint,
+            'local': local,
+            'configured': True,
+        }
+    return {'model': '', 'provider': '', 'local': True, 'configured': False}
+
+
 async def _compose(facts: dict[str, object]) -> str:
     """Model-phrased brief from the fact digest; falls back to the digest."""
+    if get_wake_up_config().get('titlesOnly'):
+        return ''
     prompt = (
         'The user just returned to their desk. Write their wake-up brief: '
         '2-4 short lines covering where things left off (recent sessions) and '
         'any open background automations, ending with ONE concrete question to '
         're-engage. Use only the facts below — do not invent work, deadlines, '
-        'or results. No pleasantries beyond "Welcome back.".\n\nFacts:\n'
+        'or results. No pleasantries beyond "Welcome back.". The localModel '
+        'field is the CURRENT state of the served local model: state its '
+        'context length only from that field — session titles are history, '
+        'not the current configuration.\n\nFacts:\n'
         + json.dumps(facts, ensure_ascii=False)
     )
     with best_effort('wake-up.model-compose'):
@@ -267,8 +345,8 @@ async def brief(reason: str) -> dict[str, Any]:
     # gather, so a local cerebellum answers warm instead of cold. Remote
     # roles have nothing to preload and this returns immediately; if the
     # load outlives the wait the brief composes anyway (honestly, from the
-    # facts) rather than blocking the wake path.
-    if cfg.get('warmModel'):
+    # facts) rather than blocking the wake path. Titles-only needs no model.
+    if cfg.get('warmModel') and not cfg.get('titlesOnly'):
         try:
             import asyncio
 
@@ -282,7 +360,7 @@ async def brief(reason: str) -> dict[str, Any]:
             logger.debug('warm preload could not start', exc_info=True)
 
     facts = _gather_facts()
-    text = await _compose(facts)
+    text = (await _compose(facts)) or _fallback_brief(facts)
 
     state['lastBriefAt'] = now
     state['lastBriefReason'] = as_str(reason, 'unknown')[:40]
@@ -295,9 +373,13 @@ async def brief(reason: str) -> dict[str, Any]:
         'shouldBrief': True,
         'reason': as_str(reason, 'unknown'),
         'quiet': cfg['quiet'],
+        'titlesOnly': bool(cfg.get('titlesOnly')),
         'text': text,
         'recentSessions': sessions[:3],
         'automations': as_list_of_dicts(facts.get('automations')),
+        # Where the brief was phrased — the receipt says so the user never has
+        # to wonder whether their return moment left the machine.
+        'modelInfo': brief_model_info(),
     }
 
 
@@ -327,6 +409,15 @@ async def warm_loop() -> None:
     import asyncio
 
     while True:
+        try:
+            # Crash pass first: a mid-run crash must be marked failed (never a
+            # stale 'ready' row) and restarted once before the release pass
+            # decides what to free.
+            from app.services.llama_runtime import reconcile_servers
+
+            await reconcile_servers()
+        except Exception:  # noqa: BLE001 — a maintenance pass must never kill the loop
+            logger.debug('warm reconcile pass failed', exc_info=True)
         try:
             cfg = get_wake_up_config()
             if cfg.get('warmModel'):

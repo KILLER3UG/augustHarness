@@ -86,6 +86,12 @@ module.exports = {
         scrim: 'var(--dt-overlay-scrim)',
         wash: 'var(--dt-wash)',
         'hairline-strong': 'var(--dt-hairline-strong)',
+        // Redesign surface tokens (RGB triplets so `/NN` alpha modifiers work too).
+        elevated: 'rgb(var(--dt-elevated-rgb) / <alpha-value>)',
+        pill: 'rgb(var(--dt-pill-bg-rgb) / <alpha-value>)',
+        'stop-bg': 'rgb(var(--dt-stop-bg-rgb) / <alpha-value>)',
+        'timeline-inset': 'rgb(var(--dt-timeline-inset-rgb) / <alpha-value>)',
+        'receipt-bg': 'rgb(var(--dt-receipt-bg-rgb) / <alpha-value>)',
         // Status colors: RGB triplets, so every alpha modifier works
         // natively (bg-success/15, border-danger/30, text-warning-fg, …).
         // The -fg variants are the contrast-tuned TEXT colors per theme
@@ -166,12 +172,10 @@ module.exports = {
         // `<Surface elev="raised">` are the same shadow by construction.
         overlay: 'var(--elev-overlay)',
         soft: 'var(--elev-raised)',
-        // `ring` is the FOCUS ring (4px brand-tinted halo), not a surface
+        // `ring` is the FOCUS ring (4px monochrome halo), not a surface
         // elevation — it is a different vocabulary from --elev-ring, which
-        // is the 1px border-coloured edge. The halo is the ACCENT's hue at
-        // low alpha (terracotta since the reference retune — the old blue
-        // halo read as a colour from outside the palette).
-        ring:    '0 0 0 4px rgb(217 119 87 / 0.20)',
+        // is the 1px border-coloured edge.
+        ring:    '0 0 0 4px rgb(var(--dt-ring-rgb) / 0.16)',
         // `xs` is the hairline step used by the composer attachment chips;
         // it predates the four-rung ladder and stays on the Tailwind side
         // rather than becoming a fifth rung for two call sites.

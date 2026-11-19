@@ -582,7 +582,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, asText = false): Promise<T> {
   await ensureReady();
   const url = baseUrl ? `${baseUrl}${path}` : path;
   const token = await localToken();
@@ -626,6 +626,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, code, message);
   }
   if (res.status === 204) return undefined as T;
+  if (asText) return res.text() as Promise<T>;
   return res.json() as Promise<T>;
 }
 
@@ -653,6 +654,9 @@ async function requestRaw<T>(path: string, body: BodyInit, init?: RequestInit): 
 
 export const api = {
   get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
+  /** Same transport, text body — for file downloads (JSONL/NDJSON) that are
+   *  not JSON documents but still need the base URL, token and error shape. */
+  getText: (path: string, init?: RequestInit) => request<string>(path, init, true),
   post: <T>(path: string, body?: unknown, headers?: Record<string, string>, init?: RequestInit) =>
     request<T>(path, {
       method: 'POST',

@@ -292,14 +292,24 @@ _RETIRE_WINDOWS: dict[str, str] = {
 # already sit in a user's inbox from an earlier release.
 _RETIRE_TYPES = ('retire-fact', 'retire-preference')
 
+# Owner ruling, STOP 1B: the store budget ships ARMED. 80 active facts keeps
+# the ≤40-fact boot-index page well populated while the weakest tail archives
+# instead of silently falling out of the index window. 0 still disarms.
+_FACT_BUDGET_DEFAULT = 80
+
 
 def _enforce_fact_budget() -> tuple[int, list[str]]:
     """M-9 store budget: curate the active-fact store back under its ceiling.
 
-    The ceiling is the brain key ``factBudget`` (0 = no budget, which is the
-    shipped default — see the fieldTable entry for why the budget does not
-    start armed). When the store holds more active facts than the budget
-    allows, the WEAKEST ones are archived until it fits.
+    The ceiling is the brain key ``factBudget``. DEFAULT NOW ARMED at 80
+    (owner ruling, STOP 1B): an unattended store grows monotonically while
+    the 2400-char boot index silently pushes facts out of the index window,
+    so the budget keeps the index the primary door in practice. 80 leaves
+    the index's ≤40-fact page comfortably populated while archiving only
+    the weakest tail. Setting ``factBudget: 0`` still disarms it.
+
+    When the store holds more active facts than the budget allows, the
+    WEAKEST ones are archived until it fits.
 
     "Weakest" is ``confidence · decay · use``: a low-confidence fact, one
     nobody has quoted, and one nobody has touched for a while goes first.
@@ -309,18 +319,16 @@ def _enforce_fact_budget() -> tuple[int, list[str]]:
     user.
 
     Archiving is not deleting: the row stays, ``status='archived'`` takes it
-    out of recall, and the Memory UI can put it back. This pass is the only
-    automatic curation in the store, which is why it is off until someone
-    asks for it.
+    out of recall, and the Memory UI can put it back.
     """
     notes: list[str] = []
     try:
         from app.services.brain_config_service import getRuntimeConfig
 
-        raw = getRuntimeConfig().get('factBudget', 0)
+        raw = getRuntimeConfig().get('factBudget', _FACT_BUDGET_DEFAULT)
         budget = int(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0
     except Exception:
-        budget = 0
+        budget = _FACT_BUDGET_DEFAULT
     if budget <= 0:
         return 0, notes
     try:

@@ -197,6 +197,25 @@ def undo_entry(entry_id: str) -> dict[str, object]:
             cfg['customAgents'] = custom
             saveConfig(cfg)
             message = f'Restored agent {target}' if before is not None else f'Removed created agent {target}'
+        elif rtype == 'restore_ram_topology':
+            before = as_dict(entry.get('before'))
+            from app.services.workbench import ram as _ram
+
+            workspace = as_str(before.get('workspace')) or as_str(entry.get('target'))
+            root = _ram.topology_dir(workspace)
+            if root is None:
+                raise ValueError('Missing workspace on RAM topology rollback entry')
+            root_resolved = root.resolve()
+            for rel, prior in as_dict(before.get('files')).items():
+                ram_target = (root / as_str(rel)).resolve()
+                if not ram_target.is_relative_to(root_resolved):
+                    raise ValueError(f'Rollback path escapes the topology dir: {rel}')
+                if prior is None:
+                    ram_target.unlink(missing_ok=True)
+                else:
+                    ram_target.parent.mkdir(parents=True, exist_ok=True)
+                    ram_target.write_text(as_str(prior), encoding='utf-8')
+            message = f'Restored RAM topology for {workspace}'
         elif rtype == 'restore_memory_item':
             from app.services import memory_store
 

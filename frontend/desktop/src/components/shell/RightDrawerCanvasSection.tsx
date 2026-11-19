@@ -262,9 +262,9 @@ export function RightDrawerCanvasSection({ sessionId }: { sessionId: string | nu
           variant="bare"
           type="button"
           className="solid-button"
-          onClick={() => void navigate('/charts')}
+          onClick={() => void navigate('/artifacts')}
         >
-          Open in Charts
+          Open in Artifacts
           <SignalIcon name="chev-right" />
         </Button>
       </div>

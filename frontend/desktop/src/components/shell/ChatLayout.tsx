@@ -11,7 +11,7 @@ import { MOBILE_QUERY, useMediaQuery } from '@/hooks/useMediaQuery';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSessionsStore, createSession, getOrCreateEmptySession, createEmptySessionInFolder, defaultSessionTitle, updateSessionWorkbenchMetadata, reconcileSessionsFromBackend, healDuplicateSessions, toggleFolderCollapse, ensureFolderForWorkspacePath, resolveActiveSession } from "@/store/sessions";
+import { useSessionsStore, createSession, createEmptySession, defaultSessionTitle, updateSessionWorkbenchMetadata, reconcileSessionsFromBackend, healDuplicateSessions, ensureFolderForWorkspacePath, resolveActiveSession } from "@/store/sessions";
 import { startRealtimeBridge } from "@/realtime/bridge";
 import { addWorkspace, useWorkspacesStore } from "@/store/workspaces";
 import { CHAT_SURFACE_ROUTES, SettingsPageRoute } from "@/routes";
@@ -41,8 +41,6 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SignalSprite } from "@/components/ui/SignalIcon";
 import { folderNameFromPath } from '@/api/folder';
 import { routeLabelFor } from '@/lib/route-labels';
-import { useWakeUpBrief } from '@/lib/useWakeUpBrief';
-import { WakeUpBriefCard } from '@/components/shell/WakeUpBriefCard';
 
 const SESSIONS_COLLAPSED_KEY = "august-sessions-collapsed";
 
@@ -58,7 +56,6 @@ export function ChatLayout() {
   // Never restore an empty open drawer from localStorage — sections are not
   // persisted, so a stale "open" flag left the Workbench shell blank.
   const [showRightSidebar, setShowRightSidebar] = useState(false);
-  const { brief: wakeUpBrief, dismiss: dismissWakeUpBrief } = useWakeUpBrief();
   const sessions = useSessionsStore((s) => s.sessions);
   const rightDrawer = useRightDrawer();
   const queryClient = useQueryClient();
@@ -361,67 +358,11 @@ export function ChatLayout() {
     }
   }, [location.pathname, sessionId, sessions, navigate, currentWorkspacePath]);
 
-  const handleNewSession = (folderId?: string | null) => {
-    // No "are you sure?" here, on purpose. This used to confirm on two
-    // conditions, and neither one had a consequence:
-    //   • a live run — the dialog's own words said "It continues in the
-    //     background until you stop it", so it was asking permission for
-    //     something that interrupts nothing;
-    //   • an unsent draft — the draft is keyed per session in localStorage
-    //     (message-storage.ts) and ChatThread re-reads it on session change,
-    //     so starting a new chat discards nothing and returning restores it.
-    // A confirm that protects nothing is not a safety net, it is a tax on the
-    // most common action in the app.
-    const folders = useSessionsStore.getState().folders;
-
-    // Explicit "Tasks" target — the "+" on the Tasks header passes null on
-    // purpose. Bypass the workspace divert below so the new chat stays
-    // uncategorized instead of landing in a Projects folder, and bind it to
-    // nothing — a task chat has no directory until the user picks one.
-    if (folderId === null) {
-      const newSess = getOrCreateEmptySession(null, defaultSessionTitle(), null);
-      void navigate(`/c/${newSess.id}`);
-      return;
-    }
-
-    // Codex-style: "+" on a project folder → new thread in that folder/workspace.
-    if (folderId) {
-      const folder = folders.find((f) => f.id === folderId);
-      const newSess = createEmptySessionInFolder(folderId, defaultSessionTitle());
-      if (folder?.workspacePath) {
-        addWorkspace(folder.workspacePath);
-      }
-      if (folder?.isCollapsed) {
-        toggleFolderCollapse(folderId);
-      }
-      void navigate(`/c/${newSess.id}`);
-      return;
-    }
-
-    // Top-level "New chat": stay in the active project folder when possible.
-    // Resolve by folderId first, then by workspace path so chats do not land
-    // in "Tasks" while Projects folders keep growing.
-    const activeFolderId = active?.folderId ?? null;
-    const activeFolder = activeFolderId
-      ? folders.find((f) => f.id === activeFolderId)
-      : null;
-
-    const projectPath =
-      activeFolder?.workspacePath ??
-      active?.workspacePath ??
-      currentWorkspacePath ??
-      null;
-
-    let targetFolderId: string | null = activeFolder?.workspacePath ? activeFolderId : null;
-    if (!targetFolderId && projectPath) {
-      targetFolderId = ensureFolderForWorkspacePath(projectPath).folder.id;
-    }
-
-    // No project in play → the chat lands in "Tasks" and binds no directory at
-    // all. It reads anywhere on the machine and writes to temp until the user
-    // opens a folder.
-    const newSess = getOrCreateEmptySession(
-      targetFolderId,
+  const handleNewSession = () => {
+    // Always create a brand-new empty thread; never resume an existing one.
+    const projectPath = active?.workspacePath ?? currentWorkspacePath ?? null;
+    const newSess = createEmptySession(
+      null,
       defaultSessionTitle(),
       projectPath,
     );
@@ -547,7 +488,6 @@ export function ChatLayout() {
     const path = location.pathname;
     const lowered = path.toLowerCase();
     if (lowered.startsWith('/settings')) return 'Workspace / preferences';
-    if (lowered === '/charts') return 'Output / data';
     if (lowered === '/artifacts') return 'Library / everything';
     if (path === '/' || lowered.startsWith('/c/')) {
       const ws = active?.workspacePath;
@@ -589,9 +529,6 @@ export function ChatLayout() {
           onNew={() => {
             void handleNewSession();
           }}
-          onNewInFolder={(folderId) => {
-            void handleNewSession(folderId);
-          }}
           onNavigate={(path) => {
             void navigate(path.startsWith("/") ? path : `/${path}`);
           }}
@@ -615,12 +552,6 @@ export function ChatLayout() {
               rightDrawerOpen={showRightSidebar}
               onToggleSidebar={() => setCollapsed((c) => !c)}
               workersBadge={workersBadge}
-            />
-          )}
-          {wakeUpBrief && (
-            <WakeUpBriefCard
-              brief={wakeUpBrief}
-              onDismiss={() => void dismissWakeUpBrief()}
             />
           )}
           <div className="august-content-area workspace-body">

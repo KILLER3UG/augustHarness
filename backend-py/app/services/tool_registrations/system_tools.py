@@ -501,21 +501,19 @@ def register() -> None:
     # names no schema ever advertised — only text-protocol models could find
     # them, and the drawer's todo list was effectively main-agent-only by
     # accident).
-    tool_registry.register(
-        'submit_todos',
-        'Create or replace the todo checklist for the current task. Use for multi-step work: '
-        'one item per step, exactly one in_progress. The list renders in the Tasks panel and '
-        'survives compaction. Update it with update_todos as steps finish.',
-        _submitTodosFallback,
-        _TODOS_SCHEMA,
-    )
+    # STOP 1B merge: submit_todos and update_todos were two names for one
+    # behavior (the same _TODOS_SCHEMA, the same routeTodos dispatch). One
+    # advertised name remains; the old name stays dispatchable as an alias.
     tool_registry.register(
         'update_todos',
-        'Update the todo checklist statuses as work progresses (same shape as submit_todos; '
-        'replaces the list). Mark a step completed the moment it is verified done, never in advance.',
+        'Create or replace the todo checklist for the current task and update its statuses as '
+        'work progresses. Use for multi-step work: one item per step, exactly one in_progress. '
+        'The list renders in the Tasks panel and survives compaction. Mark a step completed the '
+        'moment it is verified done, never in advance.',
         _updateTodosFallback,
         _TODOS_SCHEMA,
     )
+    tool_registry.register_alias('submit_todos', 'update_todos')
     # Part 27 T3 + clarify: submit_clarify was intercepted by the turn loop but
     # never registered, so native tool-calling models never saw it (only
     # text-protocol models discovered it). Registering it makes it visible and

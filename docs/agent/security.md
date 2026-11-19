@@ -53,8 +53,8 @@ model is talking could pass `agentId` plus `permissions: ['all']` for any agent
 — measured before the fix: a turn holding `['read_file']` wrote itself `['all']`,
 rewrote an unrelated agent's permissions *and* model routing, and deleted both
 that stranger and its own root. Guard modes do not cover this:
-`needs_approval_in` returns False for `full`, and **every Bot DM and room session
-is created with `guardMode='full'`** (`rooms.py`), and no session is even
+`needs_approval_in` returns False for `full`, and **every Bot DM session is
+created with `guardMode='full'`**, and no session is even
 required. So `_authority_refusal` rejects `permissions` / `tools` /
 `modelAlias` at the handler (they are gone from the advertised schemas too — a
 knob that always refuses is a lie), the descriptive fields stay writable, and

@@ -64,10 +64,12 @@ an apology. The rung (trigger: `stop_reason` is `max_tokens`/`length`, or more
 than 2000 thinking chars) appends the assistant row, adds a
 `[Proxy Self-Heal]` nudge to reply in text from what it already has, emits
 `recovery {kind: 'thinking-only', outcome: 'retrying'}` and continues. It fires
-once per turn (`_thinkingOnlyRescueFired`), consumes a normal round, and does not
-strip tools — a model that answers with a new tool call is still working. When
-the second round also ends thinking-only, the old notice is emitted, because
-only then is "it stopped" the truth. The reason vocabulary is unchanged: a turn
+once per turn on a cloud model, twice on a loopback one
+(`_thinkingOnlyRescueFired` against `_thinkingOnlyRescueBudget` — a local
+reasoning model re-thinks cheaply between rounds), consumes a normal round, and
+does not strip tools — a model that answers with a new tool call is still
+working. When the budget is spent and the round still ends thinking-only, the
+old notice is emitted, because only then is "it stopped" the truth. The reason vocabulary is unchanged: a turn
 the rescue completes ends `finished`.
 
 ## Two bounds are armed by default
@@ -270,15 +272,16 @@ can be checked off by hand.
 command, and the user's git hooks run (a hook failure records nothing). It
 commits on the checkout the chat is already in; it does not create a worktree.
 
-## Bot-to-Bot work
+## Orchestrator-to-Bot work
 
-**Bot-to-Bot work needs its own ceiling, because every loop guard is per-turn.**
-`message_agent` runs one headless turn in the recipient's chat and its reply
-wakes the sender, so a hop is a *fresh turn in a different session*: the stall
-counter and the runaway backstop (which count one turn's world delta) cannot see
-a chain, `has_inflight` bounds one (from→to) pair, and `rooms.MAX_ROUNDS` bounds
-one user send. An A→B→C→A cycle is none of those, and every turn in it ends
-`finished`.
+**Delegated Bot work needs its own ceiling, because every loop guard is
+per-turn.** Messaging is ORCHESTRATOR-TO-BOT (owner decision): only the main
+chat's `message_agent` can send; a Bot cannot message anyone, so there is no
+A→B→C chain. `message_agent` still runs one headless turn in the recipient's
+chat and its reply wakes the sender, so a hop is a *fresh turn in a different
+session*: the stall counter and the runaway backstop (which count one turn's
+world delta) cannot see the sequence, `has_inflight` bounds one (from→to)
+pair, and the composer's own send path bounds one user send.
 
 `bot_mode/dm.py _unattendedRun` therefore counts what a chain actually does to a
 chat — the trailing run of Bot-authored user rows since the last human one —

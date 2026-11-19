@@ -69,7 +69,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.json_narrowing import as_dict, as_int
+from app.json_narrowing import as_bool, as_dict, as_int
 
 logger = logging.getLogger(__name__)
 
@@ -193,8 +193,22 @@ def resolve_fanout_limits(
     """One call, all three bounds — spawn tool and orchestrator cannot disagree."""
     source = _delegation_source(delegation, session)
     requested = _clamped(source, 'maxConcurrent', SUBAGENT_CONCURRENCY_DEFAULT, 10**6)
+    concurrency = min(SUBAGENT_CONCURRENCY_CEILING, requested)
+    # llama-server's unified KV is ONE pool shared by every slot: a parent at
+    # 10k plus two workers at 3k each exhausts a "16k" server and ALL of them
+    # error, workers included. On a small loopback window the pool cannot hold
+    # two conversations plus the parent's reply budget, so lanes run one at a
+    # time there. Measured 2026-11-19: 10048+3190+3148 = 16386 > 16384.
+    try:
+        from app.services.workbench.loop.surface import _modelCapabilityProfile
+
+        profile = _modelCapabilityProfile(session)  # type: ignore[arg-type]
+        if as_bool(profile.get('loopback'), False) and 0 < as_int(profile.get('context_window'), 0) <= 16384:
+            concurrency = 1
+    except Exception:
+        logger.debug('small-window concurrency check failed', exc_info=True)
     return FanoutLimits(
-        concurrency=min(SUBAGENT_CONCURRENCY_CEILING, requested),
+        concurrency=concurrency,
         max_children_per_fanout=_clamped(
             source, 'maxChildrenPerTurn', MAX_CHILDREN_PER_FANOUT_DEFAULT, MAX_CHILDREN_PER_FANOUT_CEILING
         ),

@@ -67,6 +67,7 @@ import { toast } from 'sonner';
 import { useArenaStore } from './arena/arena-store';
 import { isDebateSession, debateTurnDone } from './debate/debate-store';
 import { makeSubagentEventHandlers } from './stream/apply-subagent-event';
+import { parseSubagentReceipt } from './subagent-receipt';
 
 export interface MakeStreamHandlersOptions {
   sessionId: string;
@@ -180,6 +181,11 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
   let toolResults: NonNullable<ChatMessage['tools']> = [];
   const pendingConfirmations = new Map<string, { message?: string; detail?: string; confirmationToken?: string }>();
   let streamBlocks: MessageBlock[] = [];
+  // The live "Running N sub-agents" line: one block per dispatch, replaced by
+  // the close receipt the moment the dispatch ends or is refused — a finished
+  // fanout must not keep a running claim on the transcript (the close used to
+  // append below it and both lines stayed).
+  const FANOUT_RUNNING_BLOCK_ID = 'fanout-running';
   let changedFiles: GitDiffResult | null = null;
   let turnUsage: WorkbenchTurnUsage | undefined;
   let turnFallback: string | undefined;
@@ -1035,6 +1041,9 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       if (!data?.messageId || !data?.sessionId) return;
       const queueUiId = resolveUiSessionId(data.sessionId);
       removeQueuedMessage(queueUiId, data.messageId);
+      // Backend emits [SUBAGENT_COMPLETE …] receipts as user-injected turns so the
+      // coordinator LLM resumes with results; never surface them as chat bubbles.
+      if (parseSubagentReceipt(data.text ?? '')) return;
       const injected: ChatMessage = {
         id: `qm-${data.messageId}`,
         role: 'user',
@@ -1128,12 +1137,22 @@ export function makeStreamHandlers(opts: MakeStreamHandlersOptions): StreamHandl
       // same block id and is dropped by the guard below, so a cursor replay
       // cannot duplicate the line.
       if (!isClose) {
-        streamBlocks = appendBlockEvent(streamBlocks, { type: 'system', content: line });
+        // One live line per dispatch: an updated launch frame rewrites the
+        // running line instead of stacking "Running N" rows.
+        streamBlocks = appendBlockEvent(
+          streamBlocks.filter((b) => b.id !== FANOUT_RUNNING_BLOCK_ID),
+          { type: 'system', content: line, id: FANOUT_RUNNING_BLOCK_ID },
+        );
         scheduleUpdate();
         return;
       }
       if (id && streamBlocks.some((b) => b.id === id)) return;
-      streamBlocks = appendBlockEvent(streamBlocks, { type: 'system', content: line, id });
+      // The close REPLACES the running line — "Running 2 sub-agents" must
+      // not sit above "Ran 2 sub-agents" claiming work is still going.
+      streamBlocks = appendBlockEvent(
+        streamBlocks.filter((b) => b.id !== FANOUT_RUNNING_BLOCK_ID),
+        { type: 'system', content: line, id },
+      );
       scheduleUpdate();
     },
     onContextPressure: ({ contextUsedPct, attentionPressure, totalTokens, maxContext, remainingTokens, promptCache, contextSections }) => {

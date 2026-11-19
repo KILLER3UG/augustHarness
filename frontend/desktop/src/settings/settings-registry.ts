@@ -206,7 +206,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Theme, light/dark mode, and the UI color designer.',
     icon: Palette,
     category: 'basics',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Theme light dark system',
       'Accent color',
@@ -219,7 +219,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   },
   {
     id: 'model-providers',
-    label: 'Model settings',
+    label: 'Models & Local Runtime',
     description: 'Manage custom model providers. Once configured, they can be selected during chat.',
     icon: Boxes,
     category: 'basics',
@@ -270,7 +270,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
       'Browse a curated catalog of GGUF models and download one to run locally on this machine.',
     icon: Github,
     category: 'local',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Model search',
       'Model download',
@@ -310,7 +310,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Browser automation, web search, and live web preview.',
     icon: Globe,
     category: 'basics',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Browser profile',
       'Persistent browser session',
@@ -325,7 +325,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Desktop automation with SOM overlay, cross-platform support, and safe approval workflows.',
     icon: Monitor,
     category: 'basics',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Desktop app permissions',
       'Approved apps',
@@ -378,7 +378,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   },
   {
     id: 'app-updates',
-    label: 'About',
+    label: 'App & Updates',
     description: 'App version, update checks, and release notes for the desktop build.',
     icon: Info,
     category: 'app',
@@ -399,7 +399,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
       "Hand this install's per-install token to a phone, so the routes that start subagent workers and approve harness proposals answer instead of 401.",
     icon: Smartphone,
     category: 'app',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Per-install token',
       'Pairing URL',
@@ -436,7 +436,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'The goals an agent is working toward, the runs that carry them, the outputs it filed and the claims it has not proved.',
     icon: Target,
     category: 'capabilities',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'What the agent is working toward',
       'Runs, their rounds and their ceilings',
@@ -451,7 +451,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
 /* ── Agent capabilities header ─────────────────────────────────── */
   {
     id: 'memory-knowledge',
-    label: 'Memory',
+    label: 'Memory & Skills',
     description: 'What August remembers about you: the profile lane, topics and project areas, beside the switches that steer it.',
     icon: BrainCircuit,
     category: 'capabilities',
@@ -494,6 +494,18 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
       'memory-timeline',
       'memory-sessions',
     ],
+  },
+  {
+    /* Part D diet — the one permissions door: sandbox modes, tool grants,
+     * privacy and external access host as tabs here instead of four hidden
+     * sections each carrying their own rail row. */
+    id: 'permissions-workspace',
+    label: 'Permissions & Workspace',
+    description: 'What the agent may touch, what leaves the machine, and who else can reach August.',
+    icon: Shield,
+    category: 'capabilities',
+    tier: 'basic',
+    keywords: ['permissions', 'sandbox', 'privacy', 'access', 'security', 'grants', 'workspace'],
   },
   {
     // The switches are not browse controls, and the Library deliberately does
@@ -542,7 +554,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Install plugins and MCP servers, connect Gmail, Calendar, Drive, GitHub and Slack, and manage the tools they add.',
     icon: Layers,
     category: 'capabilities',
-    tier: 'basic',
+    tier: 'hidden',
     keywords: [
       'plugins',
       'plugin',
@@ -584,7 +596,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'The skill library: what is installed, what is enabled, and what each one actually says.',
     icon: BookOpen,
     category: 'capabilities',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Enable / disable a skill',
       'Skill scope project agent bundled',
@@ -633,7 +645,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Reusable prompt templates and custom commands.',
     icon: FileText,
     category: 'capabilities',
-    tier: 'basic',
+    tier: 'hidden',
     keywords: ['commands', 'prompt templates', 'templates', 'template', 'reusable', 'variable', 'shortcut'],
     legacyAliases: ['prompt-templates', 'custom-commands'],
   },
@@ -805,7 +817,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'The self-edit switch and its clone, the gates this app owns, and the only apply door.',
     icon: RefreshCw,
     category: 'capabilities',
-    tier: 'basic',
+    tier: 'hidden',
     keywords: ['self-edit', 'switch', 'clone', 'restart', 'apply', 'gate', 'journal', 'source'],
   },
 
@@ -816,7 +828,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Token usage, model cost, quotas, and per-model consumption.',
     icon: Gauge,
     category: 'data',
-    tier: 'basic',
+    tier: 'hidden',
     settingHints: [
       'Tokens',
       'Cost',
@@ -877,7 +889,7 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
     description: 'Which wire parameters August may send per model, and the family table that decides it.',
     icon: Blocks,
     category: 'capabilities',
-    tier: 'basic',
+    tier: 'hidden',
     keywords: [
       'model families',
       'family',

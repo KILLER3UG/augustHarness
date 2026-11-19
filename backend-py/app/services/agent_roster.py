@@ -240,43 +240,6 @@ def ensure_foreman_bot(actor: str = 'boot') -> dict[str, object]:
     return agent_registry.getAgent(as_str(agent['id'])) or agent
 
 
-# ── guided setup (INSTALL-style) ───────────────────────────────────────────
-
-
-def get_bot_setup(agent_id: str) -> dict[str, object]:
-    """``{'required': bool, 'completedAt': str|None}`` for a bot record."""
-    agent = agent_registry.getAgent(agent_id)
-    raw = agent.get('setup') if agent else None
-    block = raw if isinstance(raw, dict) else {}
-    return {
-        'required': bool(block.get('required')),
-        'completedAt': as_str(block.get('completedAt')) or None,
-    }
-
-
-def bot_setup_pending(agent_id: str) -> bool:
-    setup = get_bot_setup(agent_id)
-    return bool(setup['required']) and not setup['completedAt']
-
-
-def mark_bot_setup_complete(agent_id: str, actor: str = 'tool') -> bool:
-    """Close a bot's guided setup. Returns True when this call closed it."""
-    if not bot_setup_pending(agent_id):
-        return False
-    agent_registry.updateAgent(
-        agent_id,
-        {'setup': {'required': True, 'completedAt': _now_iso()}},
-        actor=actor,
-    )
-    return True
-
-
-def _now_iso() -> str:
-    import datetime
-
-    return datetime.datetime.now(datetime.UTC).isoformat(timespec='seconds')
-
-
 def create_bot(
     name: str,
     title: str = '',
@@ -289,7 +252,6 @@ def create_bot(
     actor: str = 'ui',
     intro: bool = True,
     work_dir: str = '',
-    setup_required: bool = False,
 ) -> dict[str, object]:
     """Create a Bot (idempotent on name) and its canonical Bot Chat.
 
@@ -302,10 +264,6 @@ def create_bot(
     It is a RECORD, not a capability: the tool surface still roots at the
     session workspace. Only the human door may set one — a turn calling
     ``create_agent`` cannot point a Bot at a folder.
-
-    ``setup_required`` marks a bot as carrying a guided setup the owner must
-    walk through in its chat; its ``install_complete`` tool and the pending
-    section in its system prompt disappear the moment setup closes.
     """
     existing = _find_by_name(name)
     if existing is not None:
@@ -342,12 +300,6 @@ def create_bot(
     if resolvedWorkDir:
         agent_registry.updateAgent(
             as_str(agent['id']), {'workDir': resolvedWorkDir}, actor=actor
-        )
-    if setup_required:
-        agent_registry.updateAgent(
-            as_str(agent['id']),
-            {'setup': {'required': True, 'completedAt': None}},
-            actor=actor,
         )
 
     bot = _bot_record(agent)
@@ -397,8 +349,7 @@ def delete_bot(agent_id: str, actor: str = 'ui') -> bool:
 
 def _cascade_delete_bot_data(agent_id: str) -> None:
     """Remove a deleted Bot's private footprint so it doesn't linger in the
-    store: its ``bot:<id>`` facts, its DM rows, its room memberships (dropping
-    rooms that fall below the 2-member minimum), and its canonical Bot Chat
+    store: its ``bot:<id>`` facts, its DM rows, and its canonical Bot Chat
     session. Best-effort — a failure here never blocks the delete."""
     scope = f'bot:{agent_id}'
     try:
@@ -416,13 +367,6 @@ def _cascade_delete_bot_data(agent_id: str) -> None:
         dm_store.purge_agent(agent_id)
     except Exception:
         logger.debug('bot cascade delete (dms) failed for %s', agent_id, exc_info=True)
-    # Drop the Bot from every room; delete rooms left under 2 members.
-    try:
-        from app.services.bot_mode import rooms as rooms_store
-
-        rooms_store.purge_agent(agent_id)
-    except Exception:
-        logger.debug('bot cascade delete (rooms) failed for %s', agent_id, exc_info=True)
     # Canonical Bot Chat session.
     try:
         chat = find_canonical_bot_chat(agent_id)
