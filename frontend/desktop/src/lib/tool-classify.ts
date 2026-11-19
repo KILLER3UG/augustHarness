@@ -105,7 +105,6 @@ const EDIT_NAMES = new Set([
   'write_blackboard',
   'clear_blackboard',
   'update_todos',
-  'update_heuristics',
   'update_state',
 ]);
 

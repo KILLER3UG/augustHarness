@@ -106,7 +106,6 @@ const TOOL_LABEL_MAP: Record<string, string> = {
   // Brain / knowledge
   brain_query: 'Querying brain',
   fact_search: 'Searching facts',
-  update_heuristics: 'Updating heuristics',
   update_state: 'Updating state',
   write_scratchpad: 'Writing scratchpad',
 
@@ -207,7 +206,6 @@ const TOOL_VERB_DONE: Record<string, string> = {
 
   brain_query: 'Queried brain',
   fact_search: 'Searched facts',
-  update_heuristics: 'Updated heuristics',
   update_state: 'Updated state',
   write_scratchpad: 'Wrote scratchpad',
 

@@ -395,7 +395,7 @@ function ConfirmState(props: {
 
 /* ── memory ────────────────────────────────────────────────────────── */
 
-const MEM_STORES = ['facts', 'memory', 'heuristics'];
+const MEM_STORES = ['facts', 'memory'];
 /** The server caps one browse page at 200 rows; the library walks that window
  *  in 12-row pages (the mockup's page size) and steps the window when it runs
  *  out, so a store of thousands stays pageable rather than truncated. */

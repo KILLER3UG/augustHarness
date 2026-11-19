@@ -22,9 +22,9 @@
  * (C-7), expired rows visually separated with absolute dates (C-8), the
  * project view (md files + entries + sessions bound to the workspace, C-9).
  * The unreachable non-unified card branch and 6 dead STORE_META entries are
- * gone (C-10), and heuristics rows are deletable to match the backend
- * (C-11 — brain.py _ROW_DELETABLE includes it; "legacy" only means no live
- * writer, not undeletable).
+ * gone (C-10). The heuristics store was retired backend-side 2026-10-30
+ * (no live writer ever existed); its browse tab and Rules section are gone
+ * with it — the query 404s and no importer exports rows for it.
  *
  * Counts come from /api/brain/stores, rows from /api/brain/stores/{name}.
  * Writes go to /api/august/memory/manage (add-box) and
@@ -143,8 +143,10 @@ interface ProjectList {
  * distinguish two backend tables they never see. The stores are still what a
  * row IS (its section says so) — they are just no longer the navigation. */
 
-/** The browsable stores the one list merges, in section order. */
-const GLOBAL_STORES = ['facts', 'memory', 'heuristics'];
+/** The browsable stores the one list merges, in section order.
+ *  'heuristics' was retired backend-side 2026-10-30 (no live writer ever
+ *  existed, no importer exports it); querying it 404s, so the tab is gone. */
+const GLOBAL_STORES = ['facts', 'memory'];
 
 const SORTS: Array<{ value: string; label: string }> = [
   { value: 'newest', label: 'Newest' },
@@ -171,7 +173,6 @@ interface StoreMeta {
   category?: (r: Row) => string;
   source?: (r: Row) => string;
   updated?: (r: Row) => string;
-  legacy?: boolean;
   readOnly?: boolean;
   editable?: string[];
   deletable?: boolean;
@@ -228,32 +229,18 @@ const STORE_META: Record<string, StoreMeta> = {
     editable: ['value'],
     deletable: true,
   },
-  // C-11: heuristics is legacy (no live writer) but DELETABLE — brain.py's
-  // _ROW_DELETABLE includes it, so the UI stops suppressing the button.
-  heuristics: {
-    idField: 'id',
-    title: (r) => str(r.rule),
-    summary: (r) => str(r.source),
-    category: (r) => str(r.category),
-    updated: (r) => str(r.updatedAt),
-    legacy: true,
-    readOnly: true,
-    deletable: true,
-  },
 };
 
 /* ── §5.1 flat-list kinds ──────────────────────────────────────────── */
 
-type EntryKind = 'profile' | 'fact' | 'lesson' | 'pref' | 'note';
+type EntryKind = 'profile' | 'fact' | 'pref' | 'note';
 
 /** Kind chip for a row: a fact whose own `kind` column reads `profile` is a
  *  profile-lane entry whatever its category — that column, not the category,
- *  is what makes the backend inject it every turn. Otherwise heuristics are
- *  lessons, user-category facts are prefs, everything in the KV/legacy note
- *  stores is a note. */
+ *  is what makes the backend inject it every turn. User-category facts are
+ *  prefs, everything in the KV store is a note. */
 function deriveKind(store: string, r: Row): EntryKind {
   if (str(r.kind).trim().toLowerCase() === 'profile') return 'profile';
-  if (store === 'heuristics') return 'lesson';
   if (store === 'facts') return str(r.category).toLowerCase() === 'user' ? 'pref' : 'fact';
   return 'note';
 }
@@ -297,7 +284,6 @@ interface FlatEntry {
   updated: string;
   expiring: boolean;
   expired: boolean;
-  legacy: boolean;
   source: string;
   category: string;
   /** `facts.status === 'retired'` — consolidation parked the row and BOTH
@@ -562,7 +548,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
   });
   // The Global memory group merges every browsable store into one
   // chronological list — the kind chip, not a second page, is what tells a
-  // fact from a KV note from a legacy lesson.
+  // fact from a KV note.
   // C-5: real pagination — UNIFIED_FETCH rows per page per store with a movable
   // offset, so page 2+ reaches rows past the old hard 200 cap.
   const unifiedFetch = (store: string) =>
@@ -576,7 +562,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
     );
   const unifiedQueryKey = (store: string) =>
     ['brain-store', store, unifiedOffset, query, UNIFIED_FETCH, catFilter, srcFilter, confFilter, sort];
-  const [storeA, storeB, storeC] = GLOBAL_STORES;
+  const [storeA, storeB] = GLOBAL_STORES;
   const unifiedQa = useQuery<StorePage>({
     queryKey: unifiedQueryKey(storeA),
     queryFn: () => unifiedFetch(storeA),
@@ -585,11 +571,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
     queryKey: unifiedQueryKey(storeB),
     queryFn: () => unifiedFetch(storeB),
   });
-  const unifiedQc = useQuery<StorePage>({
-    queryKey: unifiedQueryKey(storeC),
-    queryFn: () => unifiedFetch(storeC),
-  });
-  const storeQueries = [unifiedQa, unifiedQb, unifiedQc];
+  const storeQueries = [unifiedQa, unifiedQb];
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['brain-stores'] });
@@ -688,7 +670,6 @@ export function MemorySection({ active }: { active: { id: string } }) {
     const pages: Array<[string, StorePage | undefined]> = [
       [storeA, unifiedQa.data],
       [storeB, unifiedQb.data],
-      [storeC, unifiedQc.data],
     ];
     const out: FlatEntry[] = [];
     for (const [store, page] of pages) {
@@ -706,7 +687,6 @@ export function MemorySection({ active }: { active: { id: string } }) {
           updated: m?.updated?.(row) ?? '',
           expiring: hasExpiry(row),
           expired: isExpired(row),
-          legacy: !!m?.legacy,
           source: m?.source?.(row) ?? '',
           category: m?.category?.(row) ?? '',
           retired: str(row.status) === 'retired',
@@ -723,7 +703,7 @@ export function MemorySection({ active }: { active: { id: string } }) {
     }
     out.sort((a, b) => sortTime(b.row, STORE_META[b.store]) - sortTime(a.row, STORE_META[a.store]));
     return out;
-  }, [storeA, storeB, storeC, unifiedQa.data, unifiedQb.data, unifiedQc.data]);
+  }, [storeA, storeB, unifiedQa.data, unifiedQb.data]);
 
   // C-8: expired rows separate to the bottom of the list, live rows first.
   // (The kind FILTER is gone: the sections are the grouping now, so a chip
@@ -735,23 +715,21 @@ export function MemorySection({ active }: { active: { id: string } }) {
 
   // Server-reported totals drive the unified pager (C-5).
   const unifiedTotal =
-    (unifiedQa.data?.total ?? 0) + (unifiedQb.data?.total ?? 0) + (unifiedQc.data?.total ?? 0);
+    (unifiedQa.data?.total ?? 0) + (unifiedQb.data?.total ?? 0);
   const unifiedCanPrev = unifiedOffset > 0;
   const unifiedCanNext = unifiedOffset + UNIFIED_FETCH < unifiedTotal;
 
   // The reference's grouping: the profile lane IS the "You" section, project
   // facts are "Areas", everything else is a "Topic" grouped by its own category,
-  // the KV store is Notes, the legacy lessons are Rules. One row renderer shared
-  // by every section — the first version of this had two and they drifted.
+  // and the KV store is Notes. One row renderer shared by every section — the
+  // first version of this had two and they drifted.
   const sections = useMemo(() => {
     const you: FlatEntry[] = [];
     const areas: FlatEntry[] = [];
     const topics: FlatEntry[] = [];
     const notes: FlatEntry[] = [];
-    const rules: FlatEntry[] = [];
     for (const e of filteredEntries) {
       if (e.kind === 'profile') you.push(e);
-      else if (e.store === 'heuristics') rules.push(e);
       else if (e.store === 'memory') notes.push(e);
       else if (e.category === 'project') areas.push(e);
       else topics.push(e);
@@ -781,7 +759,6 @@ export function MemorySection({ active }: { active: { id: string } }) {
       areas,
       topics,
       notes,
-      rules,
       youHook: sharedDetail(you),
       topicGroups: groupByTopic(topics),
       areaGroups: groupByTopic(areas),
@@ -1456,16 +1433,6 @@ export function MemorySection({ active }: { active: { id: string } }) {
               <MemorySectionHeader title="Notes" hint={`${sections.notes.length}`} />
               <div className="divide-y divide-border/60">
                 {sections.notes.map((e) => rowFor(e))}
-              </div>
-            </section>
-          )}
-
-          {/* Rules — legacy lessons, read-only but deletable. */}
-          {sections.rules.length > 0 && (
-            <section data-testid="memory-section-rules">
-              <MemorySectionHeader title="Rules" hint="retired writer · kept for recall" />
-              <div className="divide-y divide-border/60">
-                {sections.rules.map((e) => rowFor(e))}
               </div>
             </section>
           )}
@@ -2912,7 +2879,6 @@ function DetailView({
       ),
     });
   }
-  if (meta.legacy) metaBits.push({ key: 'legacy', node: <span>retired writer</span> });
   if (retired) {
     metaBits.push({
       key: 'parked',
