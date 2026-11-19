@@ -1177,7 +1177,7 @@ def on_battery() -> bool:
 
     status = _POWER_STATUS()
     try:
-        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+        if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(status)):  # type: ignore[attr-defined]
             return False
     except Exception:  # noqa: BLE001
         return False
@@ -1206,7 +1206,7 @@ def memory_pressure() -> int:
     status = _MEM_STATUS()
     status.dwLength = ctypes.sizeof(_MEM_STATUS)
     try:
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
             return -1
     except Exception:  # noqa: BLE001
         return -1
