@@ -3234,11 +3234,18 @@ async def _sendWorkbenchMessageStreamImpl(
     chainUsedAt: str | None = None
     # Context window is also needed by the reactive overflow reduction inside
     # the tool loop — resolve it once here (0 = unknown → reduction skips).
-    contextWindow = 0
+    # Resolved OUTSIDE the compactor feature gate: the small-window relief and
+    # the overflow rescue need the real window even when summarizing is off.
+    contextWindow = _resolveModelContextWindow(resolvedModel, resolvedProvider)
+    _turnProfile = _modelCapabilityProfile(session)
+    _turnLoopbackSmall = as_bool(_turnProfile.get('loopback'), False) and 0 < as_int(
+        _turnProfile.get('context_window'), 0
+    ) <= 16384
     try:
         from app.providers.clients.base import estimateTokens
         from app.services.workbench.context_compressor import (
             COMPACT_TRIGGER_RATIO,
+            PROTECTED_TOOL_TOKENS,
             acquireCompactionLock,
             isFeatureEnabled,
             noteCompactionPhase,
@@ -3248,6 +3255,8 @@ async def _sendWorkbenchMessageStreamImpl(
         from app.services.workbench.loop.recovery import (
             _compactionCall,
             _reductionIsWorthwhile,
+            relieveSmallWindowContext,
+            smallWindowProtectBudget,
         )
 
         if isFeatureEnabled():
@@ -3313,7 +3322,14 @@ async def _sendWorkbenchMessageStreamImpl(
             # in the model-facing projection only — session.messages stays
             # untouched unless compaction below persists the reduced list.
             unprunedMessages = currentMessages
-            currentMessages = pruneToolOutputs(currentMessages)
+            currentMessages = pruneToolOutputs(
+                currentMessages,
+                protectTokens=(
+                    smallWindowProtectBudget(contextWindow)
+                    if _turnLoopbackSmall
+                    else PROTECTED_TOOL_TOKENS
+                ),
+            )
             if _shouldAutoCompact(attentionPressure, turnsSinceCompaction, remainingTokens):
                 if not acquireCompactionLock(session):
                     logger.info('workbench auto-compact skipped — compaction lock held session=%s', sessionId)
@@ -4300,6 +4316,13 @@ async def _sendWorkbenchMessageStreamImpl(
                         tracker.record_user_message()
                 except Exception:
                     logger.debug('tool tracker user-message reset failed', exc_info=True)
+        # A fan-out turn appends tool results and subagent completions every
+        # round; pre-turn compaction cannot see that growth. On loopback <=16k
+        # windows, relieve pressure before the next request is built.
+        if _turnLoopbackSmall:
+            currentMessages = relieveSmallWindowContext(
+                session, currentMessages, contextWindow, emit=emit
+            )
         logger.debug(
             'workbench round %d start (model=%s, in=%d, out=%d)',
             toolRound,

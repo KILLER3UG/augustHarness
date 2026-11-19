@@ -32,6 +32,9 @@ _CONTEXT_OVERFLOW_MARKERS = (
     'maximum context',
     'context_length',
     'context_window',
+    # llama-server's own wording ("Context size has been exceeded") matched
+    # none of the shapes above, so a loopback overflow skipped the rescue.
+    'context size',
     'too many tokens',
     'token limit',
     'max_tokens',
@@ -193,6 +196,7 @@ async def _compactionCall(
     did not take is the same class of bug this function exists to prevent.
     """
     from app.services.workbench.context_compressor import (
+        PROTECTED_TOOL_TOKENS,
         RELIEF_ROTATE,
         REPLAY_USER_BUDGET_BYTES,
         buildSkillCarryover,
@@ -203,7 +207,14 @@ async def _compactionCall(
         reliefStrategy,
     )
 
-    pruned = pruneToolOutputs(list(messages))
+    # On a small window the 40k default protection budget exceeds the whole
+    # surface, so the prune stage freed nothing before the summary ran.
+    protect = (
+        min(PROTECTED_TOOL_TOKENS, smallWindowProtectBudget(context_window))
+        if context_window
+        else PROTECTED_TOOL_TOKENS
+    )
+    pruned = pruneToolOutputs(list(messages), protectTokens=protect)
     relief = reliefStrategy(pruned, armed=_contextRotateArmed())
     stats: dict[str, int] = {}
     compressed = await compressMessages(
@@ -251,6 +262,67 @@ def _tokens(messages: list[dict[str, object]]) -> int:
     return estimateTokens(messages)
 
 
+def smallWindowProtectBudget(contextWindow: int) -> int:
+    """Tool-output protection budget for a loopback <=16k window.
+
+    The default ``PROTECTED_TOOL_TOKENS`` (40k) exceeds the whole window, so
+    the projection prune protected every result and never freed a token on
+    the models that need it most. A quarter of the window keeps the newest
+    couple of results intact while everything older becomes elidable.
+    """
+    return max(1536, int(contextWindow) // 4)
+
+
+def relieveSmallWindowContext(
+    session: WorkbenchSession,
+    messages: list[dict[str, object]],
+    contextWindow: int,
+    emit: Callable[[dict[str, object]], None] | None = None,
+) -> list[dict[str, object]]:
+    """Mid-loop pressure relief for loopback <=16k turns.
+
+    Compaction only runs pre-turn, so a fan-out turn whose rounds append
+    tool results and subagent completions climbs past the window inside the
+    loop and dies on the provider's overflow. Once the surface passes 65% of
+    the window, archive the unpruned transcript and apply the projection
+    prune with a window-scaled protection budget. Pairing-safe (slots are
+    rewritten in place, never dropped) and idempotent.
+    """
+    if not (0 < int(contextWindow) <= 16384):
+        return messages
+    before = _tokens(messages)
+    if before < int(contextWindow * 0.65):
+        return messages
+    try:
+        from app.services.transcript_archive import archive_messages
+
+        archive_messages(
+            as_str(getattr(session, 'id', '') or ''), messages, reason='small-window-relief'
+        )
+    except Exception:
+        logger.debug('small-window relief archive failed', exc_info=True)
+    from app.services.workbench.context_compressor import pruneToolOutputs
+
+    pruned = pruneToolOutputs(messages, protectTokens=smallWindowProtectBudget(contextWindow))
+    after = _tokens(pruned)
+    if after >= before:
+        return messages
+    logger.info(
+        'workbench small-window relief: %d→%d tokens (window %d)', before, after, contextWindow
+    )
+    if emit:
+        emit(
+            {
+                'type': 'warning',
+                'message': (
+                    f'Context pressure on a {contextWindow // 1024}k window — cleared old tool '
+                    f'outputs ({before}→{after} tokens). Full transcript archived.'
+                ),
+            }
+        )
+    return pruned
+
+
 async def _reactiveContextReduction(
     messages: list[dict[str, object]],
     contextWindow: int,
@@ -268,6 +340,16 @@ async def _reactiveContextReduction(
     mid-turn policy) so orientation survives the rewrite.
     """
     before = _tokens(messages)
+    try:
+        # The rescue rewrites history; keep the unpruned transcript on disk
+        # first, exactly like the pre-turn auto-compact path.
+        from app.services.transcript_archive import archive_messages
+
+        archive_messages(
+            as_str(getattr(session, 'id', '') or ''), messages, reason='reactive-overflow'
+        )
+    except Exception:
+        logger.debug('reactive reduction archive failed', exc_info=True)
     try:
         reduced, _relief, _stats = await _compactionCall(
             messages,

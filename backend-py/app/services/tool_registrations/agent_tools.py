@@ -90,7 +90,41 @@ async def _readBackgroundTask(taskId: str = '', tailChars: int = 8000) -> str:
     from app.services.background_commands import getManager
     from app.services.workbench.context import currentSessionId
 
+    tid = str(taskId or '').strip()
+    if tid and not tid.startswith('bg_'):
+        return _subagentPollSteering(tid, currentSessionId.get() or '')
     return getManager().read(taskId, currentSessionId.get(), as_int(tailChars, 8000))
+
+
+def _subagentPollSteering(taskId: str, sessionId: str) -> str:
+    """Parents poll subagent job_/task_ ids here; a bare error burned rounds
+    and context on small windows. Steer toward the pushed completions."""
+    lines = [f"'{taskId}' is not a background command id (those start with 'bg_')."]
+    try:
+        from app.services.harness_jobs import get_job, list_jobs
+
+        job = get_job(taskId)
+        if job is None:
+            for row in list_jobs(sessionId, limit=10):
+                if taskId in (row.get('taskIds') or []):
+                    job = row
+                    break
+        if job is not None:
+            lanes = job.get('outcomes') or {}
+            summary = ', '.join(
+                f"{name}: {as_str(info.get('status'), '?')}"
+                for name, info in lanes.items()
+                if isinstance(info, dict)
+            )
+            status = as_str(job.get('status'), '?')
+            lines.append(f'Dispatch status: {status}' + (f' ({summary})' if summary else ''))
+    except Exception:
+        pass
+    lines.append(
+        'Subagent results arrive automatically as [SUBAGENT_COMPLETE] messages — do not poll. '
+        'If all results have arrived, write the final answer now in one round.'
+    )
+    return '\n'.join(lines)
 
 
 async def _killBackgroundTask(taskId: str = '') -> str:

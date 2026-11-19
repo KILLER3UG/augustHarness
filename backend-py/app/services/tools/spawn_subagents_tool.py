@@ -43,7 +43,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable, cast
 
-from app.json_narrowing import as_list, as_str
+from app.json_narrowing import as_int, as_list, as_str
 from app.services.subagent_orchestrator import SubagentOrchestrator, SubagentSpawnRequest
 
 if TYPE_CHECKING:
@@ -362,7 +362,9 @@ def _parent_tool_use_id() -> str:
         return ''
 
 
-def _format_completion_notice(result: dict[str, Any], session: object = None) -> str:
+def _format_completion_notice(
+    result: dict[str, Any], session: object = None, maxChars: int = 8000
+) -> str:
     task_id = result.get('taskId', '')
     agent_id = result.get('agentId', 'general')
     status = result.get('status', 'completed')
@@ -377,7 +379,7 @@ def _format_completion_notice(result: dict[str, Any], session: object = None) ->
     # its own final round (see _subagent_answer), but a long answer still ends,
     # so bound it the way tool output is bounded: head+tail with an omission
     # receipt, spilled to a file the parent can actually re-open.
-    if len(text) > 8000:
+    if len(text) > maxChars:
         from app.services.workbench.workbench import _spillToolResult, _truncateToolOutput
 
         # `_spillToolResult` returns None without a workspace, and `session` is
@@ -388,7 +390,7 @@ def _format_completion_notice(result: dict[str, Any], session: object = None) ->
             spilled = _spillToolResult(
                 cast('WorkbenchSession', session), 'subagent_result', text
             )
-        text = spilled if spilled is not None else _truncateToolOutput(text, 8000)[0]
+        text = spilled if spilled is not None else _truncateToolOutput(text, maxChars)[0]
     lines = [
         f'[SUBAGENT_COMPLETE taskId="{task_id}" agentId="{agent_id}" status="{status}"]',
         f'goal: {goal}' if goal else '',
@@ -398,15 +400,56 @@ def _format_completion_notice(result: dict[str, Any], session: object = None) ->
     return '\n'.join(line for line in lines if line)
 
 
+def _parent_notice_budget(session: object) -> int:
+    """Completion-notice char budget for the parent's window.
+
+    Two 8000-char notices are ~4k tokens — a quarter of a 16k window before
+    the parent has reasoned at all. Small loopback windows get a sixth of
+    the window (full text stays spill-reopenable); unknown/large windows
+    keep the standing 8000.
+    """
+    try:
+        from app.services.workbench.loop.surface import _modelCapabilityProfile
+
+        window = as_int(_modelCapabilityProfile(session).get('context_window'), 0)  # type: ignore[arg-type]
+    except Exception:
+        window = 0
+    if 0 < window <= 16384:
+        return max(1200, window // 6)
+    return 8000
+
+
+def _all_fanouts_settled(sid: str) -> bool:
+    """True when no harness job for this session is still running."""
+    try:
+        from app.services.harness_jobs import list_jobs
+
+        jobs = list_jobs(sid, limit=10)
+    except Exception:
+        return False
+    if not jobs:
+        return False
+    return all(str(j.get('status') or '') != 'running' for j in jobs)
+
+
 def _enqueue_completion(session: object, result: dict[str, Any]) -> None:
     """Deliver one settled subagent result to the parent model ASAP."""
     sid = _session_id(session)
     if not sid:
         return
+    notice = _format_completion_notice(result, session, maxChars=_parent_notice_budget(session))
+    # Bounded synthesis: once every dispatched lane has settled, the parent's
+    # job is to answer, not to keep polling or start new work. Say so in the
+    # same message that carries the last result.
+    if _all_fanouts_settled(sid):
+        notice += (
+            '\n[harness] All dispatched subagents have settled. Synthesize the final '
+            'answer now in one round from the results above; do not poll or start new tool work.'
+        )
     try:
         from app.services.workbench.workbench import enqueueUserMessage
 
-        enqueueUserMessage(sid, _format_completion_notice(result, session), kind='subagent')
+        enqueueUserMessage(sid, notice, kind='subagent')
     except Exception:
         logger.debug('failed to enqueue subagent completion', exc_info=True)
         return
@@ -1031,7 +1074,10 @@ async def _doSpawn(
                 f'At most {limits.concurrency} run concurrently and the whole dispatch shares a budget of '
                 f'{limits.round_budget} tool rounds (0 = unbounded), so lanes beyond that stop as partial — '
                 'plan the number of lanes and their maxIterations together. '
-                'Each completion is an episode handoff — do not expect tool traces.'
+                'Each completion is an episode handoff — do not expect tool traces. '
+                'Do not poll read_background_task for these ids — completions arrive '
+                'automatically as [SUBAGENT_COMPLETE] messages; once all have arrived, '
+                'write the final answer in one round.'
             ),
         }
 
