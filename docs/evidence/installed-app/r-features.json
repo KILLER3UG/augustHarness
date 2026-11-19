@@ -1,0 +1,185 @@
+{
+ "steps": [
+  {
+   "backend_base": "http://127.0.0.1:8085"
+  },
+  {
+   "root_rendered": true
+  },
+  {
+   "runtime_status": {
+    "installed": "cuda-13.4",
+    "tag": "b11960",
+    "install": {
+     "running": false,
+     "variant": null,
+     "asset": null,
+     "bytesDone": 0,
+     "totalBytes": 0,
+     "error": null,
+     "done": false
+    },
+    "suggestion": {
+     "variant": "cuda-13.4",
+     "auto": true,
+     "reason": "NVIDIA driver reports CUDA 13.4",
+     "gpu": {
+      "nvidia": true,
+      "cudaVersion": "13.4",
+      "gpuName": "NVIDIA GeForce RTX 4050 Laptop GPU",
+      "driverVersion": "616.64",
+      "vramTotalMb": 6141,
+      "vramFreeMb": 4801
+     }
+    },
+    "variants": [
+     {
+      "name": "cuda-13.4",
+      "label": "NVIDIA CUDA 13",
+      "requires": "NVIDIA driver supporting CUDA 13+",
+      "totalBytes": 588521743
+     },
+     {
+      "name": "cuda-12.4",
+      "label": "NVIDIA CUDA 12",
+      "requires": "NVIDIA driver supporting CUDA 12.4+",
+      "totalBytes": 671206851
+     },
+     {
+      "name": "vulkan",
+      "label": "Vulkan GPU",
+      "requires": "Any GPU with a Vulkan driver (NVIDIA / AMD / Intel)",
+      "totalBytes": 37345851
+     },
+     {
+      "name": "cpu",
+      "label": "CPU only",
+      "requires": "No GPU required",
+      "totalBytes": 24407745
+     }
+    ]
+   }
+  },
+  {
+   "serve_kick": {
+    "status": 200,
+    "row": {
+     "id": "gguf-52482",
+     "ggufPath": "C:\\Users\\rober\\.lmstudio\\models\\LiquidAI\\LFM3-1.7B-GGUF\\LFM3-1.7B-Q8_0.gguf",
+     "name": "LFM3-1.7B-Q8_0",
+     "port": 52482,
+     "pid": 28700,
+     "ctxSize": 16384,
+     "providerId": null,
+     "status": "starting",
+     "startedAt": "2026-11-19T16:59:05+00:00",
+     "lastUsedAt": "2026-11-19T16:59:05+00:00",
+     "variant": "cuda-13.4",
+     "restartAttempts": 0
+    }
+   }
+  },
+  {
+   "server_row": {
+    "id": "gguf-52482",
+    "ggufPath": "C:\\Users\\rober\\.lmstudio\\models\\LiquidAI\\LFM3-1.7B-GGUF\\LFM3-1.7B-Q8_0.gguf",
+    "name": "LFM3-1.7B-Q8_0",
+    "port": 52482,
+    "pid": 28700,
+    "ctxSize": 16384,
+    "providerId": "local-models",
+    "status": "ready",
+    "startedAt": "2026-11-19T16:59:05+00:00",
+    "lastUsedAt": "2026-11-19T16:59:05+00:00",
+    "variant": "cuda-13.4",
+    "restartAttempts": 0
+   }
+  },
+  {
+   "ram_toggles": {
+    "status": 200,
+    "ramReview": true,
+    "ramTrajectoryExport": true
+   }
+  },
+  {
+   "model_picked": true
+  },
+  {
+   "fanout_sent": true
+  },
+  {
+   "fanout_wait": {
+    "i": 0,
+    "tail": "istrations and one to count .py files in backend-py/app/routers\n\n←\nThinking…\nLFM3-1.7B-Q8_0\nOne to list files in 2.\nUsing with .\n.\n.\n.\nNo workspace\nAccess: Full access\nLocalModels · LFM3 1.7B Q8_0\n16k"
+   }
+  },
+  {
+   "fanout_wait": {
+    "i": 10,
+    "tail": " workspace\nAccess: Full access\nLocalModels · LFM3 1.7B Q8_0\n16k\nSubagents\nList files in backend-py/app/services/tool_registrations\n0s\n×\nList files in backend-py/app/services/tool_registrations\nworking"
+   }
+  },
+  {
+   "fanout_wait": {
+    "i": 20,
+    "tail": "workspace\nAccess: Full access\nLocalModels · LFM3 1.7B Q8_0\n16k\nSubagents\nList files in backend-py/app/services/tool_registrations\n41s\n×\nList files in backend-py/app/services/tool_registrations\nworking"
+   }
+  },
+  {
+   "fanout_done": true
+  },
+  {
+   "accordion_shape": {
+    "rowCount": 1,
+    "bodyVisibleBefore": true,
+    "expandedOk": false,
+    "collapsedAgain": false
+   }
+  },
+  {
+   "hover_actions": [
+    "Copy message",
+    "Copy",
+    "Compare models side by side",
+    "Retry / Regenerate"
+   ]
+  },
+  {
+   "raw_leaks": {
+    "rawEnvelope": false,
+    "rawQueued": false
+   }
+  },
+  {
+   "ram_ui_present": {
+    "review": true,
+    "export": true,
+    "reviewNow": true,
+    "trajectories": true
+   }
+  },
+  {
+   "topology_padded": {
+    "padded": false,
+    "topoFile": "C:\\Users\\rober\\AppData\\Roaming/com.august.harness/data/memory/workspaces/augustHarness-ef4f16cac7ee/QUICKSTART.md"
+   }
+  },
+  {
+   "ram_proposal": null
+  },
+  {
+   "trajectory_ui": "Exported trajectories\n\nNone yet — a completed turn writes the first file."
+  }
+ ],
+ "errors": [
+  "console: Applying inline style violates the following Content Security Policy directive 'style-src 'self' 'unsafe-inline' 'nonce-16821723462713212296''. Note that 'unsafe-inline' is ignored if either a hash or",
+  "console: Applying inline style violates the following Content Security Policy directive 'style-src 'self' 'unsafe-inline' 'nonce-16821723462713212296''. Note that 'unsafe-inline' is ignored if either a hash or",
+  "console: Connecting to 'http://ipc.localhost/proxy_status' violates the following Content Security Policy directive: \"connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*\". The action has been blocked.",
+  "console: Fetch API cannot load http://ipc.localhost/proxy_status. Refused to connect because it violates the document's Content Security Policy.",
+  "console: Applying inline style violates the following Content Security Policy directive 'style-src 'self' 'unsafe-inline' 'nonce-5869190680509237238''. Note that 'unsafe-inline' is ignored if either a hash or ",
+  "console: Applying inline style violates the following Content Security Policy directive 'style-src 'self' 'unsafe-inline' 'nonce-5869190680509237238''. Note that 'unsafe-inline' is ignored if either a hash or ",
+  "console: Connecting to 'http://ipc.localhost/proxy_status' violates the following Content Security Policy directive: \"connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*\". The action has been blocked.",
+  "console: Fetch API cannot load http://ipc.localhost/proxy_status. Refused to connect because it violates the document's Content Security Policy."
+ ]
+}

@@ -1,0 +1,117 @@
+{
+ "rootOk": true,
+ "log": [
+  {
+   "name": "r01-first-launch-1440",
+   "clipped": []
+  },
+  {
+   "name": "r02-empty-state-1440",
+   "clipped": []
+  },
+  {
+   "name": "r03-actions-menu",
+   "clipped": []
+  },
+  {
+   "name": "r04-workspace-menu",
+   "clipped": []
+  },
+  {
+   "name": "r05-access-menu",
+   "clipped": []
+  },
+  {
+   "name": "r06-model-menu",
+   "clipped": []
+  },
+  {
+   "name": "r07-bots-runs",
+   "clipped": []
+  },
+  {
+   "name": "r08-artifacts-drawer",
+   "clipped": []
+  },
+  {
+   "name": "r09-docs-drawer",
+   "clipped": []
+  },
+  {
+   "name": "r10-right-drawer",
+   "clipped": []
+  },
+  {
+   "name": "r11-settings-general",
+   "clipped": []
+  },
+  {
+   "name": "r12-settings-models",
+   "clipped": []
+  },
+  {
+   "name": "r12-settings-memory",
+   "clipped": []
+  },
+  {
+   "name": "r13-memory-ram-toggles",
+   "clipped": []
+  },
+  {
+   "name": "r12-settings-permissions",
+   "clipped": []
+  },
+  {
+   "name": "r12-settings-app",
+   "clipped": []
+  },
+  {
+   "name": "r14-back-to-chat",
+   "clipped": []
+  },
+  {
+   "name": "r15-empty-1280",
+   "clipped": []
+  },
+  {
+   "name": "r16-access-1280",
+   "clipped": []
+  },
+  {
+   "name": "r17-model-1280",
+   "clipped": []
+  }
+ ],
+ "errors": [],
+ "trig": [
+  {
+   "label": "Composer actions",
+   "testid": null
+  },
+  {
+   "label": "No workspace",
+   "testid": "composer-folder-chip"
+  },
+  {
+   "label": "Access: Full access",
+   "testid": "agent-mode-chip"
+  },
+  {
+   "label": "Model",
+   "testid": "model-chip"
+  },
+  {
+   "label": "Send",
+   "testid": "composer-send-button"
+  }
+ ],
+ "tb": [
+  "Thread title: Bot Chat. Click ",
+  "Artifacts",
+  "Docs",
+  "Open Workbench",
+  "Minimize",
+  "Maximize",
+  "Close"
+ ]
+}
