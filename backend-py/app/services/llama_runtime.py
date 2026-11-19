@@ -488,7 +488,12 @@ async def start_gguf_server(
 
     port = _free_port()
     flags = getattr(asyncio.subprocess, 'CREATE_NO_WINDOW', 0) if hasattr(asyncio.subprocess, 'CREATE_NO_WINDOW') else 0
-    proc = await asyncio.create_subprocess_exec(
+    # CPU-only serving parks the whole model in RAM; on a pressured 16GB box
+    # that stalls the machine and the shell watchdog reads it as a dead backend.
+    gpu = await detect_gpu()
+    model_mb = path.stat().st_size // (1024 * 1024)
+    offload = variant.startswith('cuda') and int(gpu.get('vramFreeMb') or 0) >= model_mb + 1536
+    args = [
         str(exe),
         '--host', '127.0.0.1',
         '--port', str(port),
@@ -499,6 +504,11 @@ async def start_gguf_server(
         # not a name anyone picked.
         '--alias', path.stem,
         '--jinja',
+    ]
+    if offload:
+        args += ['--n-gpu-layers', '99']
+    proc = await asyncio.create_subprocess_exec(
+        *args,
         cwd=str(exe.parent),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
