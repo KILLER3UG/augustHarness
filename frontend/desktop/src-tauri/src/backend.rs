@@ -2560,13 +2560,23 @@ fn ensureRunningLocked(app: &AppHandle) -> bool {
 /// restart the backend automatically so the desktop app self-heals.
 pub fn watchBackend(app: &AppHandle) {
     let mut backoff = Duration::from_secs(3);
+    let mut down_streak = 0u32;
     loop {
         std::thread::sleep(backoff);
         reclaimDeadChild(app);
         if isProxyUp() {
             backoff = Duration::from_secs(3);
+            down_streak = 0;
             continue;
         }
+        // one missed 400ms probe under memory-pressure stall is not a dead backend
+        if storedChildAlive(app) {
+            down_streak += 1;
+            if down_streak < 3 {
+                continue;
+            }
+        }
+        down_streak = 0;
 
         // Avoid thrashing while the user is mid-bootstrap (copy/pip) or updating.
         if updateHoldoffActive() {
