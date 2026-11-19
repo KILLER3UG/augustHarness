@@ -5,7 +5,7 @@
 
 # API Index — every route
 
-453 routes across 380 paths,
+456 routes across 383 paths,
 grouped by family. **This file is generated.** For the prose that explains what
 these are for and when to reach for them, read
 [`API_REFERENCE.md`](./API_REFERENCE.md) — it covers the families that matter in
@@ -115,7 +115,7 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `PATCH` | `/api/sessions/{sessionId}/messages/enrichment` | Attach the client-authored structured transcript to one message. |
 | `GET` | `/api/sessions/search` | Full-text search across conversation messages (C8). |
 
-## Memory & brain (27)
+## Memory & brain (30)
 
 | Method | Path | Summary |
 | --- | --- | --- |
@@ -135,6 +135,9 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 | `GET` | `/api/brain/memory/metrics` | Phase D item 4: recall + latency instrument. |
 | `POST` | `/api/brain/memory/open-folder` | Open the markdown memory mirror in the OS file browser. |
 | `GET` | `/api/brain/memory/preview` | The literal durable-memory text a turn would receive for one query. |
+| `POST` | `/api/brain/ram/review` | Run the 3-step topology review now and file its proposal (if any). |
+| `GET` | `/api/brain/ram/trajectories` | List exported trajectory files (opt-in exporter's output). |
+| `GET` | `/api/brain/ram/trajectories/{sessionId}` | Download one session's trajectory JSONL (masked, opt-in export). |
 | `GET` | `/api/brain/routing/arena` | Recent arena verdicts (the durable archive the UI groups per session). |
 | `POST` | `/api/brain/routing/arena` | Record one arena/debate verdict: a winner row (ok=1) + one loser row (ok=0) per competing model, all tagged s… |
 | `GET` | `/api/brain/routing/suggestions` | Per-model win-rate suggestions from arena evidence (surpass #1 loop): models ranked by win rate over ≥1 recor… |
@@ -572,4 +575,4 @@ Regenerate: `npm run gen:api-index` · Verify: `npm run check:api-index`
 
 ---
 
-Generated from `docs/api/openapi.json` (453 operations).
+Generated from `docs/api/openapi.json` (456 operations).

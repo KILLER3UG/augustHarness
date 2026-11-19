@@ -96,17 +96,17 @@ async def _readBackgroundTask(taskId: str = '', tailChars: int = 8000) -> str:
     return getManager().read(taskId, currentSessionId.get(), as_int(tailChars, 8000))
 
 
-def _subagentPollSteering(taskId: str, sessionId: str) -> str:
+def _subagentPollSteering(task_id: str, session_id: str) -> str:
     """Parents poll subagent job_/task_ ids here; a bare error burned rounds
     and context on small windows. Steer toward the pushed completions."""
-    lines = [f"'{taskId}' is not a background command id (those start with 'bg_')."]
+    lines = [f"'{task_id}' is not a background command id (those start with 'bg_')."]
     try:
         from app.services.harness_jobs import get_job, list_jobs
 
-        job = get_job(taskId)
+        job = get_job(task_id)
         if job is None:
-            for row in list_jobs(sessionId, limit=10):
-                if taskId in (row.get('taskIds') or []):
+            for row in list_jobs(session_id, limit=10):
+                if task_id in (row.get('taskIds') or []):
                     job = row
                     break
         if job is not None:

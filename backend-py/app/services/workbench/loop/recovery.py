@@ -262,7 +262,7 @@ def _tokens(messages: list[dict[str, object]]) -> int:
     return estimateTokens(messages)
 
 
-def smallWindowProtectBudget(contextWindow: int) -> int:
+def smallWindowProtectBudget(context_window: int) -> int:
     """Tool-output protection budget for a loopback <=16k window.
 
     The default ``PROTECTED_TOOL_TOKENS`` (40k) exceeds the whole window, so
@@ -270,13 +270,13 @@ def smallWindowProtectBudget(contextWindow: int) -> int:
     the models that need it most. A quarter of the window keeps the newest
     couple of results intact while everything older becomes elidable.
     """
-    return max(1536, int(contextWindow) // 4)
+    return max(1536, int(context_window) // 4)
 
 
 def relieveSmallWindowContext(
     session: WorkbenchSession,
     messages: list[dict[str, object]],
-    contextWindow: int,
+    context_window: int,
     emit: Callable[[dict[str, object]], None] | None = None,
 ) -> list[dict[str, object]]:
     """Mid-loop pressure relief for loopback <=16k turns.
@@ -293,7 +293,7 @@ def relieveSmallWindowContext(
     (4096 floor) plus a worker's ~3.5k must still fit beside the parent's
     prompt. 65% of 16k left no room for them (measured 2026-11-19).
     """
-    if not (0 < int(contextWindow) <= 16384):
+    if not (0 < int(context_window) <= 16384):
         return messages
     before = _tokens(messages)
     fraction = 0.65
@@ -307,7 +307,7 @@ def relieveSmallWindowContext(
             fraction = 0.5
     except Exception:
         logger.debug('fanout pressure check failed', exc_info=True)
-    if before < int(contextWindow * fraction):
+    if before < int(context_window * fraction):
         return messages
     try:
         from app.services.transcript_archive import archive_messages
@@ -319,19 +319,19 @@ def relieveSmallWindowContext(
         logger.debug('small-window relief archive failed', exc_info=True)
     from app.services.workbench.context_compressor import pruneToolOutputs
 
-    pruned = pruneToolOutputs(messages, protectTokens=smallWindowProtectBudget(contextWindow))
+    pruned = pruneToolOutputs(messages, protectTokens=smallWindowProtectBudget(context_window))
     after = _tokens(pruned)
     if after >= before:
         return messages
     logger.info(
-        'workbench small-window relief: %d→%d tokens (window %d)', before, after, contextWindow
+        'workbench small-window relief: %d→%d tokens (window %d)', before, after, context_window
     )
     if emit:
         emit(
             {
                 'type': 'warning',
                 'message': (
-                    f'Context pressure on a {contextWindow // 1024}k window — cleared old tool '
+                    f'Context pressure on a {context_window // 1024}k window — cleared old tool '
                     f'outputs ({before}→{after} tokens). Full transcript archived.'
                 ),
             }
@@ -341,7 +341,7 @@ def relieveSmallWindowContext(
 
 async def _reactiveContextReduction(
     messages: list[dict[str, object]],
-    contextWindow: int,
+    context_window: int,
     session: WorkbenchSession,
     statsOut: dict[str, object] | None = None,
 ) -> list[dict[str, object]] | None:
@@ -369,7 +369,7 @@ async def _reactiveContextReduction(
     try:
         reduced, _relief, _stats = await _compactionCall(
             messages,
-            context_window=contextWindow,
+            context_window=context_window,
             goalHint=as_str(getattr(session, 'goal', '') or ''),
             summarizer=None,
             workspace=as_str(getattr(session, 'workspacePath', '') or ''),
@@ -708,7 +708,7 @@ async def _budgetTriggeredCompaction(
     sessionId: str,
     messages: list[dict[str, object]],
     *,
-    contextWindow: int,
+    context_window: int,
     emit: Callable[[dict[str, object]], None] | None,
     resolvedProvider: dict[str, object] | None,
     resolvedModel: str,
@@ -745,7 +745,7 @@ async def _budgetTriggeredCompaction(
             summarizer = None
         compressed, relief, stats = await _compactionCall(
             messages,
-            context_window=contextWindow,
+            context_window=context_window,
             goalHint=as_str(getattr(session, 'goal', '') or ''),
             summarizer=summarizer,
             workspace=as_str(getattr(session, 'workspacePath', '') or ''),
@@ -782,7 +782,7 @@ async def _budgetTriggeredCompaction(
                     'replayedCount': stats.get('replayed', 0),
                     'relief': relief,
                     'tailCount': stats.get('tail'),
-                    'contextWindow': contextWindow,
+                    'contextWindow': context_window,
                     'underThreshold': False,
                 }
             )

@@ -363,7 +363,7 @@ def _parent_tool_use_id() -> str:
 
 
 def _format_completion_notice(
-    result: dict[str, Any], session: object = None, maxChars: int = 8000
+    result: dict[str, Any], session: object = None, max_chars: int = 8000
 ) -> str:
     task_id = result.get('taskId', '')
     agent_id = result.get('agentId', 'general')
@@ -379,7 +379,7 @@ def _format_completion_notice(
     # its own final round (see _subagent_answer), but a long answer still ends,
     # so bound it the way tool output is bounded: head+tail with an omission
     # receipt, spilled to a file the parent can actually re-open.
-    if len(text) > maxChars:
+    if len(text) > max_chars:
         from app.services.workbench.workbench import _spillToolResult, _truncateToolOutput
 
         # `_spillToolResult` returns None without a workspace, and `session` is
@@ -390,7 +390,7 @@ def _format_completion_notice(
             spilled = _spillToolResult(
                 cast('WorkbenchSession', session), 'subagent_result', text
             )
-        text = spilled if spilled is not None else _truncateToolOutput(text, maxChars)[0]
+        text = spilled if spilled is not None else _truncateToolOutput(text, max_chars)[0]
     lines = [
         f'[SUBAGENT_COMPLETE taskId="{task_id}" agentId="{agent_id}" status="{status}"]',
         f'goal: {goal}' if goal else '',
@@ -462,7 +462,7 @@ def _enqueue_completion(session: object, result: dict[str, Any]) -> None:
         ram.maybe_file_review(_ws, sid)
     except Exception:
         logger.debug('ram completion offload failed', exc_info=True)
-    notice = _format_completion_notice(result, session, maxChars=_parent_notice_budget(session))
+    notice = _format_completion_notice(result, session, max_chars=_parent_notice_budget(session))
     # Bounded synthesis: once every dispatched lane has settled, the parent's
     # job is to answer, not to keep polling or start new work. Say so in the
     # same message that carries the last result.

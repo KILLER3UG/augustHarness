@@ -4122,7 +4122,7 @@ async def _sendWorkbenchMessageStreamImpl(
                     session,
                     sessionId,
                     currentMessages,
-                    contextWindow=contextWindow,
+                    context_window=contextWindow,
                     emit=emit,
                     resolvedProvider=resolvedProvider,
                     resolvedModel=resolvedModel,
