@@ -368,7 +368,9 @@ async def _download_and_extract(asset: dict[str, object], target: Path) -> None:
             f'{asset["name"]}: SHA256 mismatch (got {actual}, pinned {expected_sha}) — refusing'
         )
 
-    _extract_flat(part, target)
+    # Extraction of the CUDA bundles blocks for tens of seconds; on the event
+    # loop it starves /api/health and the shell watchdog kills the "dead" backend.
+    await asyncio.to_thread(_extract_flat, part, target)
     part.unlink(missing_ok=True)
 
 
